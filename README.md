@@ -1,7 +1,7 @@
 # RTPSpy: fMRI Real-Time Processing System in python
 
 RTPSpy is a python library for real-time fMRI (rtfMRI) data processing systems.   
-The package inculdes;
+The package inculudes;
 * A fast and comprehensive online fMRI denoising pipeline comparable to offline processing.
 * Utilities for fast and accurate anatomical image processing to identify a target region onsite.
 * A simulation system of online fMRI processing to optimize a pipeline and target signal calculation.
@@ -11,7 +11,7 @@ The package inculdes;
 Please see the article.   
 https://biorxiv.org/cgi/content/short/2021.12.13.472468v1
 
-Also see the article below for the evaluation fo the system.   
+Also, see the article below for the evaluation of the system.   
 [Masaya Misaki and Jerzy Bodurka (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33)
 
 ## Requirements
@@ -19,11 +19,11 @@ Also see the article below for the evaluation fo the system.
 RTPSpy has been developed on a Linux system (Ubuntu) and can also be run on Mac OSX and Windows with the Windows Subsystem for Linux (WSL) Ubuntu. GPU computation is not supported on OSX and WSL for now.
 
 ### External tools
-RTPSpy is assumed to be run on an miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
+RTPSpy is assumed to be run on a miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
 Install either one referring to these cite.   
 A yaml file describing required python libraries that can be used to install the libraries in an anaconda environment is provided with the package for easy installation.  
 
-AFNI (https://afni.nimh.nih.gov/) needs ot be installed to run RTPSpy library methods. See https://afni.nimh.nih.gov/pub/dist/doc/htmldoc/background_install/main_toc.html for installation process for each system.
+AFNI (https://afni.nimh.nih.gov/) needs to be installed to run RTPSpy library methods. See https://afni.nimh.nih.gov/pub/dist/doc/htmldoc/background_install/main_toc.html for the installation process for each system.
 
 ### For Linux, WSL ubuntu
 Install git command.  
@@ -76,7 +76,7 @@ A sample application external to RTPSpy for neurofeedback presentation is also p
 
 The GUI application is presented as just one example of library usage. However, a user may develop a custom neurofeedback application with minimum modification on the example script.
 
-To run the example application, PsychoPy package need to be installed in a conda environment, 'psychopy', as indicated below.  
+To run the example application, a user needs to install the PsychoPy package in a conda environment, 'psychopy,' as indicated below.
 ```
 conda create -n psychopy python=3.9
 conda activate psychopy
@@ -84,11 +84,11 @@ pip install psychopy
 ```
 
 #### ROI-NF (example/ROI-NF)
-A GUI application built on the RTPSpy library. This application is provided as a boilerplate of the RTPSpy application to run a neurofeedback session with minimum scripting for custom neurofeedback signal extraction and feedback presentation.  
+A GUI application is built on the RTPSpy library. This application is provided as a boilerplate of the RTPSpy application to make a custom neurofeedback application with minimum scripting.  
 See [example/ROI-NF](example/ROI-NF#readme)
 
 #### LA-NF (example/LA-NF)
-Implementation of the left amygdala neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011;Young et al., 2017). This script is for a demonstration of a full-fledged GUI application using RTPSpy. Note that this application was not used in the previous studies and several parameters are different from the previous reports.  
+The application implements the left amygdala neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011;Young et al., 2017). This script is for a demonstration of a full-fledged GUI application using RTPSpy. Note that this application was not used in the previous studies and several parameters are different from the previous reports.  
 See [example/LA-NF](example/LA-NF#readme)
 
 Young, K.D., Siegle, G.J., Zotev, V., Phillips, R., Misaki, M., Yuan, H., Drevets, W.C., and Bodurka, J. (2017). Randomized Clinical Trial of Real-Time fMRI Amygdala Neurofeedback for Major Depressive Disorder: Effects on Symptoms and Autobiographical Memory Recall. Am J Psychiatry 174, 748-755.  
