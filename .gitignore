@@ -9,5 +9,5 @@
 __pycache__/
 *.py[cod]
 *$py.class
-rsync_master.sh
-rsync_exclude_list
+rsync*
+
