@@ -2,7 +2,7 @@
 
 RTPSpy is a python library for real-time fMRI (rtfMRI) data processing systems.   
 The package inculudes;
-* A fast and comprehensive online fMRI denoising pipeline comparable to offline processing.
+* A fast and comprehensive online fMRI processing pipeline comparable to offline processing.
 * Utilities for fast and accurate anatomical image processing to identify a target region onsite.
 * A simulation system of online fMRI processing to optimize a pipeline and target signal calculation.
 * Interface to an external application for feedback presentation.
