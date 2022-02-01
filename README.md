@@ -71,7 +71,8 @@ RTPSpy is not a complete application by itself but is supposed to be used as a p
 Example applications using the RTPSpy library are provided below.  
 
 ## Example GUI applications
-We provide a boilerplate graphical user interface (GUI) application integrating operations with RTPSpy and a sample application of neurofeedback presentation using PsychoPy (Peirce, 2008) to demonstrate how the RTPSpy is implemented in an application and to interface to another external application.  
+We provide a boilerplate graphical user interface (GUI) application integrating operations with RTPSpy.  
+A sample application external to RTPSpy for neurofeedback presentation is also presented. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how the RTPSpy communicates with an external application using a library module (RTP_SERV).  
 
 The GUI application is presented as just one example of library usage. However, a user may develop a custom neurofeedback application with minimum modification on the example script.
 
