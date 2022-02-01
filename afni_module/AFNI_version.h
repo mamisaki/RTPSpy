@@ -1,0 +1,4 @@
+#undef  AFNI_VERSION_LABEL
+#define AFNI_VERSION_LABEL    "AFNI_RTP"
+#undef  AFNI_VERSION_PLATFORM
+#define AFNI_VERSION_PLATFORM "linux_openmp_64"

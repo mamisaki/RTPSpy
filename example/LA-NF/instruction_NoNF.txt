@@ -1,0 +1,4 @@
+'HEADER','Instructions'
+'Rest','Try to clear your mind and not think about anything in particular. Stay calm and relaxed but try not to fall asleep.'
+'Happy','Feel happy using memories of past events.'
+'Count','Mentally count backward by subtracting the number shown on the screen.'
