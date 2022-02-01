@@ -14,7 +14,7 @@ https://biorxiv.org/cgi/content/short/2021.12.13.472468v1
 Also, see the article below for the evaluation of the system.   
 [Masaya Misaki and Jerzy Bodurka (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33)
 
-## Requirements
+## Requirements and dependencies
 ### Supporting systems
 RTPSpy has been developed on a Linux system (Ubuntu). It can also be run on Mac OSX and Windows with the Windows Subsystem for Linux (WSL), while GPU computation is not supported on OSX and WSL for now.
 
