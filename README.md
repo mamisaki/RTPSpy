@@ -20,7 +20,7 @@ RTPSpy has been developed on a Linux system (Ubuntu). It can also be run on Mac 
 
 ### External tools
 RTPSpy is assumed to be run on a miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
-Install either one referring to these cite.   
+Install either one referring to these sites.   
 A yaml file describing required python libraries that can be used to install the libraries in an anaconda environment is provided with the package for easy installation.  
 
 AFNI (https://afni.nimh.nih.gov/) needs to be installed to run RTPSpy library methods. See https://afni.nimh.nih.gov/pub/dist/doc/htmldoc/background_install/main_toc.html for the installation process for each system.
