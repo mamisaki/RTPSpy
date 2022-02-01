@@ -86,11 +86,11 @@ pip install psychopy
 
 On WSL, you also need to set up an X server application. The instruction of AFNI installation on WSL describes it, so I assume you have already done that.
 
-#### ROI-NF (example/ROI-NF)
+### ROI-NF (example/ROI-NF)
 A GUI application is built on the RTPSpy library. This application is provided as a boilerplate of the RTPSpy application to make a custom neurofeedback application with minimum scripting.  
 See [example/ROI-NF](example/ROI-NF#readme)
 
-#### LA-NF (example/LA-NF)
+### LA-NF (example/LA-NF)
 The application implements the left amygdala neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011;Young et al., 2017). This script is for a demonstration of a full-fledged GUI application using RTPSpy. Note that this application was not used in the previous studies and several parameters are different from the previous reports.  
 See [example/LA-NF](example/LA-NF#readme)
 
