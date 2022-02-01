@@ -43,10 +43,10 @@ RTPSpy can take advantage of GPU computation, while it is not mandatory for real
 To use GPU computation, a user needs to install an appropriate GPU driver compatible with the CUDA toolkit (https://developer.nvidia.com/cuda-toolkit). The toolkit will be installed with the yaml file.  
 
 ## INSTALL
-Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).
+Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).  
+Following instructions are supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.  
 
 ### Clone the packages  
-Following instruction is supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.
 ```
 cd ~
 git clone https://github.com/mamisaki/RTPSpy.git
