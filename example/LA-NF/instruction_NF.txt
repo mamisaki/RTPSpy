@@ -1,0 +1,4 @@
+'HEADER','Instructions'
+'Rest','Try to clear your mind and not think about anything in particular. Stay calm and relaxed but try not to fall asleep.'
+'Happy','Feel happy using memories of past events. Recalling these happy memories should raise the level of the red bar. We will give you a specific target level to achieve, which is indicated by the blue bar.'
+'Count','Mentally count backward by subtracting the number shown on the screen.'

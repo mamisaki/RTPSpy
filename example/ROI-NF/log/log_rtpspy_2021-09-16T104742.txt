@@ -1,0 +1,75 @@
+2021/09/16 11:04:53.979532:[RTP_TSHIFT]: Slice timing = [0.0, 1.0, 0.05, 1.05, 0.1, 1.1, 0.15, 1.15, 0.2, 1.2, 0.25, 1.25, 0.3, 1.3, 0.35, 1.35, 0.4, 1.4, 0.45, 1.45, 0.5000001, 1.5, 0.5500001, 1.55, 0.6000001, 1.6, 0.6500001, 1.649999, 0.7000001, 1.699999, 0.7500001, 1.749999, 0.8000001, 1.799999, 0.8500001, 1.849999, 0.9000002, 1.899999, 0.9500002, 1.949999].
+2021/09/16 11:04:54.193578:[RTP_VOLREG]: Alignment reference = /data/rt/test/vr_base_epiRT_scan_4__003+orig.HEAD[0]
+2021/09/16 11:04:54.230901:[RTP_SMOOTH]: Mask = /data/rt/test/RTP_mask.nii.gz
+2021/09/16 11:04:54.248331:[RTP_REGRESS]: Mask = /data/rt/test/RTP_mask.nii.gz
+2021/09/16 11:14:04.907368:[RTP_WATCH]: Reset RTP_WATCH module.
+2021/09/16 11:14:04.909328:[RTP_WATCH]: Stop watchdog observer.
+2021/09/16 11:14:04.909438:[RTP_TSHIFT]: Reset RTP_TSHIFT module.
+2021/09/16 11:14:04.909533:[RTP_VOLREG]: Reset RTP_VOLREG module.
+2021/09/16 11:14:04.909638:[RTP_SMOOTH]: Reset RTP_SMOOTH module.
+2021/09/16 11:14:04.909736:[RTP_REGRESS]: Reset RTP_REGRESS module.
+2021/09/16 11:14:04.909842:[ROI_NF]: Reset ROI_NF module.
+2021/09/16 11:14:04.918278:[RTP_REGRESS]: Mask = /data/rt/test/RTP_mask.nii.gz
+2021/09/16 11:14:04.921672:[RTP_WATCH]: Start watchdog observer on /data/rt/test.
+2021/09/16 11:14:04.932159:[ROI_NF]: RTP parameters:
+# RTP_WATCH
+#     watch_dir: /data/rt/test
+#     watch_file_pattern: nr_\d+.+\.BRIK
+#     polling_interval: 0.001
+#     clean_rt_src: True
+# RTP_TSHIFT
+#     ignore_init: 3
+#     method: cubic
+#     ref_time: 0
+#     TR: 2.0
+#     slice_timing: [0.0, 1.0, 0.05, 1.05, 0.1, 1.1, 0.15, 1.15, 0.2, 1.2, 0.25, 1.25, 0.3, 1.3, 0.35, 1.35, 0.4, 1.4, 0.45, 1.45, 0.5000001, 1.5, 0.5500001, 1.55, 0.6000001, 1.6, 0.6500001, 1.649999, 0.7000001, 1.699999, 0.7500001, 1.749999, 0.8000001, 1.799999, 0.8500001, 1.849999, 0.9000002, 1.899999, 0.9500002, 1.949999]
+#     slice_dim: 2
+# RTP_VOLREG
+#     regmode: cubic
+#     max_iter: 9
+#     dxy_thresh: 0.05
+#     phi_thresh: 0.07
+#     ref_fname: /data/rt/test/vr_base_epiRT_scan_4__003+orig.HEAD
+# RTP_SMOOTH
+#     blur_fwhm: 6.0
+#     mask_file: /data/rt/test/RTP_mask.nii.gz
+# RTP_REGRESS
+#     max_poly_order: inf
+#     mot_reg: mot12
+#     GS_reg: True
+#     GS_mask: /data/rt/test/GSR_mask.nii.gz
+#     WM_reg: True
+#     WM_mask: /data/rt/test/mprage_scan_3__002_WM_al_func.nii.gz
+#     Vent_reg: True
+#     Vent_mask: /data/rt/test/mprage_scan_3__002_Vent_al_func.nii.gz
+#     phys_reg: None
+#     mask_file: /data/rt/test/RTP_mask.nii.gz
+#     device: cuda
+#     reg_retro_proc: True
+#     wait_num: 30
+#     reg_names: ['roll', 'pitch', 'yaw', 'dS', 'dL', 'dP', 'dtroll', 'dtpitch', 'dtyaw', 'dtdS', 'dtdL', 'dtdP', 'GS', 'WM', 'Vent']
+# ROI_NF
+#     work_dir: /data/rt/test
+#     template: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/test/MNI152_2009_template.nii.gz
+#     ROI_template: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/test/MNI152_2009_template_LAmy.nii.gz
+#     func_orig: /data/rt/test/vr_base_epiRT_scan_4__003+orig.HEAD
+#     anat_orig: /data/rt/test/mprage_scan_3__002+orig.BRIK
+#     alAnat: /data/rt/test/mprage_scan_3__002_Brain_al_func+orig.HEAD
+#     WM_orig: /data/rt/test/mprage_scan_3__002_WM_al_func.nii.gz
+#     Vent_orig: /data/rt/test/mprage_scan_3__002_Vent_al_func.nii.gz
+#     ROI_orig: /data/rt/test/MNI152_2009_template_LAmy_inOrigFunc.nii.gz
+#     RTP_mask: /data/rt/test/RTP_mask.nii.gz
+#     GSR_mask: /data/rt/test/GSR_mask.nii.gz
+#     fastSeg_batch_size: 16
+#     proc_times: {'FastSeg': 100, 'AlAnat': 40, 'Resample_WM_mask': 1, 'Resample_Vent_mask': 1, 'ANTs': 120, 'ApplyWarp_ROI_template': 10, 'RTP_mask': 2, 'GSR_mask': 1}
+#     ROI_resample: nearestNeighbor
+#     max_watch_wait: 15.0
+#     simEnabled: False
+#     simfMRIData: 
+#     simECGData: 
+#     simRespData: 
+#     simPhysPort: None
+#     extApp_cmd: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/example/ROI-NF/NF_psypy.py --size 1280 1024 --pos 0 0
+#     extApp_sock_timeout: 3
+#     sig_save_file: rtp_ROI_signal.csv
+2021/09/16 11:14:04.970615:[ROI_NF]: Recv READY;

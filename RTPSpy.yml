@@ -1,0 +1,24 @@
+name: RTPSpy
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - cmake
+  - f2c
+  - matplotlib
+  - nibabel
+  - openpyxl
+  - pandas
+  - pexpect
+  - pip
+  - pyqt
+  - pyserial
+  - python=3.9
+  - pytorch
+  - scikit-sparse
+  - torchvision
+  - watchdog
+  - pip:
+    - antspyx
+    - pyparallel

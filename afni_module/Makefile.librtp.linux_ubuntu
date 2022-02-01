@@ -1,0 +1,25 @@
+# This Makefile works on Linux.
+
+MAKE = make
+
+RTPSRC = librtp.c rtp_retrots.c
+CC     = gcc -O3 -m64 -fPIC -DREAD_WRITE_64
+
+RM = /bin/rm -f
+AFNI_SRC = ../afni/src
+USE_ZLIB = -DHAVE_ZLIB
+
+IFLAGS = -I. -I/usr/include -I/usr/include/x86_64-linux-gnu -I $(AFNI_SRC)
+INFLAGS  = $(IFLAGS) -I$(AFNI_SRC)/nifti/nifti2 -I$(AFNI_SRC)/nifti/niftilib \
+	-I$(AFNI_SRC)/nifti/nifticdf -I$(AFNI_SRC)/nifti/znzlib -I$(AFNI_SRC)/3DEdge/src \
+	-I$(AFNI_SRC)/rickr -I$(AFNI_SRC)/niml $(USE_ZLIB)
+LFLAGS = -L. -L/usr/lib/x86_64-linux-gnu
+F2CLIB = /usr/lib/x86_64-linux-gnu/libf2c.a
+
+librtp.so: $(RTPSRC)
+	$(RM) $@
+	$(CC) -shared -o librtp.so $(RTPSRC) libmri.a $(INFLAGS) $(F2CLIB) \
+	-lz -lexpat -lXt $(LFLAGS)
+
+clean:
+	$(RM) librtp.so

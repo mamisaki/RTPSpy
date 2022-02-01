@@ -1,0 +1,34 @@
+# This Makefile works on MacOSX.
+
+MAKE = make
+
+RTPSRC = librtp.c rtp_retrots.c
+CC     = /usr/bin/gcc -O2 -DDARWIN -m64 -Wcomment -Wformat -DUSE_TRACING -DHAVE_XDBE \
+	 -DDONT_USE_MCW_MALLOC
+
+RM = /bin/rm -f
+AFNI_SRC = ../afni/src
+USE_ZLIB = -DHAVE_ZLIB
+
+XROOT   = /opt/X11
+XROOT_I = -I$(XROOT)/include
+XROOT_L = -L$(XROOT)/lib
+
+LPYTHON     = -L${HOME}/anaconda3/lib/python3.8/config-3.8-darwin
+
+CONDAENV = ${HOME}/anaconda3/envs/RTPSpy/
+IFLAGS = -I. $(XROOT_I) -I/usr/local/include -I/usr/include -I $(CONDAENV)/include -I $(AFNI_SRC)
+INFLAGS  = $(IFLAGS) -I$(AFNI_SRC)/nifti/nifti2 -I$(AFNI_SRC)/nifti/niftilib \
+	-I$(AFNI_SRC)/nifti/nifticdf -I$(AFNI_SRC)/nifti/znzlib -I$(AFNI_SRC)/3DEdge/src \
+	-I$(AFNI_SRC)/rickr -I$(AFNI_SRC)/niml $(USE_ZLIB)
+LFLAGS = -L. -L/usr/local/lib $(XROOT_L) -L/usr/lib -L/usr/lib -Wl,-multiply_defined -Wl,warning -Wl,-bind_at_load $(LPYTHON)
+
+F2CLIB =  $(CONDAENV)/lib/libf2c.a
+
+librtp.dylib: $(RTPSRC)
+	$(RM) $@
+	$(CC) -shared -o librtp.dylib $(RTPSRC) libmri.a libfftw3.a $(INFLAGS) $(F2CLIB) \
+	-lz -lexpat -lXt -lstdc++ $(LFLAGS) -target x86_64-apple-darwin
+
+clean:
+	$(RM) librtp.dylib
