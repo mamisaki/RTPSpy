@@ -42,7 +42,7 @@ brew install git gcc fftw openmotif
 RTPSpy can take advantage of GPU computation, while it is not mandatory for real-time image processing (computational speed is fast enough for real-time fMRI even without GPU). GPU is utilized in the online fMRI data processing and anatomical image processing with FastSurfer (https://deep-mi.org/research/fastsurfer/).  
 To use GPU computation, a user needs to install an appropriate GPU driver compatible with the CUDA toolkit (https://developer.nvidia.com/cuda-toolkit). The toolkit will be installed with the yaml file.  
 
-## INSTALL
+## Installation
 Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).  
 Following instructions are supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.  
 
