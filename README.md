@@ -66,6 +66,10 @@ pip install -e ~/RTPSpy
 ~/RTPSpy/rtpspy_system_check.py
 ```
 
+Please refer to https://biorxiv.org/cgi/content/short/2021.12.13.472468v1 for the usage of the library.  
+RTPSpy is not a complete application by itself but is supposed to be used as a part of a user's custom rtfMRI application.  
+Example applications using the RTPSpy library are provided below.  
+
 ## Example GUI applications
 We provide a boilerplate graphical user interface (GUI) application integrating operations with RTPSpy and a sample application of neurofeedback presentation using PsychoPy (Peirce, 2008) to demonstrate how the RTPSpy is implemented in an application and to interface to another external application.  
 
