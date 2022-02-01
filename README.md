@@ -46,7 +46,7 @@ To use GPU computation, a user needs to install an appropriate GPU driver compat
 Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).
 
 ### Clone the packages  
-Assumed to be installed in the home directory.
+Following instruction is supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.
 ```
 cd ~
 git clone https://github.com/mamisaki/RTPSpy.git
