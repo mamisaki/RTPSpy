@@ -61,7 +61,7 @@ conda activate RTPSpy
 pip install -e ~/RTPSpy
 ```
 
-### Test installation
+### Test the system
 ```
 ~/RTPSpy/rtpspy_system_check.py
 ```
