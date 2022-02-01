@@ -78,7 +78,7 @@ The GUI application is presented as just one example of library usage. However, 
 
 To run the example application, a user needs to install the PsychoPy package in a conda environment, 'psychopy,' as indicated below.
 ```
-conda create -n psychopy python=3.9
+conda create -n psychopy python=3.6
 conda activate psychopy
 pip install psychopy
 ```
