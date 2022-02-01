@@ -73,7 +73,7 @@ Example applications using the RTPSpy library are shown below.
 
 ## Example GUI applications
 We provide a boilerplate graphical user interface (GUI) application integrating operations with RTPSpy.  
-A sample application external to RTPSpy for neurofeedback presentation is also presented. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how the RTPSpy communicates with an external application using a library module (RTP_SERV).  
+We aslo present a sample external application for neurofeedback. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how the RTPSpy communicates with an external application using the library module (RTP_SERV).  
 
 The GUI application is presented as just one example of library usage. However, a user may develop a custom neurofeedback application with minimum modification on the example script.
 
@@ -83,6 +83,8 @@ conda create -n psychopy python=3.6
 conda activate psychopy
 pip install psychopy
 ```
+
+On WSL, you also need to set up an X server application. The instruction of AFNI installation on WSL describes it, so I assume you have already done that.
 
 #### ROI-NF (example/ROI-NF)
 A GUI application is built on the RTPSpy library. This application is provided as a boilerplate of the RTPSpy application to make a custom neurofeedback application with minimum scripting.  
