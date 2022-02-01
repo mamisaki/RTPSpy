@@ -16,7 +16,7 @@ Also, see the article below for the evaluation of the system.
 
 ## Requirements
 ### Supporting systems
-RTPSpy has been developed on a Linux system (Ubuntu) and can also be run on Mac OSX and Windows with the Windows Subsystem for Linux (WSL) Ubuntu. GPU computation is not supported on OSX and WSL for now.
+RTPSpy has been developed on a Linux system (Ubuntu). It can also be run on Mac OSX and Windows with the Windows Subsystem for Linux (WSL), while GPU computation is not supported on OSX and WSL for now.
 
 ### External tools
 RTPSpy is assumed to be run on a miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
