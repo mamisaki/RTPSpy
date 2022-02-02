@@ -75,7 +75,7 @@ Example applications using the RTPSpy library are shown below.
 We provide a boilerplate graphical user interface (GUI) application integrating operations with RTPSpy.  
 We aslo present a sample external application for neurofeedback. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how the RTPSpy communicates with an external application using the library module (RTP_SERV).  
 
-The GUI application is presented as just one example of library usage. However, a user may develop a custom neurofeedback application with minimum modification on the example script.
+The GUI application is presented as just an example of library usage. However, a user may develop a custom neurofeedback application with minimum modification on the example script.
 
 To run the example application, a user needs to install the PsychoPy package in a conda environment, 'psychopy,' as indicated below.
 ```
