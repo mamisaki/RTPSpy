@@ -8,8 +8,8 @@ The package inculudes;
 * Interface to an external application for feedback presentation.
 * A boilerplate graphical user interface (GUI) class integrating operations with RTPSpy.
 
-Please see the article.   
-https://biorxiv.org/cgi/content/short/2021.12.13.472468v1
+Please see the article.  
+https://www.biorxiv.org/content/10.1101/2021.12.13.472468v2
 
 Also, see the article below for the evaluation of the system.   
 [Masaya Misaki and Jerzy Bodurka (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33)
