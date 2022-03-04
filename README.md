@@ -46,7 +46,7 @@ To use GPU computation, you need to install a GPU driver compatible with the CUD
 Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).  
 Instructions below are supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.  
 
-### Clone the packages  
+### Clone the package  
 ```
 cd ~
 git clone https://github.com/mamisaki/RTPSpy.git
