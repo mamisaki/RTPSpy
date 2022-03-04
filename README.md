@@ -67,7 +67,7 @@ pip install -e ~/RTPSpy
 ```
 
 ## Usage
-Please refer to https://biorxiv.org/cgi/content/short/2021.12.13.472468v1 for the usage of the library.  
+Please refer to https://www.biorxiv.org/content/10.1101/2021.12.13.472468v2 for the usage of the library.  
 RTPSpy is not a complete application by itself but is supposed to be used as a part of a user's custom rtfMRI application.  
 Example applications using the RTPSpy library are shown below.  
 
