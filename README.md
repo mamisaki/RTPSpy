@@ -46,7 +46,7 @@ To use GPU computation, you need to install a GPU driver compatible with the CUD
 Every command should be entered in the terminal (Terminal application on OSX and Ubuntu console on WSL).  
 Instructions below are supposed to install the package in the home directory. If you want to install another place, replace the path '~/RTPSpy' appropriately.  
 
-### Clone the packages  
+### Clone the package  
 ```
 cd ~
 git clone https://github.com/mamisaki/RTPSpy.git
@@ -67,7 +67,7 @@ pip install -e ~/RTPSpy
 ```
 
 ## Usage
-Please refer to https://biorxiv.org/cgi/content/short/2021.12.13.472468v1 for the usage of the library.  
+Please refer to https://www.biorxiv.org/content/10.1101/2021.12.13.472468v2 for the usage of the library.  
 RTPSpy is not a complete application by itself but is supposed to be used as a part of a user's custom rtfMRI application.  
 Example applications using the RTPSpy library are shown below.  
 
