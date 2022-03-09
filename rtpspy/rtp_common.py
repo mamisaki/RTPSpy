@@ -405,7 +405,7 @@ class RTP(object):
             # other thread.
             msgBox = QtWidgets.QMessageBox()
             msgBox.setIcon(QtWidgets.QMessageBox.Critical)
-            msgBox.setText(errmsg)
+            msgBox.setText(str(errmsg))
             msgBox.setWindowTitle(self.__class__.__name__)
             msgBox.exec()
 

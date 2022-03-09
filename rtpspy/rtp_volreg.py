@@ -156,11 +156,6 @@ class RTP_VOLREG(RTP):
             mot = mot[np.newaxis, [0, 1, 2, 5, 3, 4]]
             self.motion = np.concatenate([self.motion, mot], axis=0)
 
-            # Update motion plot
-            self.plt_xi.append(vol_idx)
-            for ii in range(6):
-                self.plt_motion[ii].append(self.motion[-1][ii])
-
             # --- Post procress -----------------------------------------------
             # Record process time
             self.proc_time.append(time.time())
@@ -189,6 +184,11 @@ class RTP_VOLREG(RTP):
                 # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
                                        pre_proc_time=self.proc_time[-1])
+
+            # Update motion plot
+            self.plt_xi.append(vol_idx)
+            for ii in range(6):
+                self.plt_motion[ii].append(self.motion[-1][ii])
 
             # Save processed image
             if self.save_proc:
@@ -514,7 +514,7 @@ class RTP_VOLREG(RTP):
                     continue
 
                 except Exception as e:
-                    self.root.errmsg(e)
+                    self.root.errmsg(str(e), no_pop=True)
                     sys.stdout.flush()
                     continue
 

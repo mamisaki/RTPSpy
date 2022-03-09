@@ -363,7 +363,7 @@ class RTP_APP(RTP):
             if self.ROI_template == '':
                 ROI_template = None
             else:
-                self.ROI_template = ROI_template
+                ROI_template = self.ROI_template
 
         if no_FastSeg:
             if WM_template is not None:
@@ -455,7 +455,8 @@ class RTP_APP(RTP):
             total_ETA -= self.proc_times['ANTs']
             total_ETA -= self.proc_times['ApplyWarp']
 
-        if not Path(self.ROI_template).is_file():
+        if self.ROI_template is None or \
+                not Path(self.ROI_template).is_file():
             total_ETA -= self.proc_times['ApplyWarp']
 
         if no_FastSeg:
@@ -465,16 +466,16 @@ class RTP_APP(RTP):
         OK = True
         try:
             # --- 0. Copy func_orig to work_dir as vr_base_* ------------------
-            if self.func_orig.parent != self.work_dir or \
-                    not Path(self.func_orig).stem.startswith('vr_base_') or \
+            if func_orig.parent != self.work_dir or \
+                    not Path(func_orig).stem.startswith('vr_base_') or \
                     overwrite:
 
-                src_f = self.func_orig
+                src_f = func_orig
                 if re.search(r"\'*\[\d+\]\'*$", Path(src_f).name) is None:
                     src_f = f"'{src_f}[0]'"
 
-                src_f_stem = Path(self.func_orig).stem
-                suff = Path(self.func_orig).suffix
+                src_f_stem = Path(func_orig).stem
+                suff = Path(func_orig).suffix
                 if '.gz' in suff:
                     suff = Path(src_f_stem).suffix
                     src_f_stem = Path(src_f_stem).stem
@@ -1110,7 +1111,7 @@ class RTP_APP(RTP):
                 self.rtp_objs['PHYSIO'].wait_scan = False
                 self.rtp_objs['PHYSIO'].scanning = False
 
-            # Send 'QUIT' message to an external application
+            # Send 'END' message to an external application
             if self.isAlive_extApp():
                 if self.send_extApp('END;'.encode()):
                     recv = self.recv_extApp(timeout=3)
@@ -1498,7 +1499,7 @@ class RTP_APP(RTP):
                     continue
 
                 except Exception as e:
-                    self.root.errmsg(e)
+                    self.root.errmsg(str(e), no_pop=True)
                     sys.stdout.flush()
                     continue
 
@@ -2021,7 +2022,8 @@ class RTP_APP(RTP):
 
     # --- user interface ------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_param(self, attr, val=None, reset_fn=None, echo=False):
+    def set_param(self, attr, val=None, reset_fn=None, echo=False,
+                  unk_warining=True):
         """
         When reset_fn is None, set_param is considered to be called from
         load_parameters function.
@@ -2029,11 +2031,10 @@ class RTP_APP(RTP):
 
         if attr == 'enable_RTP':
             if reset_fn is None and hasattr(self, 'ui_enableRTP_chb'):
-                self.ui_enableRTP_chb.setCheckState(val)
-
-            if hasattr(self, 'ui_enableRTP_chb'):
                 if val == 0:
                     self.ui_enableRTP_chb.setCheckState(0)
+                else:
+                    self.ui_enableRTP_chb.setCheckState(2)
 
         elif attr == 'work_dir':
             if val is None or not Path(val).is_dir():
@@ -2234,7 +2235,9 @@ class RTP_APP(RTP):
         else:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                if unk_warining:
+                    self.errmsg(f"{attr} is unrecognized parameter.",
+                                no_pop=True)
                 return
 
         setattr(self, attr, val)
@@ -2269,7 +2272,7 @@ class RTP_APP(RTP):
             # Command line
             var_lb = QtWidgets.QLabel("App command:")
             self.ui_extApp_cmd_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_cmd_lnEd.setText(self.extApp_cmd)
+            self.ui_extApp_cmd_lnEd.setText(str(self.extApp_cmd))
             self.ui_extApp_cmd_lnEd.editingFinished.connect(
                     lambda: self.set_param('extApp_cmd',
                                            self.ui_extApp_cmd_lnEd.text()))
