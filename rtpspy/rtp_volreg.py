@@ -474,9 +474,7 @@ class RTP_VOLREG(RTP):
 
             # show window
             self.plt_win.show()
-
             self.plt_win.canvas.draw()
-            self.plt_win.canvas.start_event_loop(0.005)
 
         # ---------------------------------------------------------------------
         def run(self):
@@ -508,14 +506,16 @@ class RTP_VOLREG(RTP):
                             ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
 
                     self.plt_win.canvas.draw()
-                    self.plt_win.canvas.start_event_loop(0.01)
 
                 except IndexError:
                     continue
 
                 except Exception as e:
-                    self.root.errmsg(str(e), no_pop=True)
-                    sys.stdout.flush()
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    errmsg = '{}, {}:{}'.format(
+                            exc_type, exc_tb.tb_frame.f_code.co_filename,
+                            exc_tb.tb_lineno)
+                    self.root.errmsg(str(e) + '\n' + errmsg, no_pop=True)
                     continue
 
             self.end_thread()

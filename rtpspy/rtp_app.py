@@ -1453,9 +1453,7 @@ class RTP_APP(RTP):
 
             # show window
             self.plt_win.show()
-
             self.plt_win.canvas.draw()
-            self.plt_win.canvas.start_event_loop(0.005)
 
         # ---------------------------------------------------------------------
         def run(self):
@@ -1493,7 +1491,6 @@ class RTP_APP(RTP):
                             ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
 
                     self.plt_win.canvas.draw()
-                    self.plt_win.canvas.start_event_loop(0.01)
 
                 except IndexError:
                     continue
