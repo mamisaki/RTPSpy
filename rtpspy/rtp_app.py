@@ -192,7 +192,6 @@ class RTP_APP(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         """ Ready the process. """
-
         self._proc_ready = True
 
         if not Path(self.ROI_orig).is_file():
@@ -1217,7 +1216,7 @@ class RTP_APP(RTP):
             self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
 
         if self.isAlive_extApp():
-            # Send END to exit to the 'cmd_loop' state
+            # Send END
             self.send_extApp('END;'.encode('utf-8'))
 
         if self.main_win is not None:
