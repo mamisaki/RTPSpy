@@ -14,7 +14,7 @@ dependencies:
   - pip
   - pyqt
   - pyserial
-  - python=3.9
+  - python
   - pytorch
   - scikit-sparse
   - torchvision
