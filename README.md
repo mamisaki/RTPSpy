@@ -9,7 +9,7 @@ The package inculudes;
 * A boilerplate graphical user interface (GUI) class integrating operations with RTPSpy.
 
 Please see the article.  
-https://www.biorxiv.org/content/10.1101/2021.12.13.472468v2
+https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full?utm_source=F-NTF&utm_medium=EMLX&utm_campaign=PRD_FEOPS_20170000_ARTICLE
 
 Also, see the article below for the evaluation of the system.   
 [Masaya Misaki and Jerzy Bodurka (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33)
@@ -67,7 +67,7 @@ pip install -e ~/RTPSpy
 ```
 
 ## Usage
-Please refer to https://www.biorxiv.org/content/10.1101/2021.12.13.472468v2 for the usage of the library.  
+Please refer to https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full?utm_source=F-NTF&utm_medium=EMLX&utm_campaign=PRD_FEOPS_20170000_ARTICLE for the usage of the library.  
 RTPSpy is not a complete application by itself but is supposed to be used as a part of a user's custom rtfMRI application.  
 Example applications using the RTPSpy library are shown below.  
 
