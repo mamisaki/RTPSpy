@@ -465,7 +465,7 @@ class RTP_APP(RTP):
         OK = True
         try:
             # --- 0. Copy func_orig to work_dir as vr_base_* ------------------
-            if func_orig.parent != self.work_dir or \
+            if Path(func_orig).parent != self.work_dir or \
                     not Path(func_orig).stem.startswith('vr_base_') or \
                     overwrite:
 
