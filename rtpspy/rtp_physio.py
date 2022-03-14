@@ -92,7 +92,7 @@ class RTP_PHYSIO(RTP):
         # --- Set serial port ---
         # port list
         self.dict_ser_port = {}
-        for pt in comports()[:3]:
+        for pt in comports():
             if pt.description in excl_port_list:
                 continue
             else:
