@@ -2234,7 +2234,7 @@ class RTP_APP(RTP):
                 if unk_warining:
                     self.errmsg(f"{attr} is unrecognized parameter.",
                                 no_pop=True)
-                return
+            return
 
         setattr(self, attr, val)
         if echo and self._verb:
