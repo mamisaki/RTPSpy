@@ -563,7 +563,7 @@ class DlgProgressBar(QtWidgets.QDialog):
         """
         Set progress bar value
         """
-        self.progBar.setValue(val)
+        self.progBar.setValue(int(val))
         if self.st_time is not None:
             ep = self.progBar.value()
             if ep > 0:
@@ -615,7 +615,7 @@ class DlgProgressBar(QtWidgets.QDialog):
                     bar_inc0 = min((time.time() - st) / ETA * bar_inc,
                                    bar_inc)
                     if np.floor(bar_inc0+bar_val0) != self.progBar.value():
-                        self.set_value(bar_inc0+bar_val0)
+                        self.set_value(int(bar_inc0+bar_val0))
 
                 QtWidgets.QApplication.instance().processEvents()
                 time.sleep(0.001)
