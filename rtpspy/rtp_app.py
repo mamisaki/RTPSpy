@@ -98,7 +98,7 @@ class RTP_APP(RTP):
             # self.fastSeg_batch_size = int((total_memory-1e9) // (6 * 1e8))
         else:
             self.no_FastSeg = True
-            self.fastSeg_batch_size = 16
+            self.fastSeg_batch_size = 8
 
         # The default processing times for proc_anat progress bar (seconds)
         self.proc_times = {
@@ -2979,7 +2979,7 @@ if __name__ == '__main__':
     # --- Make mask images ----------------------------------------------------
     no_FastSeg = False
     if not no_FastSeg:
-        rtp_app.fastSeg_batch_size = 24  # Adjust the size for GPU memory
+        rtp_app.fastSeg_batch_size = 8  # Adjust the size for GPU memory
 
     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
                        template=template_f, ROI_template=ROI_template_f,
