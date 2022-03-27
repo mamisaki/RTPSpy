@@ -63,7 +63,7 @@ pip install -e ~/RTPSpy
 
 ### Add user to dialout group to access serial port
 ```
-usermod -a -G $USER dialout
+sudo usermod -a -G dialout $USER
 ```
 
 ### Test the system
