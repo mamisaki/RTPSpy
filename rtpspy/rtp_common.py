@@ -788,7 +788,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
     cmd = 'afni'
     if rt:
         cmd += f" -rt -DAFNI_TRUSTHOST={TRUSTHOST} -DAFNI_REALTIME_WRITEMODE=1"
-    cmd += " -yesplugouts"
+    cmd += " -yesplugouts -DAFNI_IMSAVE_WARNINGS=NO"
     cmd += f" -com 'OPEN_WINDOW A geom=+{xpos}+{ypos}'"
     cmd += f" {boot_dir}"
     subprocess.call(cmd, shell=True)
