@@ -61,7 +61,7 @@ conda activate RTPSpy
 pip install -e ~/RTPSpy
 ```
 
-### Add user to dialout group to access serial port
+### (Linux) Add user to dialout group to access serial port
 ```
 sudo usermod -a -G dialout $USER
 ```
