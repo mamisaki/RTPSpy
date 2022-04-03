@@ -1278,7 +1278,7 @@ class RTP_APP(RTP):
             xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
 
         # Check if afni is ready
-        cmd0 = f"afni"
+        cmd0 = "afni"
         pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
                               stdout=subprocess.PIPE)
         procs = pret.stdout
