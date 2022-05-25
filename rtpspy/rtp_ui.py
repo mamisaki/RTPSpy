@@ -350,10 +350,10 @@ class RTP_UI(QtWidgets.QMainWindow):
         workDirHBox.addWidget(self.btnSetWorkDir)
 
         # --- Checkboxes ------------------------------------------------------
-        grpBoxChkBoxesp = QtWidgets.QGroupBox("GPU/Physio/Plot",
-                                              self.mainWidget)
-        vBoxTop.addWidget(grpBoxChkBoxesp)
-        self.ui_hChkBoxes = QtWidgets.QHBoxLayout(grpBoxChkBoxesp)
+        self.grpBoxChkBoxes = QtWidgets.QGroupBox("GPU/Physio/Plot",
+                                                   self.mainWidget)
+        vBoxTop.addWidget(self.grpBoxChkBoxes)
+        self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
         if hasattr(self, 'chbUseGPU'):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
 
@@ -402,7 +402,7 @@ class RTP_UI(QtWidgets.QMainWindow):
         # --- Parameter list ---
         vBoxListParam = QtWidgets.QVBoxLayout(self.listAllParams)
         vBoxListParam.addWidget(self.listParam_txtBrws)
-        self.options_tab.addTab(self.listAllParams, "List parameters")
+        self.options_tab.addTab(self.listAllParams, "Parameter list")
 
         # --- Experiment control space ----------------------------------------
         vBoxTop.addLayout(self.hBoxExpCtrls)
