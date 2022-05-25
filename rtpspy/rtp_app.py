@@ -89,7 +89,9 @@ class RTP_APP(RTP):
         self.RTP_mask = ''
         self.GSR_mask = ''
         self.enable_RTP = 0
-
+        
+        self.AFNIRT_TRUSTHOST = None
+        
         # mask creation parameter
         if torch.cuda.is_available():
             self.no_FastSeg = False
@@ -1276,8 +1278,8 @@ class RTP_APP(RTP):
             xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
 
         # Check if afni is ready
-        cmd0 = f"afni .* {work_dir}"
-        pret = subprocess.run(f"pgrep -af '{cmd0}'", shell=True,
+        cmd0 = "afni"
+        pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
                               stdout=subprocess.PIPE)
         procs = pret.stdout
         procs = [ll for ll in procs.decode().rstrip().split('\n')
@@ -1285,7 +1287,8 @@ class RTP_APP(RTP):
                  len(ll) > 0]
         if len(procs) == 0:
             rt = (work_dir == self.rtp_objs['WATCH'].watch_dir)
-            boot_afni(main_win=self.main_win, boot_dir=work_dir, rt=rt)
+            boot_afni(main_win=self.main_win, boot_dir=work_dir, rt=rt,
+                      TRUSTHOST=self.AFNIRT_TRUSTHOST)
 
         # Run plugout_drive to drive afni
         cmd = 'plugout_drive'

@@ -14,6 +14,7 @@ import re
 import datetime
 from datetime import timedelta
 import subprocess
+import shlex
 from multiprocessing import Value, Array, Lock
 import pickle
 import time
@@ -713,7 +714,7 @@ def make_design_matrix(stim_times, scan_len, TR, out_f):
         cmd += " -stim_times {} '{}' '{}'".format(ii, times, opt)
         cmd += " -stim_label {} {}".format(ii, name)
 
-    pr = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
+    pr = subprocess.run(shlex.split(cmd), stdout=subprocess.PIPE)
     out = pr.stdout.decode()
 
     ma = re.search(r'\# \>\n(.+)\n# \<', out, re.MULTILINE | re.DOTALL)
@@ -788,7 +789,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
     cmd = 'afni'
     if rt:
         cmd += f" -rt -DAFNI_TRUSTHOST={TRUSTHOST} -DAFNI_REALTIME_WRITEMODE=1"
-    cmd += " -yesplugouts"
+    cmd += " -yesplugouts -DAFNI_IMSAVE_WARNINGS=NO"
     cmd += f" -com 'OPEN_WINDOW A geom=+{xpos}+{ypos}'"
     cmd += f" {boot_dir}"
     subprocess.call(cmd, shell=True)
