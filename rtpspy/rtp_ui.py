@@ -350,10 +350,10 @@ class RTP_UI(QtWidgets.QMainWindow):
         workDirHBox.addWidget(self.btnSetWorkDir)
 
         # --- Checkboxes ------------------------------------------------------
-        self.grpBoxChkBoxesp = QtWidgets.QGroupBox("GPU/Physio/Plot",
+        self.grpBoxChkBoxes = QtWidgets.QGroupBox("GPU/Physio/Plot",
                                                    self.mainWidget)
-        vBoxTop.addWidget(self.grpBoxChkBoxesp)
-        self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxesp)
+        vBoxTop.addWidget(self.grpBoxChkBoxes)
+        self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
         if hasattr(self, 'chbUseGPU'):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
 
