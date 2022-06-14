@@ -99,8 +99,8 @@ class RTP_SCANONSET(RTP):
                     self.dict_onsig_port[desc] = pt.device
 
         # parallel port
-        for pp in Path('/dev').glob('parport*'):
-            self.dict_onsig_port[pp.name] = str(pp)
+        #for pp in Path('/dev').glob('parport*'):
+        #    self.dict_onsig_port[pp.name] = str(pp)
 
         #  Unix domain socket
         uds_sock_file = '/tmp/rtp_uds_socket'
