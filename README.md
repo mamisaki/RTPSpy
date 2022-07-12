@@ -21,6 +21,16 @@ RTPSpy has been developed on a Linux system (Ubuntu). It can also be run on Mac 
 ### External tools
 RTPSpy is assumed to be run on a miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
 Install either one referring to these sites.   
+
+Be sure to complete the setup so that you can call 'conda' command in a terminal.
+The conda initilization script should be written in ~/.bashrc file. You may have to restart your terminal application to activate the conda environment.   
+If you have not answered 'yes' to the 'Do you wish the installer to initialize ...' question at the end of the installation, you will need to run below to activate the conda command,   
+(If you use anaconda, 'miniconda3' in the below command should be 'anaconda3’. 'YOUR_HOME_DIRECTORY' should be replaced by the full path of you home. Shell variable $HOME does not work.)   
+```
+eval “$(YOUR_HOME_DIRECTORY/miniconda3/bin/conda shell.bash hook)” 
+conda init
+```
+
 A yaml file describing required python libraries that can be used to install the libraries in an anaconda environment is provided with the package for easy installation.  
 
 AFNI (https://afni.nimh.nih.gov/) needs to be installed to run RTPSpy library methods. See https://afni.nimh.nih.gov/pub/dist/doc/htmldoc/background_install/main_toc.html for the installation process for each system.
