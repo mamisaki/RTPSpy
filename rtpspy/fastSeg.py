@@ -13,6 +13,7 @@ import numpy as np
 import argparse
 from pathlib import Path
 import subprocess
+import shlex
 from platform import uname
 import shutil
 
@@ -119,14 +120,15 @@ def run_FastSurferCNN(eval_cmd, fastsurfer_d, in_f, prefix, batch_size):
             out_f_tmp.unlink()
 
     else:
-        cmd = f"cd {fastsurfer_d} && "
-        cmd += f"python {eval_cmd.relative_to(fastsurfer_d)}"
-        cmd += f" --in_name {in_f} --out_name {fsSeg_mgz} --simple_run"
+        work_dir = Path(fsSeg_mgz).parent
+        cmd = f"python {eval_cmd.relative_to(fastsurfer_d)}"
+        cmd += f" --in_name {in_f} --conf_name {work_dir / 'orig.mgz'}"
+        cmd += f" --out_name {fsSeg_mgz} --simple_run"
         cmd += f" --batch_size {batch_size}"
         if no_cuda:
             cmd += ' --no_cuda'
 
-        subprocess.check_call(cmd, shell=True)
+        subprocess.check_call(shlex.split(cmd), cwd=fastsurfer_d)
 
     return fsSeg_mgz
 
@@ -218,6 +220,13 @@ if __name__ == "__main__":
     # --- Clean intermediate files ---
     if Path(fsSeg_mgz).is_file():
         Path(fsSeg_mgz).unlink()
+
+    work_dir = Path(fsSeg_mgz).parent
+    for mgz in work_dir.glob('*.mgz'):
+        mgz.unlink()
+
+    if (work_dir / 'orig').is_dir():
+        shutil.rmtree((work_dir / 'orig'))
 
     if Path(opts.in_f).stat().st_ino != Path(in_f).stat().st_ino and \
             in_f.is_file():
