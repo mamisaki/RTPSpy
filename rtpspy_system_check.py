@@ -65,7 +65,7 @@ if __name__ == '__main__':
         if torch.cuda.is_available():
             print('GPU is utilized.')
             no_FastSeg = False
-            rtp_app.fastSeg_batch_size = 8  # Adjust the size according to GPU
+            rtp_app.fastSeg_batch_size = 4  # Adjust the size according to GPU
         else:
             print('GPU is not avilable.')
             no_FastSeg = True

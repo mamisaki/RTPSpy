@@ -41,7 +41,7 @@ class RTP_IMGPROC(RTP):
         self.main_win = main_win
         self.verb = verb
 
-        self.fastSeg_batch_size = 16
+        self.fastSeg_batch_size = 4
 
         # Set the default processing times for proc_anat progress bar
         self.proc_times = {

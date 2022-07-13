@@ -132,7 +132,7 @@ class RTP_UI(QtWidgets.QMainWindow):
         # --- Watch/Work dir controls -----------------------------------------
         # Watching Directory Label
         self.labelWatchDir = QtWidgets.QLabel(self.mainWidget)
-        self.labelWatchDir.setText("Watching directory")
+        self.labelWatchDir.setText("rtfMRI watching directory")
 
         # Watching Directory LineEdit
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)

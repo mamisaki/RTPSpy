@@ -43,7 +43,7 @@ if __name__ == '__main__':
     rtp_app = RTP_APP(work_dir=work_dir)
 
     # --- Make mask images ------------------------------------------------
-    rtp_app.fastSeg_batch_size = 8  # Adjust the size according to GPU
+    rtp_app.fastSeg_batch_size = 4  # Adjust the size according to GPU
     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'", anat_orig=anat_f,
                        template=template_f, ROI_template=ROI_template_f,
                        overwrite=False)

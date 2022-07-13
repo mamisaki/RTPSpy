@@ -89,18 +89,18 @@ class RTP_APP(RTP):
         self.RTP_mask = ''
         self.GSR_mask = ''
         self.enable_RTP = 0
-        
+
         self.AFNIRT_TRUSTHOST = None
-        
+
         # mask creation parameter
         if torch.cuda.is_available():
             self.no_FastSeg = False
-            self.fastSeg_batch_size = 8
+            self.fastSeg_batch_size = 4
             # total_memory = torch.cuda.get_device_properties(0).total_memory
             # self.fastSeg_batch_size = int((total_memory-1e9) // (6 * 1e8))
         else:
             self.no_FastSeg = True
-            self.fastSeg_batch_size = 8
+            self.fastSeg_batch_size = 4
 
         # The default processing times for proc_anat progress bar (seconds)
         self.proc_times = {
