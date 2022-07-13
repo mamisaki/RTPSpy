@@ -186,7 +186,7 @@ class RTP_SIM(RTP_APP):
 
 # %% run_simulation
 def run_simulation(raw_fmri_f, anat_mri_f, rtp_param_f=None,
-                   outprefix='rtpsim', fastSeg_batch_size=8, template_f=None,
+                   outprefix='rtpsim', fastSeg_batch_size=1, template_f=None,
                    ROI_template_f=None, verb=True, overwrite=False):
     """
     Run RTP simulation

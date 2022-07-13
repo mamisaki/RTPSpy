@@ -95,12 +95,12 @@ class RTP_APP(RTP):
         # mask creation parameter
         if torch.cuda.is_available():
             self.no_FastSeg = False
-            self.fastSeg_batch_size = 4
+            self.fastSeg_batch_size = 1
             # total_memory = torch.cuda.get_device_properties(0).total_memory
             # self.fastSeg_batch_size = int((total_memory-1e9) // (6 * 1e8))
         else:
             self.no_FastSeg = True
-            self.fastSeg_batch_size = 4
+            self.fastSeg_batch_size = 1
 
         # The default processing times for proc_anat progress bar (seconds)
         self.proc_times = {
@@ -2982,7 +2982,7 @@ if __name__ == '__main__':
     # --- Make mask images ----------------------------------------------------
     no_FastSeg = False
     if not no_FastSeg:
-        rtp_app.fastSeg_batch_size = 8  # Adjust the size for GPU memory
+        rtp_app.fastSeg_batch_size = 1  # Adjust the size for GPU memory
 
     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
                        template=template_f, ROI_template=ROI_template_f,
