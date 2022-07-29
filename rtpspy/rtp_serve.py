@@ -399,9 +399,15 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
         host_addr = 'localhost'
 
     cmd += f" --request_host {host_addr}:{port}"
-    pr = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE)
-    time.sleep(3)  # Wait for opening the process
+    try:
+        pr = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+        time.sleep(3)  # Wait for opening the process
+    except Exception as e:
+        errmg = f"Failed: {e}"
+        if verb:
+            sys.stderr.write(f"{errmg}\n")
+        return None, errmg
 
     if pr.poll() is not None:
         errmg = f"Failed: {cmd}"
