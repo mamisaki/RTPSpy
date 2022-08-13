@@ -19,6 +19,7 @@ dependencies:
   - scikit-sparse
   - torchvision
   - watchdog
+  - dicom2nifti
   - pip:
     - antspyx
     - pyparallel

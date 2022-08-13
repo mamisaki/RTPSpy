@@ -169,7 +169,7 @@ class RTP_UI(QtWidgets.QMainWindow):
 
         # --- Devices and plot checkbox ---------------------------------------
         # PHYSIO
-        if 'PHYSIO' in rtp_objs and not rtp_objs['PHYSIO'].not_available:
+        if 'PHYSIO' in rtp_objs and  not rtp_objs['PHYSIO'].not_available:
             self.chbRecPhysio = QtWidgets.QCheckBox('Recording Resp/ECG',
                                                     self.mainWidget)
             self.chbRecPhysio.setCheckState(0)
