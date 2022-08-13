@@ -20,6 +20,8 @@ from functools import partial
 import socket
 import traceback
 import signal
+import shutil
+import json
 
 import numpy as np
 import nibabel as nib
@@ -129,6 +131,7 @@ class RTP_APP(RTP):
         # Simulation data
         self.simEnabled = False
         self.simfMRIData = ''
+        self.simfMRIDataDir = ''
         self.simECGData = ''
         self.simRespData = ''
 
@@ -306,6 +309,31 @@ class RTP_APP(RTP):
         This is called at the beginign of end_run()
         """
         pass
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def run_dcm2nii(self):
+        # Select dicom directory
+        watch_dir = str(Path(self.rtp_objs['WATCH'].watch_dir).absolute())
+        dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            self.main_win, 'Select dicom file directory', watch_dir)
+
+        if dcm_dir == '':
+            return
+
+        out_dir = Path(self.work_dir).absolute()
+        if out_dir == '':
+            out_dir = './'
+        cmd = f"dcm2niix_afni -o {out_dir} {dcm_dir}"
+        try:
+            ostr = subprocess.check_output(shlex.split(cmd))
+        except Exception as e:
+            self.errmsg(f"Error at dcm2niix_afni: {e}")
+
+        QtWidgets.QMessageBox.information(
+            self.main_win, 'dcm2niix', ostr.decode(),
+            QtWidgets.QMessageBox.Ok)
+
+        return
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_masks(self, func_orig=None, anat_orig=None, template=None,
@@ -514,6 +542,40 @@ class RTP_APP(RTP):
                     f"Save base function image as {dst_f.name}" +
                     f" in {self.work_dir}.\n")
 
+                # If json file exists copy it too
+                src_f = src_f.replace("'", "")
+                if '.gz' in Path(src_f).suffixes:
+                    src_f_stem = Path(Path(src_f).stem).stem
+                else:
+                    src_f_stem = Path(src_f).stem
+
+                json_f = Path(src_f).parent / (src_f_stem + '.json')
+                if json_f.is_file():
+                    if '.gz' in dst_f.suffixes:
+                        dst_f_stem = Path(Path(dst_f).stem).stem
+                    else:
+                        dst_f_stem = dst_f.stem
+                    dst_json_f = Path(dst_f).parent / (dst_f_stem + '.json')
+                    shutil.copy(json_f, dst_json_f)
+                else:
+                    # Save slice timing
+                    src_f = re.sub('\[\d+\]' , '', src_f)
+                    header = nib.load(src_f).header
+
+                    slice_timing = []
+                    if hasattr(header, 'get_slice_times'):
+                        try:
+                            slice_timing = header.get_slice_times()
+                        except nib.spatialimages.HeaderDataError:
+                            pass
+                    elif hasattr(header, 'info') and 'TAXIS_FLOATS' in header.info:
+                        slice_timing = header.info['TAXIS_OFFSETS']
+
+                    if len(slice_timing):
+                        img_info = {'SliceTiming': slice_timing}
+                        with open(json_f, 'w') as fd:
+                            json.dump(img_info, fd, indent=4)
+
                 if progress_bar is not None:
                     progress_bar.add_desc('\n')
 
@@ -593,10 +655,12 @@ class RTP_APP(RTP):
                         self.work_dir, self.alAnat, self.template,
                         total_ETA, progress_bar=progress_bar, ask_cmd=ask_cmd,
                         overwrite=overwrite)
+            else:
+                warp_params = None
 
             # --- 5. Apply warp -----------------------------------------------
             # ROI_template
-            if Path(self.ROI_template).is_file():
+            if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
                     self.work_dir, self.func_orig, self.ROI_template,
                     total_ETA, warp_params, interpolator=self.ROI_resample,
@@ -760,6 +824,10 @@ class RTP_APP(RTP):
                                     progress_bar.close()
                                     return -1
                         else:
+                            # Set slice timing
+                            pobj.set_param('slice_timing_from_sample',
+                                           self.func_orig)
+
                             Nslice = nib.load(self.func_orig).shape[2]
                             if len(pobj.slice_timing) != Nslice:
                                 if self.main_win is not None:
@@ -1101,6 +1169,11 @@ class RTP_APP(RTP):
                 self.ui_startSim_btn.setEnabled(True)
                 del self.mri_sim
                 self.mri_sim = None
+
+            if hasattr(self, 'watch_imgType_orig'):
+                self.rtp_objs['WATCH'].set_param('imgType',
+                                                 self.watch_imgType_orig)
+                del self.watch_imgType_orig
 
             if hasattr(self, 'watch_suffix_pat_orig'):
                 self.rtp_objs['WATCH'].set_param('watch_file_pattern',
@@ -1684,7 +1757,7 @@ class RTP_APP(RTP):
 
     # --- Simulation ----------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def start_scan_simulation(self):
+    def start_rtMRI_simulation(self):
         """ Start scan simulation by copying a volume to watch_dir
         """
 
@@ -1693,15 +1766,31 @@ class RTP_APP(RTP):
 
         # --- Set simulation parameters ---------------------------------------
         # MRI data
-        mri_src = self.simfMRIData
+        if self.simfMRIData != '' and Path(self.simfMRIData).is_file():
+            mri_src = self.simfMRIData
+        elif self.simfMRIDataDir != '' and Path(self.simfMRIDataDir).is_dir():
+            mri_src = self.simfMRIDataDir
+        else:
+            self.errmsg("fMRI data is not found.")
+            return
+
         dst_dir = self.rtp_objs['WATCH'].watch_dir
 
-        # Change the watch file pattern
+        # Change the watch image type
+        self.watch_imgType_orig = self.rtp_objs['WATCH'].imgType
         self.watch_suffix_pat_orig = self.rtp_objs['WATCH'].watch_file_pattern
 
-        sim_suffix = 'sim_fMRI_{num:05d}.nii.gz'
-        sim_watch_pat = r'sim_fMRI_\d+.nii.gz'
-        self.rtp_objs['WATCH'].set_param('watch_file_pattern', sim_watch_pat)
+        if mri_src.is_file():
+            if 'BRIK' in mri_src.name or 'HEAD' in mri_src.name:
+                self.rtp_objs['WATCH'].set_param('imgType', 'AFNI BRIK')
+            elif '.nii' in mri_src.name:
+                self.rtp_objs['WATCH'].set_param('imgType', 'NIfTI')
+        elif mri_src.is_dir():
+            if len([ff for ff in mri_src.glob('i*')
+                    if re.match('i\d+', str(ff.name))]):
+                self.rtp_objs['WATCH'].set_param('imgType', 'GE DICOM')
+            elif len(mri_src.glob('*.dcm')):
+                self.rtp_objs['WATCH'].set_param('imgType', 'Siemens Mosaic')
 
         # Restart RTP_WATCH observer
         if hasattr(self.rtp_objs['WATCH'], 'observer') and \
@@ -1713,7 +1802,7 @@ class RTP_APP(RTP):
         if self.mri_sim is not None:
             del self.mri_sim
 
-        self.mri_sim = rtMRISim(mri_src, dst_dir, sim_suffix)
+        self.mri_sim = rtMRISim(mri_src, dst_dir)
         self.mri_sim._std_out = self._std_out
         self.mri_sim._err_out = self._err_out
 
@@ -1770,14 +1859,17 @@ class RTP_APP(RTP):
                 # Wait for physio   start
                 time.sleep(1)
 
-        self.mri_sim.run_MRI('start')
+        imgType = self.rtp_objs['WATCH'].imgType
+        self.mri_sim.run_MRI('start', imgType)
         while self.mri_sim.mri_feeder is None or \
                 not self.mri_sim.mri_feeder.is_alive():
-            # Wait for physio   start
+            # Wait for physio start
             time.sleep(1)
 
         self.rtp_objs['SCANONSET'].manual_start()
         self.ui_startSim_btn.setEnabled(False)
+        if not self.ui_quit_btn.isEnabled():
+            self.ui_quit_btn.setEnabled(True)
 
     # --- Communication with an external application via RTP_SERVE ----------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -2147,27 +2239,15 @@ class RTP_APP(RTP):
                     if 'template' in attr and Path(self.template).is_file():
                         startdir = Path(self.template).parent
 
-                    elif attr in ('anat_orig',  'func_orig'):
-                        if Path(self.rtp_objs['WATCH'].watch_dir).is_dir():
-                            startdir = self.rtp_objs['WATCH'].watch_dir
-
-                    elif attr == 'simfMRIData':
-                        if Path(self.rtp_objs['WATCH'].watch_dir).is_dir():
-                            startdir = self.rtp_objs['WATCH'].watch_dir
-
-                    elif attr == 'simECGData':
+                    if attr == 'simECGData':
                         if Path(self.simfMRIData).parent.is_dir():
                             startdir = Path(self.simfMRIData).parent
-                        elif Path(self.rtp_objs['WATCH'].watch_dir).is_dir():
-                            startdir = self.rtp_objs['WATCH'].watch_dir
 
                     elif attr == 'simRespData':
                         if Path(self.simECGData).parent.is_dir():
                             startdir = Path(self.simECGData).parent
                         elif Path(self.simfMRIData).parent.is_dir():
                             startdir = Path(self.simfMRIData).parent
-                        elif Path(self.rtp_objs['WATCH'].watch_dir).is_dir():
-                            startdir = self.rtp_objs['WATCH'].watch_dir
                     else:
                         startdir = self.work_dir
 
@@ -2201,6 +2281,45 @@ class RTP_APP(RTP):
                 if hasattr(self, f"ui_{attr}_lnEd"):
                     obj = getattr(self, f"ui_{attr}_lnEd")
                     obj.setText(str(val))
+
+        elif attr == 'simfMRIDataDir':
+            if reset_fn is not None:
+                # Set start directory
+                startdir = self.work_dir
+                if val is not None and os.path.isdir(val):
+                    startdir = val
+
+                dlgMdg = "RTP_APP: Select fMRI data directory for simulation"
+                simSrcDir = QtWidgets.QFileDialog.getExistingDirectory(
+                    self.main_win, "Select directory", str(startdir))
+
+                if simSrcDir == '':
+                    return -1
+
+                val = simSrcDir
+                if reset_fn:
+                    reset_fn(val)
+
+                val = Path(val).absolute()
+            else:
+                if val is None:
+                    val = ''
+                else:
+                    fpath = Path(val).absolute()
+                    fpath = fpath.parent / \
+                        re.sub("\'", '',
+                               re.sub(r"\'*\[\d+\]\'*$", '', fpath.name))
+                    if Path(fpath).is_dir():
+                        val = Path(val).absolute()
+                    else:
+                        val = ''
+
+                if hasattr(self, f"ui_{attr}_lnEd"):
+                    obj = getattr(self, f"ui_{attr}_lnEd")
+                    obj.setText(str(val))
+
+
+
 
         elif attr == 'simEnabled':
             if hasattr(self, 'ui_startSim_btn'):
@@ -2347,8 +2466,15 @@ class RTP_APP(RTP):
         self.ui_maskCreation_fLayout.addRow(self.ui_MaskCreate_grpBx)
         self.ui_objs.append(self.ui_MaskCreate_grpBx)
 
-        # -- Anatomy orig image --
+        # --- dcm2nii ---
         ri = 0
+        self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2nii')
+        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
+        gLayout = self.ui_MaskCreate_grpBx.layout()
+        gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
+
+        # -- Anatomy orig image --
+        ri += 1
         var_lb = QtWidgets.QLabel("Anatomy image :")
         MaskCreate_gLayout.addWidget(var_lb, ri, 0)
 
@@ -2757,7 +2883,7 @@ class RTP_APP(RTP):
 
         # --- Simulation tab -------------------------------------------------
         self.ui_simulationTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_simulationTab, 'Simulation')
+        self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
         simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
 
         # enabled
@@ -2769,8 +2895,8 @@ class RTP_APP(RTP):
         simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
         self.ui_objs.append(self.ui_simEnabled_rdb)
 
-        # --- Simulation MRI data ---
-        var_lb = QtWidgets.QLabel("fMRI data :")
+        # --- Simulation MRI data 4D file ---
+        var_lb = QtWidgets.QLabel("fMRI data 4D file:")
         simulation_gLayout.addWidget(var_lb, 1, 0)
 
         self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
@@ -2794,9 +2920,34 @@ class RTP_APP(RTP):
                              self.ui_simfMRIData_btn,
                              self.ui_simfMRIData_del_btn])
 
+        # --- Simulation MRI data dicom directory ---
+        var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
+        simulation_gLayout.addWidget(var_lb, 2, 0)
+
+        self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
+        self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
+        self.ui_simfMRIDataDir_lnEd.setStyleSheet(
+            'background: white; border: 0px none;')
+        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
+
+        self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
+        self.ui_simfMRIDataDir_btn.clicked.connect(
+                lambda: self.set_param('simfMRIDataDir', None,
+                                       self.ui_simfMRIDataDir_lnEd.setText))
+        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
+
+        self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_simfMRIDataDir_del_btn.clicked.connect(
+            lambda: self.delete_file('simfMRIDataDir', keepfile=True))
+        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
+
+        self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
+                             self.ui_simfMRIDataDir_btn,
+                             self.ui_simfMRIDataDir_del_btn])
+
         # --- COM port list ---
         var_lb = QtWidgets.QLabel("Simulation physio signal port :")
-        simulation_gLayout.addWidget(var_lb, 2, 0)
+        simulation_gLayout.addWidget(var_lb, 3, 0)
 
         self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
         self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
@@ -2805,30 +2956,30 @@ class RTP_APP(RTP):
                 self.set_param('simPhysPort',
                                self.ui_simPhysPort_cmbBx.currentText(),
                                self.ui_simPhysPort_cmbBx.setCurrentText))
-        simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 2, 1, 1, 3)
+        simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
 
         self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
 
         # --- ECG data ---
         var_lb = QtWidgets.QLabel("ECG data :")
-        simulation_gLayout.addWidget(var_lb, 3, 0)
+        simulation_gLayout.addWidget(var_lb, 4, 0)
 
         self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
         self.ui_simECGData_lnEd.setReadOnly(True)
         self.ui_simECGData_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 3, 1)
+        simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
 
         self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
         self.ui_simECGData_btn.clicked.connect(
             lambda: self.set_param('simECGData', None,
                                    self.ui_simECGData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simECGData_btn, 3, 2)
+        simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
 
         self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
         self.ui_simECGData_del_btn.clicked.connect(
             lambda: self.delete_file('simECGData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 3, 3)
+        simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
 
         self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
                              self.ui_simECGData_btn,
@@ -2836,24 +2987,24 @@ class RTP_APP(RTP):
 
         # --- Resp data ---
         var_lb = QtWidgets.QLabel("Respiration data :")
-        simulation_gLayout.addWidget(var_lb, 4, 0)
+        simulation_gLayout.addWidget(var_lb, 5, 0)
 
         self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
         self.ui_simRespData_lnEd.setReadOnly(True)
         self.ui_simRespData_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 4, 1)
+        simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
 
         self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
         self.ui_simRespData_btn.clicked.connect(
             lambda: self.set_param('simRespData', None,
                                    self.ui_simRespData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simRespData_btn, 4, 2)
+        simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
 
         self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
         self.ui_simRespData_del_btn.clicked.connect(
             lambda: self.delete_file('simRespData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 4, 3)
+        simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
 
         self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
                              self.ui_simRespData_btn,
@@ -2861,11 +3012,11 @@ class RTP_APP(RTP):
 
         # --- Start simulation button ---
         self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
-        self.ui_startSim_btn.clicked.connect(self.start_scan_simulation)
+        self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
         self.ui_startSim_btn.setStyleSheet(
             "background-color: rgb(94,63,153);"
             "height: 20px;")
-        simulation_gLayout.addWidget(self.ui_startSim_btn, 5, 0, 1, 4)
+        simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
 
         # --- Setup experiment button -----------------------------------------
         self.ui_setRTP_btn = QtWidgets.QPushButton('RTP setup')

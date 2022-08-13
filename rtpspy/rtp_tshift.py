@@ -14,11 +14,10 @@ import time
 import copy
 import traceback
 import warnings
+import json
 
-import pydicom
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from nibabel.nicom.dicomreaders import mosaic_to_nii
 
 import numpy as np
 import nibabel as nib
@@ -280,11 +279,7 @@ class RTP_TSHIFT(RTP):
         """
 
         if isinstance(fmri_img, string_types) or isinstance(fmri_img, Path):
-            try:
-                img = nib.load(fmri_img)
-            except nib.filebasedimages.ImageFileError:
-                img = mosaic_to_nii(pydicom.read_file(fmri_img))
-
+            img = nib.load(fmri_img)
             vol_shape = img.shape[:3]
             header = img.header
             fname = fmri_img
@@ -293,17 +288,36 @@ class RTP_TSHIFT(RTP):
             fname = fmri_img.get_filename()
             header = fmri_img.header
 
+        # Set json
+        if '.gz' in Path(fname).suffixes:
+            fname_stem = Path(Path(fname).stem).stem
+        else:
+            fname_stem = Path(fname).stem
+        json_f = Path(fname).parent / (fname_stem + '.json')
+
+        slice_timing = []
         if hasattr(header, 'get_slice_times'):
             try:
-                self.slice_timing = header.get_slice_times()
+                slice_timing = header.get_slice_times()
             except nib.spatialimages.HeaderDataError:
-                self.errmsg(f'{fname} has no slice timing info.')
-                return
+                pass
         elif hasattr(header, 'info') and 'TAXIS_FLOATS' in header.info:
-            self.slice_timing = header.info['TAXIS_OFFSETS']
-        else:
+            slice_timing = header.info['TAXIS_OFFSETS']
+
+        if len(slice_timing) == 0 and json_f.is_file():
+            # check json file
+            with open(json_f) as fd:
+                img_info = json.load(fd)
+            try:
+                slice_timing = img_info['SliceTiming']
+            except nib.spatialimages.HeaderDataError:
+                pass
+
+        if len(slice_timing) == 0:
             self.errmsg(f'{fname} has no slice timing info.')
             return
+
+        self.slice_timing = slice_timing
 
         if self._verb:
             msg = f'Slice timing = {self.slice_timing}.'

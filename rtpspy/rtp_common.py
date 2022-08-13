@@ -345,7 +345,7 @@ class RTP(object):
         # Add file number postfix
         fn = 1
         while os.path.isfile(savefname + '.nii.gz'):
-            savefname = savefname0 + '_{}'.format(fn)
+            savefname = f"{savefname0}_{fn}"
             fn += 1
         savefname += '.nii.gz'
         savefname = Path(savefname)

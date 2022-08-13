@@ -46,40 +46,31 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
         self.server.recv_queue.queue.clear()
 
         # --- Request handling loop -------------------------------------------
-        partial_recv_data = b''
         self.request.settimeout(0.001)
+        partial_recv_data = b''
 
         # Keep running until a client closes the connection.
         connected = True
         while not self.server.kill and connected:
-            # --- Receiving data ----------------------------------------------
+            # --- Receiving data ---
+            recv_data = partial_recv_data
             recvs = []
-            while True:  # Receiving with a message comes
-                # When data was processed at each reception with a very
-                # short interval (e.g., NF signal sent at retrospective
-                # regression), the server was down at memory reallocation
-                # (list extension) the multithread-shared variable
-                # (self.server.NF_signals).
-                # To avoid this, messages coming in very short intervals are
-                # processed as one chunk.
+            while True:  # loop until socket.timeout to collect all data
                 try:
-                    recv_data = partial_recv_data + self.request.recv(4096)
-                    if not recv_data:
-                        # recv_data is False when the connection is closed.
-                        connected = False
-                        break
-
-                    if len(self.server.data_sep) > 0:
-                        # split the messages by self.server.data_sep
-                        sep = self.server.data_sep.encode('utf-8')
-                        recvs.extend(recv_data.split(sep))
-                    else:
-                        recvs.append(recv_data)
-
-                    time.sleep(0.001)  # message interval to concatenate
-
+                    recv_data += self.request.recv(1024)
                 except socket.timeout:
                     break
+
+                # To concatenate messages with short interval
+                time.sleep(0.001)
+
+            if len(recv_data):
+                if len(self.server.data_sep) > 0:
+                    # split the messages by self.server.data_sep
+                    sep = self.server.data_sep.encode('utf-8')
+                    recvs.extend(recv_data.split(sep))
+                else:
+                    recvs.append(recv_data)
 
             if self.server.verb:
                 if len(recvs):
@@ -87,7 +78,8 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
 
             # Process the received data list
             NF_data = []
-            for data in recvs:
+            while len(recvs):
+                data = recvs.pop(0)
                 if len(data) == 0:
                     continue
 
@@ -100,6 +92,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                     # Check if data is complete
                     pkldata = data.replace(ma.group().encode('utf-8'),
                                            ''.encode('utf-8'))
+
                     if len(pkldata) < dsize:
                         # Not complete data.
                         # Save the current data in partial_recv_data
@@ -399,15 +392,9 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
         host_addr = 'localhost'
 
     cmd += f" --request_host {host_addr}:{port}"
-    try:
-        pr = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE)
-        time.sleep(3)  # Wait for opening the process
-    except Exception as e:
-        errmg = f"Failed: {e}"
-        if verb:
-            sys.stderr.write(f"{errmg}\n")
-        return None, errmg
+    pr = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+    time.sleep(3)  # Wait for opening the process
 
     if pr.poll() is not None:
         errmg = f"Failed: {cmd}"

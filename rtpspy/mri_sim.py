@@ -13,10 +13,13 @@ import time
 import struct
 import socket
 import threading
+import shutil
 
 import numpy as np
 import nibabel as nib
 import serial
+import pydicom
+
 try:
     from .rtp_common import RTP
 except Exception:
@@ -30,23 +33,41 @@ class MRIFeeder(threading.Thread):
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, mri_src, dst_dir, TR=0.0,
+    def __init__(self, mri_src, imgType, dst_dir, TR=0.0,
                  suffix='sim_fMRI_{num}.nii.gz', parent=None):
         super().__init__()
 
         self.mri_src = mri_src
+        self.imgType = imgType
         self.dst_dir = dst_dir
         self.suffix = suffix
         self.parent = parent
 
         # Set MRI data parameters
-        img = nib.load(mri_src)
-        self._mri_feed_num = img.shape[-1]
-        if TR == 0.0:
-            header = img.header
-            self.TR = header.get_zooms()[-1]
-        else:
-            self.TR = TR
+        if self.mri_src.is_file():
+            img = nib.load(mri_src)
+            self._mri_feed_num = img.shape[-1]
+            if TR == 0.0:
+                header = img.header
+                self.TR = header.get_zooms()[-1]
+            else:
+                self.TR = TR
+        elif self.mri_src.is_dir():
+            if self.imgType == 'GE DICOM':
+                ff = list(self.mri_src.glob('i*'))
+                self._mri_feed_num = len(ff)
+                dcm = pydicom.read_file(
+                    ff[0], defer_size="1 KB", stop_before_pixels=False,
+                    force=False)
+                self.TR = float(dcm[(0x0018, 0x0080)].value) / 1000
+                self.NSlices = dcm[(0x0043, 0x1079)].value
+            elif self.imgType == 'SIemense Mosaic':
+                ff = list(self.mri_src.glob('*.dcm'))
+                self._mri_feed_num = len(ff)
+                dcm = pydicom.read_file(
+                    ff[0], defer_size="1 KB", stop_before_pixels=False,
+                    force=False)
+                self.TR = float(dcm[(0x0018, 0x0080)].value) / 1000
 
         self.cmd = ''
 
@@ -57,25 +78,58 @@ class MRIFeeder(threading.Thread):
         num = 0
         self.cmd = ''
         try:
-            img = nib.load(self.mri_src)
-            fmri_data = np.asanyarray(img.dataobj)
-            N_vols = img.shape[-1]
+            if self.imgType in ('AFNI BRIK', 'NIfTI'):
+                img = nib.load(self.mri_src)
+                fmri_data = np.asanyarray(img.dataobj)
+                N_files = img.shape[-1]
+                feed_delay = 0.2
+                feed_interval = self.TR
+                dst_dir = Path(self.dst_dir)
+
+            elif self.imgType == 'GE DICOM':
+                dicom_fs = np.array(list(self.mri_src.glob('i*')))
+                sort_idx = np.argsort([int(ff.suffix[1:]) for ff in dicom_fs]).ravel()
+                src_dicom_fs = dicom_fs[sort_idx]
+                N_files = len(src_dicom_fs)
+                feed_delay = 0.01
+                feed_interval = self.TR / self.NSlices
+                dst_dir = Path(self.dst_dir) / self.mri_src.name
+
+            elif self.imgType =='Siemens Mosaic':
+                dicom_fs = np.array(list(self.mri_src.glob('*.dcm')))
+                sort_idx = np.argsort([int(ff.stem) for ff in dicom_fs]).ravel()
+                src_dicom_fs = dicom_fs[sort_idx]
+                N_files = len(src_dicom_fs)
+                feed_delay = 0.2
+                feed_interval = self.TR
+                dst_dir = Path(self.dst_dir) / self.mri_src.name
 
             st = time.time()
-            feed_delay = 0.2
-            while num < N_vols:
-                if time.time() >= st + (num+1)*self.TR-feed_delay:
+            while num < N_files:
+                if time.time() >= st + (num+1)*feed_interval-feed_delay:
                     # Save a file
                     feed_st = time.time()
-                    suffix = self.suffix.format(**{'num': num})
-                    dst_f = f"{Path(self.dst_dir) / suffix}"
-                    fmri_img = nib.Nifti1Image(fmri_data[:, :, :, num],
-                                               affine=img.affine)
-                    nib.save(fmri_img, dst_f)
+
+                    if not dst_dir.is_dir():
+                        dst_dir.mkdir()
+
+                    if self.imgType in ('AFNI BRIK', 'NIfTI'):
+                        suffix = self.suffix.format(**{'num': num})
+                        dst_f = f"{dst_dir / suffix}"
+                        fmri_img = nib.Nifti1Image(fmri_data[:, :, :, num],
+                                                   affine=img.affine)
+                        nib.save(fmri_img, dst_f)
+                    elif self.imgType in ('GE DICOM', 'Siemens Mosaic'):
+                        src_f = src_dicom_fs[num]
+                        dst_f = dst_dir / src_f.name
+                        shutil.copy(src_f, dst_f)
 
                     feed_delay = time.time() - feed_st
                     if self.parent is not None:
-                        self.parent.logmsg(f"Write {dst_f}")
+                        if self.imgType != 'GE DICOM':
+                            self.parent.logmsg(f"Write {dst_f}")
+                        elif (num+1) % self.NSlices == 0:
+                            self.parent.logmsg(f"Write {dst_f}")
                     else:
                         print(f"Write {dst_f}")
 
@@ -92,13 +146,13 @@ class MRIFeeder(threading.Thread):
                         break
                         self.cmd = ''
 
-                time.sleep(self.TR / 100)
+                time.sleep(feed_interval / 100)
 
         finally:
             if self.parent is not None:
-                self.parent.logmsg(f"+++ Finish feeding: wrote {num} volumes.")
+                self.parent.logmsg(f"+++ Finish feeding: wrote {num} files.")
             else:
-                print(f"+++ Finish feeding: wrote {num} volumes.")
+                print(f"+++ Finish feeding: wrote {num} files.")
             self.cmd = 'FINISH'
 
 
@@ -422,7 +476,7 @@ class rtMRISim(RTP):
             'parent': self}
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run_MRI(self, mode):
+    def run_MRI(self, mode, imgType=None):
 
         if mode == 'start':
             if self.mri_feeder is not None and self.mri_feeder.is_alive():
@@ -432,7 +486,7 @@ class rtMRISim(RTP):
             if not Path(self.dst_dir).is_dir():
                 self.errmsg("Not found destination directory, {self.dst_dir}.")
 
-            self.mri_feeder = MRIFeeder(self.mri_src, self.dst_dir,
+            self.mri_feeder = MRIFeeder(self.mri_src, imgType, self.dst_dir,
                                         suffix=self.suffix, parent=self)
 
             self.mri_feeder.start()
