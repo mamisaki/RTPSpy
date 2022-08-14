@@ -1981,7 +1981,7 @@ class RTP_APP(RTP):
             pid = int(ll.split()[0])
             try:
                 os.killpg(pid, 9)
-            except ProcessLookupError:
+            except Exception:
                 pass
 
         self.extApp_proc = None
