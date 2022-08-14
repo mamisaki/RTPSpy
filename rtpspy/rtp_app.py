@@ -544,6 +544,7 @@ class RTP_APP(RTP):
 
                 # If json file exists copy it too
                 src_f = src_f.replace("'", "")
+                src_f = re.sub('\[\d+\]' , '', src_f)
                 if '.gz' in Path(src_f).suffixes:
                     src_f_stem = Path(Path(src_f).stem).stem
                 else:
@@ -558,8 +559,7 @@ class RTP_APP(RTP):
                     dst_json_f = Path(dst_f).parent / (dst_f_stem + '.json')
                     shutil.copy(json_f, dst_json_f)
                 else:
-                    # Save slice timing
-                    src_f = re.sub('\[\d+\]' , '', src_f)
+                    # Save TR and slice timing
                     header = nib.load(src_f).header
 
                     slice_timing = []
@@ -572,7 +572,12 @@ class RTP_APP(RTP):
                         slice_timing = header.info['TAXIS_OFFSETS']
 
                     if len(slice_timing):
-                        img_info = {'SliceTiming': slice_timing}
+                        tr = subprocess.check_output(
+                            shlex.split(f"3dinfo -tr {src_f}"))
+                        TR = float(tr.decode().rstrip())
+
+                        img_info = {'RepetitionTime': TR,
+                                    'SliceTiming': slice_timing}
                         with open(json_f, 'w') as fd:
                             json.dump(img_info, fd, indent=4)
 
