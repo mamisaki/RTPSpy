@@ -1044,7 +1044,8 @@ class RTP_WATCH(RTP):
     def get_params(self):
         all_opts = super().get_params()
         excld_opts = ('work_dir', 'scan_name', 'scan_onset'
-                      'done_proc', 'last_proc_f', 'clean_warning')
+                      'done_proc', 'last_proc_f', 'clean_warning',
+                      'dicom_list')
         sel_opts = {}
         for k, v in all_opts.items():
             if k in excld_opts:
