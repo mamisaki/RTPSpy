@@ -815,6 +815,19 @@ class RTP_APP(RTP):
                                     progress_bar.close()
                                     return -1
 
+                        if pobj.imgType == 'GE DICOM':
+                            if not Path(self.func_orig).is_file():
+                                if not ignore_error:
+                                    self.errmsg(
+                                        "Not found 'Base function image'"
+                                        f" {self.func_orig}.")
+                                    if show_progress and progress_bar.isVisible():
+                                        progress_bar.close()
+                                        return -1
+
+                            NSlices = nib.load(self.func_orig).shape[-1]
+                            pobj.set_param('NSlices', NSlices)
+
                     elif proc == 'TSHIFT':
                         if not Path(self.func_orig).is_file():
                             if not ignore_error:
@@ -824,6 +837,37 @@ class RTP_APP(RTP):
                                     progress_bar.close()
                                     return -1
                         else:
+                            # Set TR
+                            tr = subprocess.check_output(
+                                shlex.split(f"3dinfo -tr {self.func_orig}"))
+                            TR = float(tr.decode().rstrip())
+                            if TR == 0.0:
+                                base_f = Path(self.func_orig)
+                                if '.gz' in base_f.suffixes:
+                                    base_stem = Path(base_f.stem).stem
+                                else:
+                                    base_stem = base_f.stem
+                                json_f = base_f.parent / (base_stem + '.json')
+                                if json_f.is_file():
+                                    with open(json_f, 'r') as fd:
+                                        img_info = json.load(fd)
+                                    TR = img_info['RepetitionTime']
+
+                            if TR != 0.0:
+                                pobj.set_param('TR', TR)
+                            else:
+                                # Warning TR cannot be set
+                                TR = pobj.TR
+                                msg = f"TR cannot be set from {self.func_orig}\n"
+                                msg += f"Please check if TR={TR} is correct."
+
+                                ret = QtWidgets.QMessageBox.warning(
+                                    self.main_win, "Check TR", msg,
+                                    QtWidgets.QMessageBox.Ok,
+                                    QtWidgets.QMessageBox.Cancel)
+                                if ret == QtWidgets.QMessageBox.Cancel:
+                                    return -1
+
                             # Set slice timing
                             pobj.set_param('slice_timing_from_sample',
                                            self.func_orig)
