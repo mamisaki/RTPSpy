@@ -19,8 +19,7 @@ Also, see the article below for the evaluation of the system.
 RTPSpy has been developed on a Linux system (Ubuntu). It can also be run on Mac OSX and Windows with the Windows Subsystem for Linux (WSL), while GPU computation is not supported on OSX and WSL for now.
 
 ### External tools
-RTPSpy is assumed to be run on a miniconda (https://docs.conda.io) or Anaconda (https://www.anaconda.com/) environment.
-Install either one referring to these sites.   
+RTPSpy is assumed to be run on a conda enviroonment. Install miniconda (https://docs.conda.io).   
 
 Be sure to complete the setup so that you can call 'conda' command in a terminal.
 The conda initilization script should be written in ~/.bashrc file. You may have to restart your terminal application to activate the conda environment.   
