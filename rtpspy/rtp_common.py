@@ -462,6 +462,7 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
                     try:
                         obj.set_param(var_name, val)
                     except TypeError:
+                        print(obj)
                         print(var_name, val)
 
     except Exception:
@@ -748,7 +749,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
 
     # Check afni process
     cmd0 = f"afni .* {boot_dir}"
-    pret = subprocess.run(f"pgrep -af '{cmd0}'", shell=True,
+    pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"), 
                           stdout=subprocess.PIPE)
     procs = pret.stdout
     procs = [ll for ll in procs.decode().rstrip().split('\n')
@@ -792,7 +793,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
     cmd += " -yesplugouts -DAFNI_IMSAVE_WARNINGS=NO"
     cmd += f" -com 'OPEN_WINDOW A geom=+{xpos}+{ypos}'"
     cmd += f" {boot_dir}"
-    subprocess.call(cmd, shell=True)
+    subprocess.call(shlex.split(cmd), cwd=boot_dir)
 
 
 # %% excepthook ===============================================================
