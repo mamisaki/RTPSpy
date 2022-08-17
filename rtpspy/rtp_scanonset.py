@@ -440,7 +440,6 @@ class RTP_SCANONSET(RTP):
                     self.ln[0].set_ydata(self.sig_rbuf.get())
 
                 self.ax.figure.canvas.draw()
-                self.ax.figure.canvas.start_event_loop(interval/100.0)
 
                 nt += interval
 

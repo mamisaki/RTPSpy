@@ -836,8 +836,14 @@ class RTP_WATCH(RTP):
             pass
 
         elif attr == 'clean_rt_src':
-            if reset_fn is not None:
-                reset_fn(val)
+            if reset_fn is None:
+                if hasattr(self, 'ui_cleanRtSrc_chb'):
+                    self.ui_cleanRtSrc_chb.setChecked(val)
+                
+        elif attr == 'clean_warning':
+            if reset_fn is None:
+                if hasattr(self, 'ui_cleanWarning_chb'):
+                    self.ui_cleanWarning_chb.setChecked(val)
 
         elif attr == 'imgType':
             if reset_fn is None and hasattr(self, 'ui_imgType_grpBox'):
@@ -846,7 +852,7 @@ class RTP_WATCH(RTP):
                     rdb.setChecked(True)
 
             if val == 'AFNI BRIK':
-                self.set_param('watch_file_pattern', '.+\.BRIK.*')
+                self.set_param('watch_file_pattern', '.*nr_\d+.*\.BRIK.*')
                 self.do_proc = self.do_proc_volImg
             elif val == 'NIfTI':
                 self.set_param('watch_file_pattern', '.+\.nii.*')
@@ -1000,7 +1006,7 @@ class RTP_WATCH(RTP):
             "Warn at cleaning real-time MRI source")
         self.ui_cleanWarning_chb.setChecked(self.clean_warning)
         self.ui_cleanWarning_chb.stateChanged.connect(
-             lambda: self.set_param('clean_rt_src',
+             lambda: self.set_param('clean_warning',
                                     self.ui_cleanWarning_chb.isChecked(),
                                     self.ui_cleanWarning_chb.setChecked))
         ui_rows.append((None, self.ui_cleanWarning_chb))
