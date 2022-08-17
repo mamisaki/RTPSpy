@@ -845,9 +845,6 @@ class RTP_WATCH(RTP):
                 if not rdb.isChecked():
                     rdb.setChecked(True)
 
-            if hasattr(self, 'ui_NSlices_spBx'):
-                self.ui_NSlices_spBx.setEnabled(val == 'GE DICOM')
-
             if val == 'AFNI BRIK':
                 self.set_param('watch_file_pattern', '.+\.BRIK.*')
                 self.do_proc = self.do_proc_volImg
@@ -986,7 +983,6 @@ class RTP_WATCH(RTP):
                                              self.ui_NSlices_spBx.setValue))
         ui_rows.append((var_lb, self.ui_NSlices_spBx))
         self.ui_objs.extend([self.ui_NSlices_spBx])
-        self.ui_NSlices_spBx.setEnabled(self.imgType == 'GE DICOM')
 
         # clean_rt_src check
         self.ui_cleanRtSrc_chb = QtWidgets.QCheckBox(
