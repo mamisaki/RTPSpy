@@ -141,6 +141,13 @@ def make_seg_images(fsSeg_mgz, prefix, aseg_mask_IDs=aseg_mask_IDs):
     affine = aseg_img.affine
     aseg_V = np.asarray(aseg_img.dataobj)
 
+    # Save aseg as nii.gz
+    aseg_nii_f = prefix.parent / (prefix.name + '_aseg.nii.gz')
+    simg = nib.Nifti1Image(aseg_V, affine)
+    nib.save(simg, aseg_nii_f)
+    subprocess.check_call(
+        shlex.split(f"3drefit -space ORIG -view orig {aseg_nii_f}"))
+
     out_fs = []
     for seg_name, seg_idx in aseg_mask_IDs.items():
         out_f = str(prefix) + f"_{seg_name}.nii.gz"
@@ -187,7 +194,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('in_f', help='input file')
     parser.add_argument('-o', '--out', dest='prefix', help='output prefix')
-    parser.add_argument('--batch_size', type=int, default=8,
+    parser.add_argument('--batch_size', type=int, default=1,
                         help="Batch size for inference. Default: 8")
     parser.add_argument('--fastsurfer_dir', help="FastSurfer directory")
     opts = parser.parse_args()
@@ -219,6 +226,7 @@ if __name__ == "__main__":
 
     # --- Clean intermediate files ---
     if Path(fsSeg_mgz).is_file():
+        cmd = f""
         Path(fsSeg_mgz).unlink()
 
     work_dir = Path(fsSeg_mgz).parent

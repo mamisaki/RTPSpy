@@ -114,7 +114,8 @@ class RTP_APP(RTP):
             "ANTs": 120,
             "ApplyWarp": 10,
             "Resample_WM_mask": 1,
-            "Resample_Vent_mask": 1
+            "Resample_Vent_mask": 1,
+            "Resample_aseg_mask": 1
             }
         self.prtime_keys = list(self.proc_times.keys())
 
@@ -134,6 +135,7 @@ class RTP_APP(RTP):
         self.simfMRIDataDir = ''
         self.simECGData = ''
         self.simRespData = ''
+        self.sim_isRunning = False
 
         # Set psuedo serial port for simulating physio recording
         master, slave = pty.openpty()
@@ -617,6 +619,7 @@ class RTP_APP(RTP):
                 self.set_param('brain_anat_orig', seg_files[0])
                 WM_seg = seg_files[1]
                 Vent_seg = seg_files[2]
+                aseg_seg = seg_files[3]
             else:
                 # --- 1. 3dSkullStrip -----------------------------------------
                 # Make Brain segmentations
@@ -672,7 +675,6 @@ class RTP_APP(RTP):
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert ROI_orig is not None
-
                 self.set_param('ROI_orig', ROI_orig)
 
             if no_FastSeg:
@@ -695,13 +697,16 @@ class RTP_APP(RTP):
                         Vent_seg = warped_f
 
             # --- 5. Make white matter and ventricle masks --------------------
-            for segname in ('WM', 'Vent'):
+            for segname in ('WM', 'Vent', 'aseg'):
                 if segname == 'WM':
                     erode = 2
                     seg_anat_f = WM_seg
                 elif segname == 'Vent':
                     erode = 1
                     seg_anat_f = Vent_seg
+                elif segname == 'aseg':
+                    erode = 0
+                    seg_anat_f = aseg_seg
 
                 assert seg_anat_f.is_file()
                 if no_FastSeg:
@@ -820,18 +825,17 @@ class RTP_APP(RTP):
                                     progress_bar.close()
                                     return -1
 
-                        if pobj.imgType == 'GE DICOM':
-                            if not Path(self.func_orig).is_file():
-                                if not ignore_error:
-                                    self.errmsg(
-                                        "Not found 'Base function image'"
-                                        f" {self.func_orig}.")
-                                    if show_progress and progress_bar.isVisible():
-                                        progress_bar.close()
-                                        return -1
+                        if not Path(self.func_orig).is_file():
+                            if not ignore_error:
+                                self.errmsg(
+                                    "Not found 'Base function image'"
+                                    f" {self.func_orig}.")
+                                if show_progress and progress_bar.isVisible():
+                                    progress_bar.close()
+                                    return -1
 
-                            NSlices = nib.load(self.func_orig).shape[-1]
-                            pobj.set_param('NSlices', NSlices)
+                        NSlices = nib.load(self.func_orig).shape[2]
+                        pobj.set_param('NSlices', NSlices)
 
                     elif proc == 'TSHIFT':
                         if not Path(self.func_orig).is_file():
@@ -1218,6 +1222,7 @@ class RTP_APP(RTP):
                 self.ui_startSim_btn.setEnabled(True)
                 del self.mri_sim
                 self.mri_sim = None
+                self.sim_isRunning = False
 
             if hasattr(self, 'watch_imgType_orig'):
                 self.rtp_objs['WATCH'].set_param('imgType',
@@ -1384,7 +1389,11 @@ class RTP_APP(RTP):
         # Get volume shape to adjust window size
         baseWinSize = 480  # height of axial image window
         bimg = nib.load(base_img)
-        vshape = bimg.shape[:3] * np.abs(np.diag(bimg.affine))[:3]
+        vsize = np.diag(bimg.affine)[:3]
+        if np.any(vsize == 0):
+            vsize = np.abs([r[np.argmax(np.abs(r))]
+                            for r in bimg.affine[:3, :3]])
+        vshape = bimg.shape[:3] * vsize
         wh_ax = [int(baseWinSize*vshape[0]//vshape[1]), baseWinSize]
         wh_sg = [baseWinSize, int(baseWinSize*vshape[2]//vshape[1])]
         wh_cr = [int(baseWinSize*vshape[0]//vshape[1]),
@@ -1830,10 +1839,7 @@ class RTP_APP(RTP):
         self.watch_suffix_pat_orig = self.rtp_objs['WATCH'].watch_file_pattern
 
         if mri_src.is_file():
-            if 'BRIK' in mri_src.name or 'HEAD' in mri_src.name:
-                self.rtp_objs['WATCH'].set_param('imgType', 'AFNI BRIK')
-            elif '.nii' in mri_src.name:
-                self.rtp_objs['WATCH'].set_param('imgType', 'NIfTI')
+            self.rtp_objs['WATCH'].set_param('imgType', 'NIfTI')
         elif mri_src.is_dir():
             if len([ff for ff in mri_src.glob('i*')
                     if re.match('i\d+', str(ff.name))]):
@@ -1919,6 +1925,8 @@ class RTP_APP(RTP):
         self.ui_startSim_btn.setEnabled(False)
         if not self.ui_quit_btn.isEnabled():
             self.ui_quit_btn.setEnabled(True)
+
+        self.sim_isRunning = True
 
     # --- Communication with an external application via RTP_SERVE ----------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -2353,7 +2361,7 @@ class RTP_APP(RTP):
             else:
                 if val is None:
                     val = ''
-                else:
+                elif val != '':
                     fpath = Path(val).absolute()
                     fpath = fpath.parent / \
                         re.sub("\'", '',
@@ -2366,9 +2374,6 @@ class RTP_APP(RTP):
                 if hasattr(self, f"ui_{attr}_lnEd"):
                     obj = getattr(self, f"ui_{attr}_lnEd")
                     obj.setText(str(val))
-
-
-
 
         elif attr == 'simEnabled':
             if hasattr(self, 'ui_startSim_btn'):
@@ -2519,8 +2524,7 @@ class RTP_APP(RTP):
         ri = 0
         self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2nii')
         self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
-        gLayout = self.ui_MaskCreate_grpBx.layout()
-        gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
+        MaskCreate_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
 
         # -- Anatomy orig image --
         ri += 1
@@ -3127,7 +3131,8 @@ class RTP_APP(RTP):
                       'roi_sig', 'plt_xi', 'num_ROIs',
                       'roi_labels', 'enable_RTP', 'proc_times0',
                       'running_end_run', 'extApp_addr', 'extApp_proc',
-                      'extApp_sock', 'prtime_keys', 'run_extApp')
+                      'extApp_sock', 'prtime_keys', 'run_extApp',
+                      'sim_isRunning')
 
         for k in excld_opts:
             if k in opts:
