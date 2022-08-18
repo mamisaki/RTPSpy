@@ -839,7 +839,7 @@ class RTP_WATCH(RTP):
             if reset_fn is None:
                 if hasattr(self, 'ui_cleanRtSrc_chb'):
                     self.ui_cleanRtSrc_chb.setChecked(val)
-                
+
         elif attr == 'clean_warning':
             if reset_fn is None:
                 if hasattr(self, 'ui_cleanWarning_chb'):
@@ -855,7 +855,7 @@ class RTP_WATCH(RTP):
                 self.set_param('watch_file_pattern', '.*nr_\d+.*\.BRIK.*')
                 self.do_proc = self.do_proc_volImg
             elif val == 'NIfTI':
-                self.set_param('watch_file_pattern', '.+\.nii.*')
+                self.set_param('watch_file_pattern', '.*nr_\d+.*\.nii.*')
                 self.do_proc = self.do_proc_volImg
             elif val == 'GE DICOM':
                 self.set_param('watch_file_pattern', 'i\d+.*')

@@ -52,6 +52,14 @@ class MRIFeeder(threading.Thread):
                 self.TR = header.get_zooms()[-1]
             else:
                 self.TR = TR
+
+            if self.suffix == '':
+                if '.gz' in self.mri_src.suffixes:
+                    stem = Path(self.mri_src.stem).stem
+                else:
+                    stem = self.mri_src.stem
+                self.suffix = stem
+
         elif self.mri_src.is_dir():
             if self.imgType == 'GE DICOM':
                 ff = list(self.mri_src.glob('i*'))
@@ -115,7 +123,7 @@ class MRIFeeder(threading.Thread):
 
                     if self.imgType in ('AFNI BRIK', 'NIfTI'):
                         suffix = self.suffix.format(**{'num': num})
-                        dst_f = f"{dst_dir / suffix}"
+                        dst_f = f"{dst_dir / suffix}" + f"_nr_{num:06d}.nii"
                         fmri_img = nib.Nifti1Image(fmri_data[:, :, :, num],
                                                    affine=img.affine)
                         nib.save(fmri_img, dst_f)

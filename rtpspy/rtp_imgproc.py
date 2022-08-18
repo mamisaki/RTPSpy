@@ -53,7 +53,8 @@ class RTP_IMGPROC(RTP):
             "ANTs": 120,
             "ApplyWarp": 10,
             "Resample_WM_mask": 1,
-            "Resample_Vent_mask": 1
+            "Resample_Vent_mask": 1,
+            "Resample_aseg_mask": 1
             }
 
     # --- Internal utility methods --------------------------------------------
@@ -306,8 +307,10 @@ class RTP_IMGPROC(RTP):
         brain_anat_orig = work_dir / (out_prefix + '_Brain.nii.gz')
         wm_anat_orig = work_dir / (out_prefix + '_WM.nii.gz')
         vent_anat_orig = work_dir / (out_prefix + '_Vent.nii.gz')
+        aseg_anat_orig = work_dir / (out_prefix + '_aseg.nii.gz')
         if not brain_anat_orig.is_file() or not wm_anat_orig.is_file() or \
-                not vent_anat_orig.is_file() or overwrite:
+                not vent_anat_orig.is_file() or \
+                not aseg_anat_orig.is_file() or overwrite:
             # Run the process
             fastSeg_cmd = Path(__file__).absolute().parent / "fastSeg.py"
 
@@ -360,7 +363,7 @@ class RTP_IMGPROC(RTP):
                           f"                    {wm_anat_orig}\n"
                           f"                    {vent_anat_orig}\n")
 
-        return brain_anat_orig, wm_anat_orig, vent_anat_orig
+        return brain_anat_orig, wm_anat_orig, vent_anat_orig, aseg_anat_orig
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def skullStrip(self, work_dir, anat_orig, total_ETA, progress_bar=None,
@@ -624,21 +627,25 @@ class RTP_IMGPROC(RTP):
 
         seg_al_f = work_dir / (prefix + '_al_func.nii.gz')
         if not seg_al_f.is_file() or overwrite:
-            # -- Erode the segmentation mask ---
-            out_f0 = seg_al_f.parent / ('rm.1.' + seg_al_f.name)
+            if erode != 0:
+                # -- Erode the segmentation mask ---
+                out_f0 = seg_al_f.parent / ('rm.1.' + seg_al_f.name)
 
-            # Spawn the process
-            st = time.time()
-            proc = self.erode_ROI(work_dir, seg_anat_f, out_f0,
-                                  erode=erode, ask_cmd=ask_cmd)
-            assert proc.returncode is None or proc.returncode == 0, \
-                f'Failed at resample_segmasks {segname}.\n'
+                # Spawn the processseg_files
+                st = time.time()
+                proc = self.erode_ROI(work_dir, seg_anat_f, out_f0,
+                                      erode=erode, ask_cmd=ask_cmd)
+                assert proc.returncode is None or proc.returncode == 0, \
+                    f'Failed at resample_segmasks {segname}.\n'
 
-            # Wait for the process to finish with showing the progress.
-            ret = self._show_proc_progress(proc, progress_bar,
-                                           desc=f"\n== Erode {segname} ==\n")
-            if ret != 0:
-                return None
+                # Wait for the process to finish with showing the progress.
+                ret = self._show_proc_progress(
+                    proc, progress_bar, desc=f"\n== Erode {segname} ==\n")
+                if ret != 0:
+                    return None
+            else:
+                st = time.time()
+                out_f0 = seg_anat_f
 
             if aff1D_f is not None:
                 # --- Apply mat.aff12.1D ---
