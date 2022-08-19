@@ -533,7 +533,7 @@ class RTP_APP(RTP):
                 else:
                     self.errmsg(f"File type {suff} cannot be recognized.")
                     if hasattr(self, 'ui_CreateMasks_btn'):
-                        self.ui_CreateMasks_btn.setEnabled(False)
+                        self.ui_CreateMasks_btn.setEnabled(True)
                     return
 
                 cmd = f"3dbucket -overwrite -prefix {dst_f} {src_f}"
@@ -864,7 +864,7 @@ class RTP_APP(RTP):
 
                             if TR != 0.0:
                                 pobj.set_param('TR', TR)
-                            else:
+                            elif not ignore_error:
                                 # Warning TR cannot be set
                                 TR = pobj.TR
                                 msg = f"TR cannot be set from {self.func_orig}\n"
