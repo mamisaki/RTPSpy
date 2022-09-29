@@ -1353,7 +1353,7 @@ class RTP_APP(RTP):
             self.ui_setEnabled(True)
             self.rtp_objs['SCANONSET'].ui_manualStart_btn.setEnabled(True)
             self.main_win.options_tab.setCurrentIndex(0)
-            self.ui_top_tabs.setCurrentIndex(0)
+            # self.ui_top_tabs.setCurrentIndex(0)
 
         self.isReadyRun = False
         self.running_end_run = False
