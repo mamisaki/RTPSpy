@@ -705,6 +705,8 @@ class RTP_APP(RTP):
                     erode = 1
                     seg_anat_f = Vent_seg
                 elif segname == 'aseg':
+                    if no_FastSeg:
+                        continue
                     erode = 0
                     seg_anat_f = aseg_seg
 
