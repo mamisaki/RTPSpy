@@ -35,7 +35,7 @@ extApp_cmd = f"{cmd_path} --screen 0 --size 640 480 --pos 0 0"
 
 rtp_params = {'WATCH': {'clean_rt_src': True, 'clean_warning': True},
               'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
-              'VOLREG': {'regmode': 'cubic'},
+              'VOLREG': {'regmode': 'heptic'},
               'SMOOTH': {'blur_fwhm': 6.0},
               'REGRESS': {'wait_num': 40, 'max_poly_order': np.inf,
                           'mot_reg': 'mot12', 'GS_reg': True, 'WM_reg': True,
