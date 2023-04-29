@@ -127,7 +127,7 @@ class RTP_APP(RTP):
         self.chk_run_timer = QtCore.QTimer()
         self.chk_run_timer.setSingleShot(True)
         self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
-        self.max_watch_wait = 10  # seconds
+        self.max_watch_wait = 20  # seconds
 
         # Simulation data
         self.simEnabled = False
@@ -1251,7 +1251,7 @@ class RTP_APP(RTP):
 
             # Save parameter list
             if self.enable_RTP > 0:
-                if scan_name is None:
+                if scan_name is None or scan_name is False:
                     if self.rtp_objs['WATCH'].enabled and \
                             self.rtp_objs['WATCH'].scan_name is not None:
                         scan_name = self.rtp_objs['WATCH'].scan_name
@@ -1614,17 +1614,28 @@ class RTP_APP(RTP):
                         self._ln[ii][0].set_data(plt_xi[:ll], y)
 
                         # Adjust y scale
-                        if np.sum(~np.isnan(y)) > 2.5:
+                        ax.relim()
+                        if np.sum(~np.isnan(y)) > 10:
+                            yl = np.array(ax.get_ylim())
                             sd = np.nanstd(y)
-                            ax.set_ylim([-2.5*sd, 2.5*sd])
-                        else:
-                            ax.relim()
+                            mu = np.nanmean(y)
+                            rescale = False
+                            if np.nanmin(y) < mu-3*sd:
+                                yl[0] = mu-3.5*sd
+                                rescale = True
+                            
+                            if np.nanmax(y) > mu+3*sd:
+                                yl[1] = mu+3.5*sd
+                                rescale = True
+
+                            if rescale:
+                                ax.set_ylim(yl)
+
                         ax.autoscale_view()
 
                         xl = ax.get_xlim()
                         if (plt_xi[-1]//10 + 1)*10 > xl[1]:
                             ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
-
                     self.plt_win.canvas.draw()
 
                 except IndexError:
