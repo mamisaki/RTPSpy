@@ -397,10 +397,12 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
     time.sleep(3)  # Wait for opening the process
 
     if pr.poll() is not None:
-        errmg = f"Failed: {cmd}"
+        errmsg = f"Failed: {cmd}"
+        errmsg += pr.stdout.read().decode()
+        errmsg += pr.stderr.read().decode()
         if verb:
-            sys.stderr.write(f"{errmg}\n")
-        return None, errmg
+            sys.stderr.write(f"{errmsg}\n")
+        return None, errmsg
     else:
         sock.settimeout(timeout)
         try:
