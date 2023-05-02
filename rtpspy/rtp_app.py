@@ -1986,7 +1986,7 @@ class RTP_APP(RTP):
 
         for kill_cmd in cmd.split():
             kill_cmd = Path(kill_cmd).name
-            if kill_cmd.endswith('.py'):
+            if kill_cmd.endswith('.sh') or kill_cmd.endswith('.py'):
                 break
 
         if sys.platform == 'darwin':
@@ -2007,7 +2007,7 @@ class RTP_APP(RTP):
 
         self.extApp_proc = None
 
-        # --- Boot extarnel application ---
+        # --- Boot externel application ---
         if progress_bar is not None:
             progress_bar.add_desc(f"Run {cmd} ...")
             time.sleep(0.1)  # Give time for UI to update the dialog
