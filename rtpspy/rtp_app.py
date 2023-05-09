@@ -828,16 +828,15 @@ class RTP_APP(RTP):
                                     return -1
 
                         if not Path(self.func_orig).is_file():
-                            if not ignore_error:
-                                self.errmsg(
-                                    "Not found 'Base function image'"
-                                    f" {self.func_orig}.")
-                                if show_progress and progress_bar.isVisible():
-                                    progress_bar.close()
-                                    return -1
-
-                        NSlices = nib.load(self.func_orig).shape[2]
-                        pobj.set_param('NSlices', NSlices)
+                            self.errmsg(
+                                "Not found 'Base function image'"
+                                f" {self.func_orig}.")
+                            if show_progress and progress_bar.isVisible():
+                                progress_bar.close()
+                                return -1
+                        else:
+                            NSlices = nib.load(self.func_orig).shape[2]
+                            pobj.set_param('NSlices', NSlices)
 
                     elif proc == 'TSHIFT':
                         if not Path(self.func_orig).is_file():
@@ -1987,6 +1986,7 @@ class RTP_APP(RTP):
         for kill_cmd in cmd.split():
             kill_cmd = Path(kill_cmd).name
             if kill_cmd.endswith('.sh') or kill_cmd.endswith('.py'):
+                kill_cmd = Path(kill_cmd).stem
                 break
 
         if sys.platform == 'darwin':
