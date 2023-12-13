@@ -1,5 +1,7 @@
 # RTPSpy: fMRI Real-Time Processing System in python
 
+**We are currently in the process of improving usability and updating the library to the latest version. Please stay tuned. (Dec. 13, 2023)**
+
 RTPSpy is a python library for real-time fMRI (rtfMRI) data processing systems.   
 The package includes;
 * A fast and comprehensive online fMRI processing pipeline comparable to offline processing.
