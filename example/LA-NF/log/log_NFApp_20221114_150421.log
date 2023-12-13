@@ -1,0 +1,5 @@
+datetime, time_from_scan_onset, event, misc
+2022-11-14T15:04:22.402514,-1.0000,Start App,
+2022-11-14T15:04:22.419343,-1.0000,Change connection:127.0.0.1,
+2022-11-14T15:04:22.419397,-1.0000,Send state cmd_loop,
+2022-11-14T15:04:22.565017,-1.0000,Set log directory /data/rt/LA-NF_E18691/log,

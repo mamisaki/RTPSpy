@@ -1,0 +1,5 @@
+2022/11/15 17:22:52.732966:[RTP_SMOOTH]: Mask = /data/rt/LA-NF_E18691/RTP_mask.nii.gz
+2022/11/15 17:22:52.734655:[RTP_REGRESS]: Mask = /data/rt/LA-NF_E18691/RTP_mask.nii.gz
+2022/11/15 17:22:52.741551:[RTP_REGRESS]: Wait 25 volumes (number of regressors + 1).
+2022/11/15 17:22:52.741821:[RTP_REGRESS]: Wait 25 volumes (number of regressors + 1).
+2022/11/15 17:23:56.559439:[LA_NF]: !!! aseg_orig is unrecognized parameter.

@@ -14,7 +14,7 @@ dependencies:
   - pip
   - pyqt
   - pyserial
-  - python=3.8
+  - python=3.10
   - pytorch
   - scikit-sparse
   - torchvision
@@ -22,4 +22,3 @@ dependencies:
   - dicom2nifti
   - pip:
     - antspyx
-    - pyparallel

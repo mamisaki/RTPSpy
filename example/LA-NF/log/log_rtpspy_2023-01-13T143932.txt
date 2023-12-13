@@ -1,0 +1,4 @@
+2023/01/13 14:39:32.761112:[RTP_SMOOTH]: Mask = /data/rt/LA-NF_E18691/RTP_mask.nii.gz
+2023/01/13 14:39:32.763715:[RTP_REGRESS]: Mask = /data/rt/LA-NF_E18691/RTP_mask.nii.gz
+2023/01/13 14:39:32.769828:[RTP_REGRESS]: Wait 25 volumes (number of regressors + 1).
+2023/01/13 14:39:32.769994:[RTP_REGRESS]: Wait 25 volumes (number of regressors + 1).

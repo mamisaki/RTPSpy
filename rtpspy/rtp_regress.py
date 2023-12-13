@@ -32,15 +32,15 @@ gpu_available = torch.cuda.is_available()
 def lstsq_SVDsolver(A, B, rcond=None):
     """
     Solve a linear system Ax = b in least square sense (minimize ||Ax-b||^2)
-    using SVD.
+    with SVD.
 
     Parameters
     ----------
-    A : 2D tensor (m x n)
-        Number of rows (m) must be >= number of columns (n).
+    A : 2D tensor (n x m)
         n: number of samples (time points), m: nuber of variables (regressors).
-    B : 2D tensor (m x k)
-        m: number of variables, k: number of depedent values (voxels).
+        Number of rows (n) must be > number of columns (m).
+    B : 2D tensor (n x k)
+        n: number of sammples, k: number of depedent values (e.g., voxels).
     rcond : float, optional
         Cut-off ratio for small singular values. For the purpose of rank
         determination, singular values are treated as zero if they are smaller

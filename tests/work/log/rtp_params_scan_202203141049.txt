@@ -1,0 +1,97 @@
+# SCANONSET
+ignore_init: 0
+onsig_port: Unix domain socket
+# WATCH
+clean_rt_src: False
+ignore_init: 0
+polling_interval: 0.001
+siemens_mosaic_dicom: False
+watch_dir: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/watch
+watch_file_pattern: nr_\d+.*\.nii
+# TSHIFT
+TR: 2.0
+ignore_init: 3
+method: cubic
+ref_time: 0
+slice_dim: 2
+slice_timing: (0.0, 1.0000000149011612, 0.05000000074505806, 1.0500000156462193, 0.10000000149011612, 1.1000000163912773, 0.15000000223517418, 1.1500000171363354, 0.20000000298023224, 1.2000000178813934, 0.2500000037252903, 1.2500000186264515, 0.30000000447034836, 1.3000000193715096, 0.3500000052154064, 1.3500000201165676, 0.4000000059604645, 1.4000000208616257, 0.45000000670552254, 1.4500000216066837, 0.5000000074505806, 1.5000000223517418, 0.5500000081956387, 1.5500000230967999, 0.6000000089406967, 1.600000023841858, 0.6500000096857548, 1.650000024586916, 0.7000000104308128, 1.700000025331974, 0.7500000111758709, 1.750000026077032, 0.800000011920929, 1.8000000268220901, 0.850000012665987, 1.8500000275671482, 0.9000000134110451, 1.9000000283122063, 0.9500000141561031, 1.9500000290572643)
+# VOLREG
+dxy_thresh: 0.05
+ignore_init: 0
+max_iter: 9
+phi_thresh: 0.07
+ref_fname: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/vr_base_func_epi.nii.gz
+regmode: cubic
+# SMOOTH
+blur_fwhm: 6.0
+ignore_init: 0
+mask_file: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/RTP_mask.nii.gz
+# REGRESS
+GS_mask: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/GSR_mask.nii.gz
+GS_reg: True
+Vent_mask: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/anat_mprage_Vent_al_func.nii.gz
+Vent_reg: True
+WM_mask: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/anat_mprage_WM_al_func.nii.gz
+WM_reg: True
+device: cuda
+ignore_init: 0
+mask_file: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/RTP_mask.nii.gz
+max_poly_order: inf
+mot_reg: mot12
+phys_reg: RICOR8
+reg_names: ['roll', 'pitch', 'yaw', 'dS', 'dL', 'dP', 'dtroll', 'dtpitch', 'dtyaw', 'dtdS', 'dtdL', 'dtdP', 'Resp0', 'Resp1', 'Resp2', 'Resp3', 'Card0', 'Card1', 'Card2', 'Card3', 'GS', 'WM', 'Vent']
+reg_retro_proc: True
+wait_num: 40
+# PHYSIO
+_proc_ready: False
+_verb: True
+ecg_data: [-184. -159. -205. ... -152. -207. -253.]
+enabled: True
+ignore_init: 0
+main_win: None
+max_scan_length: 300
+next_proc: None
+not_available: False
+online_saving: False
+proc_delay: []
+proc_start_idx: -1
+proc_time: []
+resp_data: [2921. 2878. 2834. ... 2841. 2837. 2834.]
+sample_freq: 40
+save_delay: False
+save_proc: False
+saved_data: None
+saved_filename: None
+saved_files: []
+scanning: False
+vol_num: -1
+wait_scan: False
+work_dir: 
+# RTP_APP
+GSR_mask: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/GSR_mask.nii.gz
+ROI_orig: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/MNI152_2009_template_LAmy_inOrig.nii.gz
+ROI_resample: nearestNeighbor
+ROI_template: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/MNI152_2009_template_LAmy.nii.gz
+RTP_mask: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/RTP_mask.nii.gz
+Vent_orig: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/anat_mprage_Vent_al_func.nii.gz
+Vent_template: 
+WM_orig: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/anat_mprage_WM_al_func.nii.gz
+WM_template: 
+alAnat: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/anat_mprage_Brain_al_func+orig.HEAD
+anat_orig: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/anat_mprage.nii.gz
+extApp_cmd: 
+extApp_sock_timeout: 3
+fastSeg_batch_size: 8
+func_orig: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/vr_base_func_epi.nii.gz
+ignore_init: 0
+max_watch_wait: 20.0
+no_FastSeg: False
+proc_times: {'FastSeg': 40.0, 'AlAnat': 24.0, 'RTP_mask': 1.0, 'GSR_mask': 1.0, 'ANTs': 24.0, 'ApplyWarp': 4.0, 'Resample_WM_mask': 1.0, 'Resample_Vent_mask': 1.0}
+sig_save_file: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work/rtp_ROI_signal.csv
+simECGData: 
+simEnabled: False
+simPhysPort: None
+simRespData: 
+simfMRIData: 
+template: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/MNI152_2009_template.nii.gz
+work_dir: /home/mmisaki@librad.laureateinstitute.org/RTPSpy/tests/work

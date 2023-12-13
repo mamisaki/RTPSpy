@@ -1,0 +1,17 @@
+Metadata-Version: 2.1
+Name: RTPSpy
+Version: 0.0.1
+Summary: fMRI Real-Time Processing System in python
+Home-page: https://github.com/mamisaki/RTPSpy
+Author: Masaya Misaki
+Author-email: mamisaki@gmail.com
+License: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: GNU GPLv3
+Classifier: Operating System :: Linux
+Requires-Python: >=3.6
+License-File: LICENSE
+
+UNKNOWN
+
