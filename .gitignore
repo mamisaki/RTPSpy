@@ -10,5 +10,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 rsync*
+
 afni_module/afni
 rtpspy/FastSurfer
