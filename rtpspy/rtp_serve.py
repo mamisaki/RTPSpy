@@ -153,7 +153,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def proc_recv_data(self, data):
         sys.stdout.flush()
-        if type(data) == str:
+        if type(data) is str:
             if 'IsAlive?' in data:
                 # Return 'Yes. to 'IsAlive?' inquery.
                 self.request.send('Yes.'.encode('utf-8'))
@@ -166,12 +166,12 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _log(self, datas, prefix=''):
         # Log data
-        if type(datas) != list:
+        if type(datas) is not list:
             datas = [datas]
 
         logstrs = []
         for data in datas:
-            if type(data) == str:
+            if type(data) is str:
                 logstrs.append(data)
             else:
                 try:
