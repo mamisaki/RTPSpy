@@ -21,10 +21,10 @@ import torch
 from PyQt5 import QtCore, QtWidgets, QtGui
 
 try:
-    from .rtp_common import boot_afni, LogDev, save_parameters, load_parameters
+    from .rtp_common import LogDev, save_parameters, load_parameters
 
 except Exception:
-    from rtp_common import boot_afni, LogDev, save_parameters, load_parameters
+    from rtp_common import LogDev, save_parameters, load_parameters
 
 GPU_available = torch.cuda.is_available()
 
@@ -39,9 +39,9 @@ class RTP_UI(QtWidgets.QMainWindow):
         Parameters
         ----------
         rtp_objs : dictionary, optional
-            RTP objects given by RTP_APP.rtp_objs.
+            RTP objects given by RtpApp.rtp_objs.
         rtp_apps : TYPE, optional
-            RTP_APP or derived class object.
+            RtpApp or derived class object.
         log_dir : str or Path, optional
             Log directory. The default is './log'.
         winTitle : str, optional
@@ -144,15 +144,6 @@ class RTP_UI(QtWidgets.QMainWindow):
         self.btnSetWatchDir = QtWidgets.QPushButton('Set', self.mainWidget)
         self.btnSetWatchDir.clicked.connect(self.set_watchDir)
 
-        # afni boot PushButton
-        '''
-        self.afniBootBtn = QtWidgets.QPushButton('Boot afni -rt',
-                                                 self.mainWidget)
-        self.afniBootBtn.clicked.connect(
-            lambda: boot_afni(main_win=self,
-                              boot_dir=self.lineEditWatchDir.text(), rt=True,
-                              TRUSTHOST='ask'))
-        '''
         # Working Directory Label
         self.labelWorkDir = QtWidgets.QLabel(self.mainWidget)
         self.labelWorkDir.setText("Working directory")
@@ -168,25 +159,25 @@ class RTP_UI(QtWidgets.QMainWindow):
         self.btnSetWorkDir.clicked.connect(self.set_workDir)
 
         # --- Devices and plot checkbox ---------------------------------------
-        # PHYSIO
-        if 'PHYSIO' in rtp_objs and  not rtp_objs['PHYSIO'].not_available:
-            self.chbRecPhysio = QtWidgets.QCheckBox('Recording Resp/ECG',
+        # EXTSIG
+        if 'EXTSIG' in rtp_objs:
+            self.chbRecSignal = QtWidgets.QCheckBox('Recording signal',
                                                     self.mainWidget)
-            self.chbRecPhysio.setCheckState(0)
-            self.chbRecPhysio.stateChanged.connect(
-                    lambda x: self.rec_phys_chk(x))
+            self.chbRecSignal.setCheckState(0)
+            self.chbRecSignal.stateChanged.connect(
+                    lambda x: self.rec_sig_chk(x))
 
-            self.chbShowPhysio = QtWidgets.QCheckBox('Show Resp/ECG',
+            self.chbShowExtSig = QtWidgets.QCheckBox('Show signals',
                                                      self.mainWidget)
-            self.chbShowPhysio.setCheckState(0)
-            self.chbShowPhysio.stateChanged.connect(
-                    lambda x: self.show_phys_chk(x))
-            if self.chbRecPhysio.checkState() != 2:
-                self.chbShowPhysio.setEnabled(False)
+            self.chbShowExtSig.setCheckState(0)
+            self.chbShowExtSig.stateChanged.connect(
+                    lambda x: self.show_sig_chk(x))
+            if self.chbRecSignal.checkState() != 2:
+                self.chbShowExtSig.setEnabled(False)
 
         # Show motion
         if 'VOLREG' in rtp_objs:
-            self.chbShowMotion = QtWidgets.QCheckBox('Show Motion',
+            self.chbShowMotion = QtWidgets.QCheckBox('Show motion',
                                                      self.mainWidget)
             self.chbShowMotion.setCheckState(0)
             self.chbShowMotion.stateChanged.connect(
@@ -201,7 +192,7 @@ class RTP_UI(QtWidgets.QMainWindow):
             self.chbUseGPU.stateChanged.connect(self.enable_GPU)
 
         # --- Experiment control space ----------------------------------------
-        # Will be used by a RTP_APP obejct to place a experiment controls.
+        # Will be used by a RtpApp obejct to place a experiment controls.
         # This needs to be defined before the app_obj.ui_set_param() call.
         self.hBoxExpCtrls = QtWidgets.QHBoxLayout()
 
@@ -241,33 +232,27 @@ class RTP_UI(QtWidgets.QMainWindow):
         # Selection buttons
         self.RTP_btn = OrderedDict()
 
-        # SCANONSET
-        if 'SCANONSET' in rtp_objs:
-            self.RTP_btn['SCANONSET'] = \
-                QtWidgets.QPushButton('SCAN ONSET', self.mainWidget)
-            self.RTP_btn['SCANONSET'].clicked.connect(
-                partial(self.on_clicked_setOption, 'SCANONSET'))
-        # PHYSIO
-        if 'PHYSIO' in rtp_objs and not rtp_objs['PHYSIO'].not_available:
-            self.RTP_btn['PHYSIO'] = \
-                QtWidgets.QPushButton('PHYSIO', self.mainWidget)
-            self.RTP_btn['PHYSIO'].clicked.connect(
-                partial(self.on_clicked_setOption, 'PHYSIO'))
+        # EXTSIG
+        if 'EXTSIG' in rtp_objs:
+            self.RTP_btn['EXTSIG'] = \
+                QtWidgets.QPushButton('EXT SIGNAL', self.mainWidget)
+            self.RTP_btn['EXTSIG'].clicked.connect(
+                partial(self.on_clicked_setOption, 'EXTSIG'))
         # WATCH
         self.RTP_btn['WATCH'] = \
             QtWidgets.QPushButton('WATCH', self.mainWidget)
         self.RTP_btn['WATCH'].clicked.connect(
             partial(self.on_clicked_setOption, 'WATCH'))
-        # TSHIFT
-        self.RTP_btn['TSHIFT'] = \
-            QtWidgets.QPushButton('TSHIFT', self.mainWidget)
-        self.RTP_btn['TSHIFT'].clicked.connect(
-            partial(self.on_clicked_setOption, 'TSHIFT'))
         # VOLREG
         self.RTP_btn['VOLREG'] = \
             QtWidgets.QPushButton('VOLREG', self.mainWidget)
         self.RTP_btn['VOLREG'].clicked.connect(
             partial(self.on_clicked_setOption, 'VOLREG'))
+        # TSHIFT
+        self.RTP_btn['TSHIFT'] = \
+            QtWidgets.QPushButton('TSHIFT', self.mainWidget)
+        self.RTP_btn['TSHIFT'].clicked.connect(
+            partial(self.on_clicked_setOption, 'TSHIFT'))
         # SMOOTH
         self.RTP_btn['SMOOTH'] = \
             QtWidgets.QPushButton('SMOOTH', self.mainWidget)
@@ -282,12 +267,8 @@ class RTP_UI(QtWidgets.QMainWindow):
         # RTP setting pane stack
         self.stackedRTPSetPanes = QtWidgets.QStackedWidget(self.mainWidget)
         self.RTPSetPanes = {}
-        for proc in (['SCANONSET', 'WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH',
-                      'REGRESS', 'PHYSIO']):
-            if proc in ('PHYSIO'):
-                if proc not in rtp_objs or rtp_objs[proc].not_available:
-                    continue
-
+        for proc in (['WATCH', 'VOLREG', 'TSHIFT', 'SMOOTH',
+                      'REGRESS', 'EXTSIG']):
             self.RTPSetPanes[proc] = QtWidgets.QGroupBox(
                     "{} options".format(proc), self.mainWidget)
             self.stackedRTPSetPanes.addWidget(self.RTPSetPanes[proc])
@@ -350,16 +331,16 @@ class RTP_UI(QtWidgets.QMainWindow):
         workDirHBox.addWidget(self.btnSetWorkDir)
 
         # --- Checkboxes ------------------------------------------------------
-        self.grpBoxChkBoxes = QtWidgets.QGroupBox("GPU/Physio/Plot",
-                                                   self.mainWidget)
+        self.grpBoxChkBoxes = QtWidgets.QGroupBox("GPU/Signal/Plot",
+                                                  self.mainWidget)
         vBoxTop.addWidget(self.grpBoxChkBoxes)
         self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
         if hasattr(self, 'chbUseGPU'):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
 
-        if hasattr(self, 'chbRecPhysio'):
-            self.ui_hChkBoxes.addWidget(self.chbRecPhysio)
-            self.ui_hChkBoxes.addWidget(self.chbShowPhysio)
+        if hasattr(self, 'chbRecSignal'):
+            self.ui_hChkBoxes.addWidget(self.chbRecSignal)
+            self.ui_hChkBoxes.addWidget(self.chbShowExtSig)
 
         if hasattr(self, 'chbShowMotion'):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
@@ -489,7 +470,9 @@ class RTP_UI(QtWidgets.QMainWindow):
                 return -1
 
         for obj in self.rtp_objs.values():
-            if hasattr(obj, 'watch_dir') and Path(obj.watch_dir) != Path(wdir):
+            if hasattr(obj, 'watch_dir') and \
+                    (obj.watch_dir is None or
+                     Path(obj.watch_dir) != Path(wdir)):
                 obj.set_param('watch_dir', Path(wdir))
 
         self.lineEditWatchDir.setText(str(wdir))
@@ -537,35 +520,35 @@ class RTP_UI(QtWidgets.QMainWindow):
                     btnObj.setStyleSheet("")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def rec_phys_chk(self, state):
-        if 'PHYSIO' not in self.rtp_objs:
+    def rec_sig_chk(self, state):
+        if 'EXTSIG' not in self.rtp_objs:
             return
 
         if state == 2:
-            self.rtp_objs['PHYSIO'].start_recording()
-            self.chbShowPhysio.setEnabled(True)
-            self.rtp_objs['PHYSIO'].set_param('enabled', True)
+            self.rtp_objs['EXTSIG'].start_recording()
+            self.chbShowExtSig.setEnabled(True)
+            self.rtp_objs['EXTSIG'].set_param('enabled', True)
         else:
-            if self.chbShowPhysio.checkState():
-                self.chbShowPhysio.setCheckState(0)
+            if self.chbShowExtSig.checkState():
+                self.chbShowExtSig.setCheckState(0)
 
-            self.rtp_objs['PHYSIO'].stop_recording()
-            self.chbShowPhysio.setEnabled(False)
-            self.rtp_objs['PHYSIO'].set_param('enabled', False)
+            self.rtp_objs['EXTSIG'].stop_recording()
+            self.chbShowExtSig.setEnabled(False)
+            self.rtp_objs['EXTSIG'].set_param('enabled', False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show_phys_chk(self, state):
-        if 'PHYSIO' not in self.rtp_objs:
+    def show_sig_chk(self, state):
+        if 'EXTSIG' not in self.rtp_objs:
             return
 
         if state == 2:
-            if not self.chbRecPhysio.checkState():
-                self.chbShowPhysio.setCheckState(0)
+            if not self.chbRecSignal.checkState():
+                self.chbShowExtSig.setCheckState(0)
                 return
 
-            self.rtp_objs['PHYSIO'].open_signal_plot()
+            self.rtp_objs['EXTSIG'].open_signal_plot()
         else:
-            self.rtp_objs['PHYSIO'].close_signal_plot()
+            self.rtp_objs['EXTSIG'].close_signal_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_mot_chk(self, state):
@@ -588,13 +571,9 @@ class RTP_UI(QtWidgets.QMainWindow):
         """ Print parameter list on text browser """
 
         all_params = OrderedDict()
-        for rtp in ('SCANONSET', 'WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH',
-                    'REGRESS', 'PHYSIO'):
+        for rtp in ('WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH',
+                    'REGRESS', 'EXTSIG'):
             if rtp not in self.rtp_objs:
-                continue
-
-            if rtp in ('PHYSIO') and \
-                    self.rtp_objs[rtp].not_available:
                 continue
 
             if not self.rtp_objs[rtp].enabled:
@@ -618,12 +597,12 @@ class RTP_UI(QtWidgets.QMainWindow):
 
         param_list = ''
         for rtp, opt_dict in all_params.items():
-            if not enable_RTP and rtp in ('WATCH', 'TSHIFT', 'VOLREG',
-                                          'SMOOTH', 'REGRESS'):
+            if not enable_RTP and rtp in ('WATCH', 'VOLREG', 'TSHIFT',
+                                          'SMOOTH', 'REGRESS', 'EXTSIG'):
                 continue
 
-            if rtp == 'PHYSIO':
-                if self.chbRecPhysio.checkState() != 2:
+            if rtp == 'EXTSIG':
+                if self.chbRecSignal.checkState() != 2:
                     continue
 
             param_list += '<p>'
@@ -672,10 +651,6 @@ class RTP_UI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
-        # Clean temporary files
-        if 'WATCH' in self.rtp_objs and self.rtp_objs['WATCH'].clean_rt_src:
-            self.rtp_objs['WATCH'].clean_files()
-
         # Move logfile to work_dir
         cpfnames = {}
         for rtp in list(self.rtp_objs.values()) + list(self.rtp_apps.values()):

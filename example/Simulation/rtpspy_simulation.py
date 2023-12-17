@@ -13,7 +13,7 @@ import sys
 import numpy as np
 import nibabel as nib
 
-from rtpspy import RTP_APP
+from rtpspy import RtpApp
 from rtpspy import RTP_PHYSIO_DUMMY
 
 
@@ -39,8 +39,8 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # --- Create RTP_APP instance -----------------------------------------
-    rtp_app = RTP_APP(work_dir=work_dir)
+    # --- Create RtpApp instance -----------------------------------------
+    rtp_app = RtpApp(work_dir=work_dir)
 
     # --- Make mask images ------------------------------------------------
     rtp_app.fastSeg_batch_size = 2  # Adjust the size according to GPU

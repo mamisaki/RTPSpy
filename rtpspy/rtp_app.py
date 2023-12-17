@@ -35,42 +35,47 @@ import matplotlib.pyplot as plt
 try:
     # Load modules from the same directory
     from .rtp_common import RTP, boot_afni, MatplotlibWindow, DlgProgressBar
-    from .rtp_watch import RTP_WATCH
-    from .rtp_tshift import RTP_TSHIFT
-    from .rtp_volreg import RTP_VOLREG
-    from .rtp_smooth import RTP_SMOOTH
-    from .rtp_regress import RTP_REGRESS
-    from .rtp_scanonset import RTP_SCANONSET
-    from .rtp_physio import RTP_PHYSIO
-    from .rtp_retrots import RTP_RETROTS
-    from .rtp_imgproc import RTP_IMGPROC
+    from .rtp_watch_SiemensXA30 import RtpWatch
+    from .rtp_volreg import RtpVolreg
+    from .rtp_tshift import RtpTshift
+    from .rtp_smooth import RtpSmooth
+    from .rtp_regress import RtpRegress
+    from .rtp_ext_signal import RtpExtSignal
+    from .rtp_retrots import RtpRetrots
+    from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
 
-except Exception:  # For DEBUG environment
+except Exception:
+    # For DEBUG environment
+    sys.path.append("./")
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
                                    DlgProgressBar)
-    from rtpspy import (RTP_WATCH, RTP_TSHIFT, RTP_VOLREG, RTP_SMOOTH,
-                        RTP_REGRESS, RTP_SCANONSET, RTP_PHYSIO, RTP_RETROTS,
-                        RTP_IMGPROC)
+    from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
+                        RtpRegress, RtpExtSignal, RtpRetrots,
+                        RtpImgProc)
 
     from rtpspy.mri_sim import rtMRISim
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
 
 
-# %% RTP_APP class ============================================================
-class RTP_APP(RTP):
+# %% RtpApp class ============================================================
+class RtpApp(RTP):
     """ RTP application class """
-    ROI_resample_opts = ['nearestNeighbor', 'linear', 'bSpline']
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, default_rtp_params=None, work_dir='', **kwargs):
-        super(RTP_APP, self).__init__(**kwargs)
+        """
+        Parameters:
+            default_rtp_params : dictionary, optional
+                Parameter dict. Defaults to None.
+            work_dir : Path or str
+                Working directory.
+        """
+        super(RtpApp, self).__init__(**kwargs)
 
         # --- Initialize parameters -------------------------------------------
         self.work_dir = work_dir
-        self.running_end_run = False
-        self.isReadyRun = False
 
         # Template images
         self.template = ''
@@ -79,6 +84,7 @@ class RTP_APP(RTP):
         self.Vent_template = ''
 
         # Image files
+        self.func_param_ref = ''  # fMRI parameter reference image
         self.func_orig = ''  # reference function image
         self.anat_orig = ''  # anatomy image
         self.alAnat = ''     # anatomy image aligned to the reference function
@@ -93,6 +99,8 @@ class RTP_APP(RTP):
         self.enable_RTP = 0
 
         self.AFNIRT_TRUSTHOST = None
+        self._isRunning_end_run_proc = False
+        self._isReadyRun = False
 
         # mask creation parameter
         if torch.cuda.is_available():
@@ -121,6 +129,7 @@ class RTP_APP(RTP):
 
         # Interpolation option for antsApplyTransforms at resampleing the
         # warped ROI: ['linear'|'nearestNeighbor'|'bSpline']
+        self.ROI_resample_opts = ['nearestNeighbor', 'linear', 'bSpline']
         self.ROI_resample = 'nearestNeighbor'
 
         # Prepare the timer to check the running status
@@ -171,15 +180,14 @@ class RTP_APP(RTP):
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
-        rtp_objs['SCANONSET'] = RTP_SCANONSET()
-        rtp_objs['WATCH'] = RTP_WATCH(scan_onset=rtp_objs['SCANONSET'])
-        rtp_objs['TSHIFT'] = RTP_TSHIFT()
-        rtp_objs['VOLREG'] = RTP_VOLREG()
-        rtp_objs['SMOOTH'] = RTP_SMOOTH()
-        rtp_objs['PHYSIO'] = RTP_PHYSIO(scan_onset=rtp_objs['SCANONSET'])
-        rtp_objs['RETROTS'] = RTP_RETROTS()
-        rtp_objs['REGRESS'] = RTP_REGRESS(
-            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['PHYSIO'])
+        rtp_objs['EXTSIG'] = RtpExtSignal()
+        rtp_objs['WATCH'] = RtpWatch()
+        rtp_objs['VOLREG'] = RtpVolreg()
+        rtp_objs['TSHIFT'] = RtpTshift()
+        rtp_objs['SMOOTH'] = RtpSmooth()
+        rtp_objs['RETROTS'] = RtpRetrots()
+        rtp_objs['REGRESS'] = RtpRegress(
+            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['EXTSIG'])
         self.rtp_objs = rtp_objs
 
         # --- Set the defaulr RTP parameters ----------------------------------
@@ -241,7 +249,7 @@ class RTP_APP(RTP):
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
 
-            scan_onset = self.rtp_objs['SCANONSET'].scan_onset
+            scan_onset = self.rtp_objs['EXTSIG'].scan_onset
             val_str = f"{time.time()-scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
             if self.extApp_sock is not None:
                 # Send data to the external application via socket,
@@ -303,7 +311,7 @@ class RTP_APP(RTP):
         for ii in range(self.num_ROIs):
             self.roi_sig[ii][:] = []
 
-        return super(RTP_APP, self).end_reset()
+        return super(RtpApp, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_proc(self):
@@ -315,9 +323,8 @@ class RTP_APP(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_dcm2nii(self):
         # Select dicom directory
-        watch_dir = str(Path(self.rtp_objs['WATCH'].watch_dir).absolute())
         dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_win, 'Select dicom file directory', watch_dir)
+            self.main_win, 'Select dicom file directory', str(self.work_dir))
 
         if dcm_dir == '':
             return
@@ -325,7 +332,7 @@ class RTP_APP(RTP):
         out_dir = Path(self.work_dir).absolute()
         if out_dir == '':
             out_dir = './'
-        cmd = f"dcm2niix_afni -o {out_dir} {dcm_dir}"
+        cmd = f"dcm2niix -f sub-%n_ser-%s_desc-%d -o {out_dir} {dcm_dir}"
         try:
             ostr = subprocess.check_output(shlex.split(cmd))
         except Exception as e:
@@ -368,7 +375,7 @@ class RTP_APP(RTP):
 
         """
         # Check work_dir
-        if type(self.work_dir) == str and self.work_dir == '':
+        if type(self.work_dir) is str and self.work_dir == '':
             self.errmsg("Working directory is not set.")
             return
 
@@ -477,7 +484,7 @@ class RTP_APP(RTP):
             del self.proc_times['SkullStrip']
 
         # Make image processor object
-        improc = RTP_IMGPROC(main_win=self.main_win, verb=self._verb)
+        improc = RtpImgProc(main_win=self.main_win, verb=self._verb)
         improc.proc_times = self.proc_times
 
         # Set total_ETA for the progress report.
@@ -546,7 +553,7 @@ class RTP_APP(RTP):
 
                 # If json file exists copy it too
                 src_f = src_f.replace("'", "")
-                src_f = re.sub('\[\d+\]' , '', src_f)
+                src_f = re.sub(r'\[\d+\]', '', src_f)
                 if '.gz' in Path(src_f).suffixes:
                     src_f_stem = Path(Path(src_f).stem).stem
                 else:
@@ -570,7 +577,8 @@ class RTP_APP(RTP):
                             slice_timing = header.get_slice_times()
                         except nib.spatialimages.HeaderDataError:
                             pass
-                    elif hasattr(header, 'info') and 'TAXIS_FLOATS' in header.info:
+                    elif hasattr(header, 'info') and \
+                            'TAXIS_FLOATS' in header.info:
                         slice_timing = header.info['TAXIS_OFFSETS']
 
                     if len(slice_timing):
@@ -802,7 +810,7 @@ class RTP_APP(RTP):
                     for attr, val in params.items():
                         self.rtp_objs[proc].set_param(attr, val)
 
-            for proc in (['WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH', 'REGRESS']):
+            for proc in (['WATCH', 'VOLREG', 'TSHIFT', 'SMOOTH', 'REGRESS']):
                 if show_progress:
                     progress += 100//5
                     progress_bar.set_value(progress)
@@ -834,71 +842,6 @@ class RTP_APP(RTP):
                             if show_progress and progress_bar.isVisible():
                                 progress_bar.close()
                                 return -1
-                        else:
-                            NSlices = nib.load(self.func_orig).shape[2]
-                            pobj.set_param('NSlices', NSlices)
-
-                    elif proc == 'TSHIFT':
-                        if not Path(self.func_orig).is_file():
-                            if not ignore_error:
-                                self.errmsg("Not found 'Base function image'"
-                                            f" {self.func_orig}.")
-                                if show_progress and progress_bar.isVisible():
-                                    progress_bar.close()
-                                    return -1
-                        else:
-                            # Set TR
-                            tr = subprocess.check_output(
-                                shlex.split(f"3dinfo -tr {self.func_orig}"))
-                            TR = float(tr.decode().rstrip())
-                            if TR == 0.0:
-                                base_f = Path(self.func_orig)
-                                if '.gz' in base_f.suffixes:
-                                    base_stem = Path(base_f.stem).stem
-                                else:
-                                    base_stem = base_f.stem
-                                json_f = base_f.parent / (base_stem + '.json')
-                                if json_f.is_file():
-                                    with open(json_f, 'r') as fd:
-                                        img_info = json.load(fd)
-                                    TR = img_info['RepetitionTime']
-
-                            if TR != 0.0:
-                                pobj.set_param('TR', TR)
-                            elif not ignore_error:
-                                # Warning TR cannot be set
-                                TR = pobj.TR
-                                msg = f"TR cannot be set from {self.func_orig}\n"
-                                msg += f"Please check if TR={TR} is correct."
-
-                                ret = QtWidgets.QMessageBox.warning(
-                                    self.main_win, "Check TR", msg,
-                                    QtWidgets.QMessageBox.Ok,
-                                    QtWidgets.QMessageBox.Cancel)
-                                if ret == QtWidgets.QMessageBox.Cancel:
-                                    return -1
-
-                            # Set slice timing
-                            pobj.set_param('slice_timing_from_sample',
-                                           self.func_orig)
-
-                            Nslice = nib.load(self.func_orig).shape[2]
-                            if len(pobj.slice_timing) != Nslice:
-                                if self.main_win is not None:
-                                    ret = pobj.set_param(
-                                        'slice_timing_from_sample')
-                                    if ret is not None and ret == -1:
-                                        # Canceled
-                                        if show_progress and \
-                                                progress_bar.isVisible():
-                                            progress_bar.close()
-                                        return -1
-                                else:
-                                    if not ignore_error:
-                                        self.errmsg(
-                                            "slice_timing is not set in" +
-                                            " TSHIFT.")
-                                        return -1
 
                     elif proc == 'VOLREG':
                         if Path(self.func_orig).is_file():
@@ -910,6 +853,20 @@ class RTP_APP(RTP):
                                 if show_progress and progress_bar.isVisible():
                                     progress_bar.close()
                                 return -1
+
+                    elif proc == 'TSHIFT':
+                        if not Path(self.func_param_ref).is_file():
+                            if not ignore_error:
+                                self.errmsg(
+                                    "Not found 'fMRI parameter reference'" +
+                                    f" {self.func_param_ref}.")
+                                if show_progress and progress_bar.isVisible():
+                                    progress_bar.close()
+                                    return -1
+                        else:
+                            # Get parameters from a paremeter reference image
+                            self.rtp_objs['TSHIFT'].set_from_sample(
+                                self.func_param_ref)
 
                     elif proc == 'SMOOTH':
                         if Path(self.RTP_mask).is_file():
@@ -1034,7 +991,7 @@ class RTP_APP(RTP):
             else:
                 proc_chain = None
 
-            for proc in (['TSHIFT', 'VOLREG', 'SMOOTH', 'REGRESS']):
+            for proc in (['VOLREG', 'TSHIFT', 'SMOOTH', 'REGRESS']):
                 if proc not in self.rtp_objs:
                     continue
 
@@ -1065,7 +1022,7 @@ class RTP_APP(RTP):
                     last_proc = pobj
 
             last_proc.save_proc = True
-            last_proc.next_proc = self  # self (RTP_APP) is the last process
+            last_proc.next_proc = self  # self (RtpApp) is the last process
 
             # Show plot windows
             if self.main_win is not None:
@@ -1076,7 +1033,7 @@ class RTP_APP(RTP):
                         self.rtp_objs['REGRESS'].phys_reg != 'None':
                     # Start physio recording
                     self.main_win.chbRecPhysio.setCheckState(2)
-                    self.main_win.chbShowPhysio.setCheckState(2)
+                    self.main_win.chbShowExtSig.setCheckState(2)
                     # chbRecPhysio.setCheckState(2) enables physio UIs
                     if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
                         for ui in self.rtp_objs['PHYSIO'].ui_objs:
@@ -1112,11 +1069,6 @@ class RTP_APP(RTP):
             if self._verb:
                 self.logmsg(log_str, show_ui=False)
 
-            # Set physio.wait_scan
-            if 'PHYSIO' in self.rtp_objs and self.rtp_objs['PHYSIO'].enabled:
-                self.rtp_objs['PHYSIO'].wait_scan = True
-                self.rtp_objs['PHYSIO'].scanning = False
-
         # --- Ready application -----------------------------------------------
         if self.run_extApp:
             # Ready external application
@@ -1137,12 +1089,14 @@ class RTP_APP(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            self.rtp_objs['SCANONSET'].wait_scan_onset()
+            self.main_win.chbRecSignal.setCheckState(2)
+            self.main_win.chbShowExtSig.setCheckState(2)
+            self.rtp_objs['EXTSIG'].wait_scan_onset()
 
             # Run wait_onset thread
             self.th_wait_onset = QtCore.QThread()
-            self.wait_onset = RTP_APP.WAIT_ONSET(self.rtp_objs['SCANONSET'],
-                                                 self.extApp_sock)
+            self.wait_onset = RtpApp.WAIT_ONSET(self.rtp_objs['EXTSIG'],
+                                                self.extApp_sock)
             self.wait_onset.moveToThread(self.th_wait_onset)
             self.th_wait_onset.started.connect(self.wait_onset.run)
             self.wait_onset.finished.connect(self.th_wait_onset.quit)
@@ -1152,7 +1106,7 @@ class RTP_APP(RTP):
             self.ui_ready_btn.setText('Waiting for scan start ...')
             self.ui_ready_btn.setEnabled(False)
             self.ui_manStart_btn.setEnabled(True)
-            self.rtp_objs['SCANONSET'].ui_manualStart_btn.setEnabled(True)
+            self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(True)
             self.ui_quit_btn.setEnabled(True)
 
             if self.simEnabled:
@@ -1160,21 +1114,18 @@ class RTP_APP(RTP):
                 self.ui_top_tabs.setCurrentIndex(
                     self.ui_top_tabs.indexOf(self.ui_simulationTab))
 
-        self.isReadyRun = True
+        self._isReadyRun = True
         return proc_chain
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def manual_start(self):
-        self.rtp_objs['SCANONSET'].scanning = True
-        self.rtp_objs['SCANONSET'].scan_onset = time.time()
-        scan_onset = self.rtp_objs['SCANONSET'].scan_onset
-
-        return scan_onset
+        self.rtp_objs['EXTSIG'].manual_start()
+        return self.rtp_objs['EXTSIG'].scan_onset
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_run(self, quit_btn=False, scan_name=None):
 
-        if self.running_end_run:
+        if self._isRunning_end_run_proc:
             """
             Check if end_run is running.
             end_run could be called simultaneously by the timer thread's'
@@ -1182,7 +1133,7 @@ class RTP_APP(RTP):
             """
             return
 
-        self.running_end_run = True
+        self._isRunning_end_run_proc = True
 
         self.chk_run_timer.stop()
 
@@ -1204,9 +1155,9 @@ class RTP_APP(RTP):
             # Run custom end process
             self.end_proc()
 
-            # Abort SCANONSET if it is waiting
-            self.rtp_objs['SCANONSET'].abort_waiting()
-            self.rtp_objs['SCANONSET'].end_reset()
+            # Abort scan_onset if it is waiting
+            self.rtp_objs['EXTSIG'].abort_waiting()
+            self.rtp_objs['EXTSIG'].end_reset()
 
             # Abort WAIT_ONSET thread if it is running
             if hasattr(self, 'th_wait_onset') and \
@@ -1259,14 +1210,10 @@ class RTP_APP(RTP):
 
                 # Get parameters
                 all_params = {}
-                for rtp in ('SCANONSET', 'WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH',
-                            'REGRESS', 'PHYSIO'):
+                for rtp in ('WATCH', 'VOLREG', 'TSHIFT', 'SMOOTH',
+                            'REGRESS', 'EXTSIG'):
                     if rtp not in self.rtp_objs or \
                             not self.rtp_objs[rtp].enabled:
-                        continue
-
-                    if rtp in ('PHYSIO') and \
-                            self.rtp_objs[rtp].not_available:
                         continue
 
                     if not self.rtp_objs[rtp].enabled:
@@ -1300,7 +1247,7 @@ class RTP_APP(RTP):
                 root_proc = None
                 last_proc = None
                 for rtp, obj in self.rtp_objs.items():
-                    if rtp in ('SCANONSET', 'PHYSIO', 'RETROTS'):
+                    if rtp in ('EXTSIG', 'RETROTS'):
                         continue
                     if obj.enabled:
                         if root_proc is None:
@@ -1352,12 +1299,12 @@ class RTP_APP(RTP):
         if self.main_win is not None:
             # Enable ui
             self.ui_setEnabled(True)
-            self.rtp_objs['SCANONSET'].ui_manualStart_btn.setEnabled(True)
+            self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(True)
             self.main_win.options_tab.setCurrentIndex(0)
             # self.ui_top_tabs.setCurrentIndex(0)
 
-        self.isReadyRun = False
-        self.running_end_run = False
+        self._isReadyRun = False
+        self._isRunning_end_run_proc = False
 
         return save_fnames
 
@@ -1402,7 +1349,7 @@ class RTP_APP(RTP):
 
         # Get cursor position
         if ovl in ['roi', 'wm', 'vent', 'mask']:
-            ovl_v = nib.load(ovl_img).get_data()
+            ovl_v = nib.load(ovl_img).get_fdata()
             if ovl_v.ndim > 3:
                 ovl_v = ovl_v[:, :, :, 0]
             ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
@@ -1622,7 +1569,7 @@ class RTP_APP(RTP):
                             if np.nanmin(y) < mu-3*sd:
                                 yl[0] = mu-3.5*sd
                                 rescale = True
-                            
+
                             if np.nanmax(y) > mu+3*sd:
                                 yl[1] = mu+3.5*sd
                                 rescale = True
@@ -1663,9 +1610,9 @@ class RTP_APP(RTP):
             return
 
         self.thPltROISig = QtCore.QThread()
-        self.pltROISig = RTP_APP.PlotROISignal(self, num_ROIs=num_ROIs,
-                                               roi_labels=roi_labels,
-                                               main_win=self.main_win)
+        self.pltROISig = RtpApp.PlotROISignal(self, num_ROIs=num_ROIs,
+                                              roi_labels=roi_labels,
+                                              main_win=self.main_win)
         self.pltROISig.moveToThread(self.thPltROISig)
         self.thPltROISig.started.connect(self.pltROISig.run)
         self.pltROISig.finished.connect(self.thPltROISig.quit)
@@ -1795,7 +1742,7 @@ class RTP_APP(RTP):
             if msg is not None and 'END_SESSION' in msg.decode():
                 if self.ui_quit_btn.isEnabled():
                     self.logmsg('Recv END_SESSION. End session.')
-                    if not self.running_end_run:
+                    if not self._isRunning_end_run_proc:
                         self.end_run()
                     return
                 else:
@@ -1810,17 +1757,17 @@ class RTP_APP(RTP):
             if delay > self.max_watch_wait:
                 self.logmsg(
                     f'No new file was seen for {delay:.3f} s. End session.')
-                if not self.running_end_run:
+                if not self._isRunning_end_run_proc:
                     self.end_run()
                 return
 
         # Check scan start
         if hasattr(self, 'ui_ready_btn') and \
                 'waiting' in self.ui_ready_btn.text().lower():
-            if self.rtp_objs['SCANONSET'].scanning:
+            if self.rtp_objs['EXTSIG'].scanning:
                 self.ui_ready_btn.setText('Session is running')
                 self.ui_manStart_btn.setEnabled(False)
-                self.rtp_objs['SCANONSET'].ui_manualStart_btn.setEnabled(False)
+                self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(False)
 
         # schedule the next check
         self.chk_run_timer.start(1000)
@@ -1854,12 +1801,12 @@ class RTP_APP(RTP):
             self.rtp_objs['WATCH'].set_param('imgType', 'NIfTI')
         elif mri_src.is_dir():
             if len([ff for ff in mri_src.glob('i*')
-                    if re.match('i\d+', str(ff.name))]):
+                    if re.match(r'i\d+', str(ff.name))]):
                 self.rtp_objs['WATCH'].set_param('imgType', 'GE DICOM')
             elif len(mri_src.glob('*.dcm')):
                 self.rtp_objs['WATCH'].set_param('imgType', 'Siemens Mosaic')
 
-        # Restart RTP_WATCH observer
+        # Restart RtpWatch observer
         if hasattr(self.rtp_objs['WATCH'], 'observer') and \
                 self.rtp_objs['WATCH'].observer.is_alive():
             self.rtp_objs['WATCH'].stop_watching()
@@ -1907,7 +1854,7 @@ class RTP_APP(RTP):
             # Start physio recording
             if self.main_win is not None:
                 self.main_win.chbRecPhysio.setCheckState(2)
-                self.main_win.chbShowPhysio.setCheckState(2)
+                self.main_win.chbShowExtSig.setCheckState(2)
             else:
                 self.rtp_objs['PHYSIO'].start_recording()
                 self.rtp_objs['PHYSIO'].open_signal_plot()
@@ -1933,7 +1880,7 @@ class RTP_APP(RTP):
             # Wait for physio start
             time.sleep(1)
 
-        self.rtp_objs['SCANONSET'].manual_start()
+        self.rtp_objs['EXTSIG'].manual_start()
         self.ui_startSim_btn.setEnabled(False)
         if not self.ui_quit_btn.isEnabled():
             self.ui_quit_btn.setEnabled(True)
@@ -2218,6 +2165,10 @@ class RTP_APP(RTP):
 
             if type(val) is tuple:
                 if self.main_win is not None:
+                    self.extApp_addr = val
+                    if not self.isAlive_extApp():
+                        self.extApp_addr = None
+                        return
                     address_str = "{}:{}".format(*val)
                     self.ui_extApp_addr_lnEd.blockSignals(True)
                     self.ui_extApp_addr_lnEd.setText(address_str)
@@ -2276,21 +2227,22 @@ class RTP_APP(RTP):
                         reset_fn(self.sig_save_file)
                     return
 
-        elif attr in ('template', 'ROI_template', 'WM_template',
-                      'Vent_template',
-                      'anat_orig', 'alAnat', 'func_orig', 'brain_anat_orig',
+        elif attr in ('anat_orig', 'func_orig', 'func_param_ref',
+                      'template', 'ROI_template', 'WM_template',
+                      'Vent_template', 'alAnat', 'brain_anat_orig',
                       'ROI_orig', 'WM_orig', 'Vent_orig',
                       'RTP_mask', 'GSR_mask', 'simfMRIData', 'simECGData',
                       'simRespData'):
-            msglab = {'template': 'template image',
+            msglab = {'anat_orig': 'anatomy image in original space',
+                      'func_orig': 'function image in original space',
+                      'func_param_ref': 'fMRI paremter reference image',
+                      'template': 'template image',
                       'ROI_template': 'ROI mask on template',
                       'WM_template': "white matter mask on template",
                       'Vent_template': "ventricle mask on template",
-                      'anat_orig': 'anatomy image in original space',
+                      'alAnat': 'aligned anatomy image in original space',
                       'brain_anat_orig':
                           'skull-stripprd brain image in original space',
-                      'alAnat': 'aligned anatomy image in original space',
-                      'func_orig': 'function image in original space',
                       'ROI_orig': 'ROI mask in original space',
                       'WM_orig': 'white matter mask in original space',
                       'Vent_orig': 'ventricle mask in original space',
@@ -2321,7 +2273,7 @@ class RTP_APP(RTP):
                     else:
                         startdir = self.work_dir
 
-                dlgMdg = "RTP_APP: Select {}".format(msglab[attr])
+                dlgMdg = "RtpApp: Select {}".format(msglab[attr])
                 if attr in ('simECGData', 'simRespData'):
                     filt = '*.*;;*.txt;;*.1D'
                 else:
@@ -2359,7 +2311,7 @@ class RTP_APP(RTP):
                 if val is not None and os.path.isdir(val):
                     startdir = val
 
-                dlgMdg = "RTP_APP: Select fMRI data directory for simulation"
+                dlgMdg = "RtpApp: Select fMRI data directory for simulation"
                 simSrcDir = QtWidgets.QFileDialog.getExistingDirectory(
                     self.main_win, "Select directory", str(startdir))
 
@@ -2403,7 +2355,7 @@ class RTP_APP(RTP):
                 self.ui_simPhysPort_cmbBx.setCurrentText(val)
 
         elif attr == 'ROI_resample':
-            if val not in RTP_APP.ROI_resample_opts:
+            if val not in self.ROI_resample_opts:
                 return
 
             if reset_fn is None and hasattr(self, 'ui_ROI_resample_cmbBx'):
@@ -2521,34 +2473,34 @@ class RTP_APP(RTP):
                 "background-color: rgb(151,217,235);")
             self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
 
-        # --- Mask creation tab -----------------------------------------------
-        self.ui_maskCreationTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_maskCreationTab, 'Mask creation')
-        self.ui_maskCreation_fLayout = \
-            QtWidgets.QFormLayout(self.ui_maskCreationTab)
+        # --- Preprocessing tab -----------------------------------------------
+        self.ui_preprocessingTab = QtWidgets.QWidget()
+        self.ui_top_tabs.addTab(self.ui_preprocessingTab, 'Preprocessing')
+        self.ui_preprocessing_fLayout = \
+            QtWidgets.QFormLayout(self.ui_preprocessingTab)
 
-        # --- Mask creation group ---
-        self.ui_MaskCreate_grpBx = QtWidgets.QGroupBox("Create masks")
-        MaskCreate_gLayout = QtWidgets.QGridLayout(self.ui_MaskCreate_grpBx)
-        self.ui_maskCreation_fLayout.addRow(self.ui_MaskCreate_grpBx)
-        self.ui_objs.append(self.ui_MaskCreate_grpBx)
+        # --- Preprocessing group ---
+        self.ui_RefImg_grpBx = QtWidgets.QGroupBox("Reference images")
+        RefImg_gLayout = QtWidgets.QGridLayout(self.ui_RefImg_grpBx)
+        self.ui_preprocessing_fLayout.addRow(self.ui_RefImg_grpBx)
+        self.ui_objs.append(self.ui_RefImg_grpBx)
 
         # --- dcm2nii ---
         ri = 0
         self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2nii')
         self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
-        MaskCreate_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
+        RefImg_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
 
         # -- Anatomy orig image --
         ri += 1
         var_lb = QtWidgets.QLabel("Anatomy image :")
-        MaskCreate_gLayout.addWidget(var_lb, ri, 0)
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_anat_orig_lnEd.setReadOnly(True)
         self.ui_anat_orig_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        MaskCreate_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
+        RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
 
         self.ui_anat_orig_btn = QtWidgets.QPushButton('Set')
         self.ui_anat_orig_btn.clicked.connect(
@@ -2556,23 +2508,23 @@ class RTP_APP(RTP):
                                        self.ui_anat_orig_lnEd.setText))
         self.ui_anat_orig_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        MaskCreate_gLayout.addWidget(self.ui_anat_orig_btn, ri, 2)
+        RefImg_gLayout.addWidget(self.ui_anat_orig_btn, ri, 2)
 
         self.ui_anat_orig_del_btn = QtWidgets.QPushButton('Unset')
         self.ui_anat_orig_del_btn.clicked.connect(
             lambda: self.delete_file('anat_orig', keepfile=True))
-        MaskCreate_gLayout.addWidget(self.ui_anat_orig_del_btn, ri, 3)
+        RefImg_gLayout.addWidget(self.ui_anat_orig_del_btn, ri, 3)
 
         # -- function orig image --
         ri += 1
         var_lb = QtWidgets.QLabel("Base function image : ")
-        MaskCreate_gLayout.addWidget(var_lb, ri, 0)
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_func_orig_lnEd.setReadOnly(True)
         self.ui_func_orig_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        MaskCreate_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
+        RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
 
         self.ui_func_orig_btn = QtWidgets.QPushButton('Set')
         self.ui_func_orig_btn.clicked.connect(
@@ -2580,12 +2532,12 @@ class RTP_APP(RTP):
                                        self.ui_func_orig_lnEd.setText))
         self.ui_func_orig_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        MaskCreate_gLayout.addWidget(self.ui_func_orig_btn, ri, 2)
+        RefImg_gLayout.addWidget(self.ui_func_orig_btn, ri, 2)
 
         self.ui_func_orig_del_btn = QtWidgets.QPushButton('Unset')
         self.ui_func_orig_del_btn.clicked.connect(
             lambda: self.delete_file('func_orig', keepfile=True))
-        MaskCreate_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
+        RefImg_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
 
         # -- CreateMasks button --
         ri += 1
@@ -2596,7 +2548,7 @@ class RTP_APP(RTP):
                                           no_FastSeg=self.no_FastSeg))
         self.ui_CreateMasks_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        MaskCreate_gLayout.addWidget(self.ui_CreateMasks_btn, ri, 0, 1, 3)
+        RefImg_gLayout.addWidget(self.ui_CreateMasks_btn, ri, 0, 1, 3)
         self.ui_objs.append(self.ui_CreateMasks_btn)
 
         # no_FastSeg checkbox
@@ -2605,13 +2557,37 @@ class RTP_APP(RTP):
         self.ui_no_FastSeg_chb.stateChanged.connect(
                 lambda x: self.set_param('no_FastSeg', x,
                                          self.ui_no_FastSeg_chb.setCheckState))
-        MaskCreate_gLayout.addWidget(self.ui_no_FastSeg_chb, ri, 3, 1, 1)
+        RefImg_gLayout.addWidget(self.ui_no_FastSeg_chb, ri, 3, 1, 1)
         self.ui_objs.append(self.ui_no_FastSeg_chb)
+
+        # -- paremeter reference image --
+        ri += 1
+        var_lb = QtWidgets.QLabel("fMRI parameter refrence : ")
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_param_ref_lnEd = QtWidgets.QLineEdit()
+        self.ui_param_ref_lnEd.setReadOnly(True)
+        self.ui_param_ref_lnEd.setStyleSheet(
+            'background: white; border: 0px none;')
+        RefImg_gLayout.addWidget(self.ui_param_ref_lnEd, ri, 1)
+
+        self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
+        self.ui_param_ref_btn.clicked.connect(
+                lambda: self.set_param('func_param_ref', '',
+                                       self.ui_param_ref_lnEd.setText))
+        self.ui_param_ref_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);")
+        RefImg_gLayout.addWidget(self.ui_param_ref_btn, ri, 2)
+
+        self.ui_param_ref_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_param_ref_del_btn.clicked.connect(
+            lambda: self.delete_file('func_param_ref', keepfile=True))
+        RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
 
         # --- check ROIs groups ---
         self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Check masks on AFNI")
         ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
-        self.ui_maskCreation_fLayout.addRow(self.ui_ChkMask_grpBx)
+        self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
         self.ui_objs.append(self.ui_ChkMask_grpBx)
 
         self.ui_chkFuncAnat_btn = \
@@ -2644,12 +2620,12 @@ class RTP_APP(RTP):
         self.ui_chkGSRmask_btn = QtWidgets.QPushButton('GSR mask')
         self.ui_chkGSRmask_btn.clicked.connect(
                 lambda: self.check_onAFNI('func', 'GSRmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 1, 0)
+        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 0, 5)
 
         self.ui_chkRTPmask_btn = QtWidgets.QPushButton('RTP mask')
         self.ui_chkRTPmask_btn.clicked.connect(
                 lambda: self.check_onAFNI('func', 'RTPmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 1, 1)
+        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 0, 6)
 
         # --- Template tab ----------------------------------------------------
         self.ui_templateTab = QtWidgets.QWidget()
@@ -2719,7 +2695,7 @@ class RTP_APP(RTP):
         Template_gLayout.addWidget(var_ROI_resample_lb, ri, 0)
 
         self.ui_ROI_resample_cmbBx = QtWidgets.QComboBox()
-        self.ui_ROI_resample_cmbBx.addItems(RTP_APP.ROI_resample_opts)
+        self.ui_ROI_resample_cmbBx.addItems(self.ROI_resample_opts)
         self.ui_ROI_resample_cmbBx.setCurrentText(self.ROI_resample)
         self.ui_ROI_resample_cmbBx.currentIndexChanged.connect(
                 lambda idx:
@@ -3122,7 +3098,7 @@ class RTP_APP(RTP):
         self.ui_manStart_btn = QtWidgets.QPushButton('Manual start')
         self.ui_manStart_btn.setStyleSheet("background-color: rgb(94,63,153);")
         self.ui_manStart_btn.clicked.connect(
-            self.rtp_objs['SCANONSET'].manual_start)
+            self.rtp_objs['EXTSIG'].manual_start)
         self.ui_manStart_btn.setEnabled(False)
         ui_readyQiut_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
 
@@ -3143,12 +3119,12 @@ class RTP_APP(RTP):
                       'simCom_descs', 'mri_sim', 'brain_anat_orig',
                       'roi_sig', 'plt_xi', 'num_ROIs',
                       'roi_labels', 'enable_RTP', 'proc_times0',
-                      'running_end_run', 'extApp_addr', 'extApp_proc',
+                      '_isRunning_end_run_proc', 'extApp_proc',
                       'extApp_sock', 'prtime_keys', 'run_extApp',
-                      'sim_isRunning')
+                      'sim_isRunning', 'extApp_isAlive', 'ROI_resample_opts')
 
         for k in excld_opts:
-            if k in opts:
+            if k in opts or k[0] == '_':
                 del opts[k]
 
         return opts
@@ -3193,8 +3169,8 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP_APP instance
-    rtp_app = RTP_APP()
+    # Create RtpApp instance
+    rtp_app = RtpApp()
     rtp_app.work_dir = work_dir
 
     # --- Make mask images ----------------------------------------------------
@@ -3234,12 +3210,11 @@ if __name__ == '__main__':
 
     # RTP parameters
     rtp_params = {'WATCH': {'watch_dir': watch_dir,
-                            'watch_file_pattern': watch_file_pattern,
-                            'scan_onset': None},
+                            'watch_file_pattern': watch_file_pattern},
+                  'VOLREG': {'regmode': 'cubic'},
                   'TSHIFT': {'slice_timing_from_sample': testdata_f,
                              'method': 'cubic', 'ignore_init': 3,
                              'ref_time': 0},
-                  'VOLREG': {'regmode': 'cubic'},
                   'SMOOTH': {'blur_fwhm': 6.0},
                   'REGRESS': {'max_poly_order': np.inf, 'mot_reg': 'mot12',
                               'GS_reg': True, 'WM_reg': True, 'Vent_reg': True,
@@ -3255,10 +3230,9 @@ if __name__ == '__main__':
     fmri_data = np.asanyarray(img.dataobj)
     N_vols = img.shape[-1]
 
-    # --- Feed data to the do_proc chain (skip RTP_WATCH for debug) -----------
+    # --- Feed data to the do_proc chain (skip RtpWatch for debug) -----------
     rtp_app.ready_to_run()
-    rtp_app.rtp_objs['SCANONSET'].scanning = True
-    rtp_app.rtp_objs['SCANONSET'].scan_onset = time.time()
+    rtp_app.rtp_objs['EXTSIG'].manual_start()
     for ii in range(N_vols):
         save_filename = f"test_nr_{ii:04d}.nii.gz"
         fmri_img = nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine)
@@ -3270,12 +3244,11 @@ if __name__ == '__main__':
 
     # --- Simulate scan (Copy data volume-by-volume) --------------------------
     rtp_app.ready_to_run()
-    rtp_app.rtp_objs['SCANONSET'].scanning = True
-    rtp_app.rtp_objs['SCANONSET'].scan_onset = time.time()
+    rtp_app.rtp_objs['EXTSIG'].manual_start()
     next_tr = 2.0
     for ii in range(N_vols):
         next_tr = (ii+1)*2.0
-        while time.time() - rtp_app.rtp_objs['SCANONSET'].scan_onset < next_tr:
+        while time.time() - rtp_app.rtp_objs['EXTSIG'].scan_onset < next_tr:
             time.sleep(0.001)
 
         save_filename = watch_dir / f"test_nr_{ii:04d}.nii.gz"

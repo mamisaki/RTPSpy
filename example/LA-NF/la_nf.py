@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LA-NF application with RTP_APP
+LA-NF application with RtpApp
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -17,11 +17,11 @@ import numpy as np
 import nibabel as nib
 from PyQt5 import QtWidgets, QtCore
 
-from rtpspy.rtp_app import RTP_APP
+from rtpspy.rtp_app import RtpApp
 
 
-# %% LA_NF class =============================================================
-class LA_NF(RTP_APP):
+# %% LANF class =============================================================
+class LANF(RtpApp):
     """
     Left amygdala (LA) ROI signal neurofeedback.
     The signal is sent to an external neurofedback presentation application.
@@ -30,7 +30,7 @@ class LA_NF(RTP_APP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, default_rtp_params=None, **kwargs):
 
-        super(LA_NF, self).__init__(**kwargs)
+        super(LANF, self).__init__(**kwargs)
 
         # Task parameters
         self.NF_target_levels = {'Practice': 0.2, 'NF1': 0.4, 'NF2': 0.8,
@@ -108,7 +108,7 @@ class LA_NF(RTP_APP):
                 f'SET_LOGDIR {self.work_dir/"log"};'.encode('utf-8')):
             return -1
 
-        # --- Send session preparatiom command to extApp ----------------------
+        # --- Send session preparation command to extApp ----------------------
         if session == 'Rest':
             prep_cmd = 'PREP_Rest;'
             task_param = {'session': session, 'total_duration': self.restDur}
@@ -225,7 +225,7 @@ class LA_NF(RTP_APP):
                 # Send data to the external application via socket,
                 # self.extApp_sock
                 try:
-                    scan_onset = self.rtp_objs['SCANONSET'].scan_onset
+                    scan_onset = self.rtp_objs['EXTSIG'].scan_onset
                     val_str = f"{time.time()-scan_onset:.4f},"
                     val_str += f"{vol_idx},{mean_sig:.6f}"
                     msg = f"NF {val_str};"
@@ -369,10 +369,10 @@ class LA_NF(RTP_APP):
         row_i = 0
 
         # ROI make button
-        self.ui_makeROI_btn = QtWidgets.QPushButton('Go to mask creation')
+        self.ui_makeROI_btn = QtWidgets.QPushButton('Go to parameter setting')
         self.ui_makeROI_btn.clicked.connect(
                 lambda:
-                self.ui_top_tabs.setCurrentWidget(self.ui_maskCreationTab))
+                self.ui_top_tabs.setCurrentWidget(self.ui_preprocessingTab))
         self.ui_makeROI_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
         ROIdef_gLayout.addWidget(self.ui_makeROI_btn, row_i, 0)
@@ -389,13 +389,13 @@ class LA_NF(RTP_APP):
         ROIdef_gLayout.addWidget(ui_NFROIh_lb, row_i, 1)
         ROIdef_gLayout.addWidget(self.ui_NFROI_lnEd, row_i, 2, 1, 4)
 
-        # Add 'Go to Task' button in the 'Mask creation' tab
+        # Add 'Go to Task' button in the 'Preprocessing' tab
         self.ui_gotoTask_btn = QtWidgets.QPushButton('Go to Task')
         self.ui_gotoTask_btn.clicked.connect(
                 lambda: self.ui_top_tabs.setCurrentWidget(self.ui_taskTab))
         self.ui_gotoTask_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_maskCreation_fLayout.addRow(self.ui_gotoTask_btn)
+        self.ui_preprocessing_fLayout.addRow(self.ui_gotoTask_btn)
         self.ui_objs.append(self.ui_gotoTask_btn)
 
         # --- Task timing group ---

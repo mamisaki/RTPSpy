@@ -75,8 +75,8 @@ class RetroTSOpt(ctypes.Structure):
         self.tshift = tshift
 
 
-# %% RTP_RETROTS class ========================================================
-class RTP_RETROTS:
+# %% RtpRetrots class ========================================================
+class RtpRetrots:
 
     def __init__(self):
         librtp = ctypes.cdll.LoadLibrary(librtp_path)

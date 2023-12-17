@@ -40,8 +40,8 @@ except Exception:
     librtp_path = f'./{lib_name}'
 
 
-# %% RTP_VOLREG ===============================================================
-class RTP_VOLREG(RTP):
+# %% RtpVolreg ===============================================================
+class RtpVolreg(RTP):
     """
     Real-time online volume registration for motion correction.
     AFNI functions in librtp.so (compiled from libmri.so) is called.
@@ -67,7 +67,7 @@ class RTP_VOLREG(RTP):
             https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dvolreg.html
             for details.
         """
-        super(RTP_VOLREG, self).__init__(**kwargs)
+        super(RtpVolreg, self).__init__(**kwargs)
 
         # Set instance parameters
         self.regmode = regmode
@@ -224,7 +224,7 @@ class RTP_VOLREG(RTP):
         for ii in range(6):
             self.plt_motion[ii][:] = []
 
-        return super(RTP_VOLREG, self).end_reset()
+        return super(RtpVolreg, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_libfuncs(self):
@@ -354,7 +354,7 @@ class RTP_VOLREG(RTP):
                 ctypes.POINTER(ctypes.c_double))
 
         # -- run func --
-        regmode_id = RTP_VOLREG.regmode_dict[self.regmode]
+        regmode_id = RtpVolreg.regmode_dict[self.regmode]
         self.rtp_align_setup(base_im_p, self.nx, self.ny, self.nz, self.dx,
                              self.dy, self.dz, self.ax1, self.ax2, self.ax3,
                              regmode_id, nref, ref_ims_p, chol_fitim_p)
@@ -422,7 +422,7 @@ class RTP_VOLREG(RTP):
         motpar_p = motpar.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         # -- run func --
-        regmode_id = RTP_VOLREG.regmode_dict[self.regmode]
+        regmode_id = RtpVolreg.regmode_dict[self.regmode]
         self.rtp_align_one(fim_p, self.nx, self.ny, self.nz, self.dx, self.dy,
                            self.dz, fitim_p, chol_fitim_p, 7, self.ax1,
                            self.ax2, self.ax3, init_motpar_p, regmode_id,
@@ -453,10 +453,10 @@ class RTP_VOLREG(RTP):
             if main_win is not None:
                 main_geom = main_win.geometry()
                 x = main_geom.x() + main_geom.width() + 10
-                y = main_geom.y() + 230
+                y = main_geom.y() + 400
             else:
                 x, y = (0, 0)
-            self.plt_win.setGeometry(x, y, 500, 500)
+            self.plt_win.setGeometry(x, y, 500, 450)
 
             # Set axis
             self.mot_labels = ['roll (deg.)', 'pitch (deg.)', 'yaw (deg.)',
@@ -537,7 +537,7 @@ class RTP_VOLREG(RTP):
             return
 
         self.thPltMotion = QtCore.QThread()
-        self.pltMotion = RTP_VOLREG.PlotMotion(self, main_win=self.main_win)
+        self.pltMotion = RtpVolreg.PlotMotion(self, main_win=self.main_win)
         self.pltMotion.moveToThread(self.thPltMotion)
         self.thPltMotion.started.connect(self.pltMotion.run)
         self.pltMotion.finished.connect(self.thPltMotion.quit)
@@ -586,11 +586,15 @@ class RTP_VOLREG(RTP):
             if self.main_win is not None:
                 self.main_win.set_workDir(val)
 
+        elif attr == 'ignore_init' and reset_fn is None:
+            if hasattr(self, 'ui_ignorInit_spBx'):
+                self.ui_ignorInit_spBx.setValue(val)
+
         elif attr == 'ref_vol':
             if isinstance(val, Path):
                 val = str(val)
 
-            if type(val) == int:
+            if type(val) is int:
                 self.set_ref_vol(val)
                 if hasattr(self, 'ui_baseVol_lnEd'):
                     self.ui_baseVol_lnEd.setText(
@@ -643,7 +647,7 @@ class RTP_VOLREG(RTP):
                 if hasattr(self, 'ui_baseVol_lnEd'):
                     self.ui_baseVol_lnEd.setText(str(ref_fname))
 
-            elif type(val) == str:
+            elif type(val) is str:
                 ma = re.search(r"\[(\d+)\]", val)
                 if ma:
                     num = int(ma.groups()[0])
@@ -683,15 +687,15 @@ class RTP_VOLREG(RTP):
 
         elif attr == 'regmode' and reset_fn is None:
             if hasattr(self, 'ui_regmode_cmbBx'):
-                if type(val) == int:
-                    if val not in list(RTP_VOLREG.regmode_dict.values()):
+                if type(val) is int:
+                    if val not in list(RtpVolreg.regmode_dict.values()):
                         return
 
                     regmode_id = val
-                    val = list(RTP_VOLREG.regmode_dict.keys())[
-                        list(RTP_VOLREG.regmode_dict.values()).index(val)]
+                    val = list(RtpVolreg.regmode_dict.keys())[
+                        list(RtpVolreg.regmode_dict.values()).index(val)]
                 else:
-                    regmode_id = RTP_VOLREG.regmode_dict[val]
+                    regmode_id = RtpVolreg.regmode_dict[val]
                 self.ui_regmode_cmbBx.setCurrentIndex(regmode_id)
 
         elif attr == 'save_proc':
@@ -728,6 +732,17 @@ class RTP_VOLREG(RTP):
                                                self.ui_enabled_rdb.setChecked))
         ui_rows.append((self.ui_enabled_rdb, None))
 
+        # ignore_init
+        var_lb = QtWidgets.QLabel("Ignore initial volumes :")
+        self.ui_ignorInit_spBx = QtWidgets.QSpinBox()
+        self.ui_ignorInit_spBx.setValue(self.ignore_init)
+        self.ui_ignorInit_spBx.setMinimum(0)
+        self.ui_ignorInit_spBx.valueChanged.connect(
+                lambda x: self.set_param('ignore_init', x,
+                                         self.ui_ignorInit_spBx.setValue))
+        ui_rows.append((var_lb, self.ui_ignorInit_spBx))
+        self.ui_objs.extend([var_lb, self.ui_ignorInit_spBx])
+
         # ref_vol
         var_lb = QtWidgets.QLabel("Base volume :")
         self.ui_baseVol_cmbBx = QtWidgets.QComboBox()
@@ -762,7 +777,7 @@ class RTP_VOLREG(RTP):
         self.ui_regmode_cmbBx = QtWidgets.QComboBox()
         self.ui_regmode_cmbBx.addItems(['Nearest Neighbor', 'Linear', 'Cubic',
                                         'Fourier', 'Quintic', 'Heptic'])
-        regmode_id = RTP_VOLREG.regmode_dict[self.regmode]
+        regmode_id = RtpVolreg.regmode_dict[self.regmode]
         self.ui_regmode_cmbBx.setCurrentIndex(regmode_id)
         self.ui_regmode_cmbBx.currentIndexChanged.connect(
                 lambda idx:
@@ -833,15 +848,15 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP_TSHIFT and RTP_VOLREG  instance
-    from rtpspy.rtp_tshift import RTP_TSHIFT
+    # Create RtpTshift and RtpVolreg  instance
+    from rtpspy.rtp_tshift import RtpTshift
 
-    rtp_tshift = RTP_TSHIFT()
+    rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
     rtp_tshift.ignore_init = 3
     rtp_tshift.ref_time = 0
 
-    rtp_volreg = RTP_VOLREG(regmode='cubic')
+    rtp_volreg = RtpVolreg(regmode='cubic')
 
     # Set slice timing from a sample data
     rtp_tshift.slice_timing_from_sample(testdata_f)

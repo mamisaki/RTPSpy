@@ -17,15 +17,14 @@ from PyQt5 import QtWidgets
 
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
-from rtpspy.rtp_app import RTP_APP
+from rtpspy.rtp_app import RtpApp
 from rtpspy.rtp_ui import RTP_UI
 
 
 # %% Default parameters
 same_dir = Path(__file__).absolute().parent
 
-rtp_params = {'WATCH': {'clean_rt_src': False, 'clean_warning': True},
-              'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
+rtp_params = {'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
               'VOLREG': {'regmode': 'cubic'},
               'SMOOTH': {'blur_fwhm': 6.0},
               'REGRESS': {'wait_num': 40, 'max_poly_order': np.inf,
@@ -42,8 +41,8 @@ rtp_params = {'WATCH': {'clean_rt_src': False, 'clean_warning': True},
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
-    # Make RTP_APP instance
-    rtp_app = RTP_APP()
+    # Make RtpApp instance
+    rtp_app = RtpApp()
 
     # Set default parameters
     for proc, params in rtp_params.items():
@@ -62,7 +61,7 @@ if __name__ == '__main__':
     all_rtp_objs.update({'ROI-NF': rtp_app})
     load_parameters(all_rtp_objs)
 
-    # Ask watch_dir for RTP_WATCH
+    # Ask watch_dir for RTPWatch
     ui_ret = rtp_ui.set_watchDir()
 
     # Ask work dir

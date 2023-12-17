@@ -18,7 +18,7 @@ from PyQt5 import QtWidgets
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
 from rtpspy import RTP_UI
-from LA_NF import LA_NF
+from la_nf import LANF
 
 
 # %% Default parameters
@@ -33,9 +33,8 @@ else:
     cmd_path = f"{this_dir / 'boot_psychopy.sh'} {this_dir / 'NF_psypy.py'}"
 extApp_cmd = f"{cmd_path} --screen 0 --size 640 480 --pos 0 0"
 
-rtp_params = {'WATCH': {'clean_rt_src': True, 'clean_warning': True},
-              'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
-              'VOLREG': {'regmode': 'heptic'},
+rtp_params = {'VOLREG': {'regmode': 'heptic'},
+              'TSHIFT': {'method': 'cubic', 'ref_time': 0},
               'SMOOTH': {'blur_fwhm': 6.0},
               'REGRESS': {'wait_num': 40, 'max_poly_order': np.inf,
                           'mot_reg': 'mot12', 'GS_reg': True, 'WM_reg': True,
@@ -67,8 +66,8 @@ rtp_params = {'WATCH': {'clean_rt_src': True, 'clean_warning': True},
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
-    # Make RTP_APP instance
-    rtp_app = LA_NF(default_rtp_params=rtp_params)
+    # Make RtpApp instance
+    rtp_app = LANF(default_rtp_params=rtp_params)
     rtp_app.run_extApp = True
 
     # Make RTP_UI instance

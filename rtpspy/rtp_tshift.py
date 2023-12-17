@@ -30,22 +30,19 @@ except Exception:
     from rtpspy.rtp_common import RTP
 
 
-# %% class RTP_TSHIFT =========================================================
-class RTP_TSHIFT(RTP):
+# %% class RtpTshift =========================================================
+class RtpTshift(RTP):
     """ Online slice-timing correction """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, ignore_init=3, method='cubic', ref_time=0, TR=2.0,
+    def __init__(self, method='cubic', ref_time=0, TR=2.0,
                  slice_timing=[], slice_dim=2, **kwargs):
         """
         TR and slice_timing can be set from a sample fMRI data file using the
-        'slice_timing_from_sample' method
+        'set_from_sample' method
 
         Parameters
         ----------
-        ignore_init : int, optional
-            Number of ignoring volumes before staring a process.
-            The default is 3.
         method : str ['linear'|'cubic'], optional
             Temporal interpolation method for the correction.
             The default is 'cubic'.
@@ -63,10 +60,9 @@ class RTP_TSHIFT(RTP):
             The default is 2.
 
         """
-        super(RTP_TSHIFT, self).__init__(**kwargs)
+        super(RtpTshift, self).__init__(**kwargs)
 
         # Set instance parameters
-        self.ignore_init = ignore_init
         self.method = method
         self.ref_time = ref_time
 
@@ -264,12 +260,12 @@ class RTP_TSHIFT(RTP):
 
         self.pre_data = []
 
-        return super(RTP_TSHIFT, self).end_reset()
+        return super(RtpTshift, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def slice_timing_from_sample(self, fmri_img):
+    def set_from_sample(self, fmri_img):
         """
-        Set slice timing from a sample mri_data
+        Set parameters from a sample fmri data
 
         Parameters
         ----------
@@ -277,7 +273,7 @@ class RTP_TSHIFT(RTP):
             If fmri_img is string_types, it should be a BRIK filename of sample
             data.
         """
-
+        # Read header
         if isinstance(fmri_img, string_types) or isinstance(fmri_img, Path):
             img = nib.load(fmri_img)
             vol_shape = img.shape[:3]
@@ -288,40 +284,83 @@ class RTP_TSHIFT(RTP):
             fname = fmri_img.get_filename()
             header = fmri_img.header
 
-        # Set json
+        # Read json
         if '.gz' in Path(fname).suffixes:
             fname_stem = Path(Path(fname).stem).stem
         else:
             fname_stem = Path(fname).stem
         json_f = Path(fname).parent / (fname_stem + '.json')
+        if json_f.is_file():
+            with open(json_f) as fd:
+                img_info = json.load(fd)
+        else:
+            img_info = None
 
+        # Get TR
+        TR = None
+        if img_info and 'RepetitionTime' in img_info:
+            # from json by dcm2niix
+            TR = float(img_info['RepetitionTime'])
+        elif hasattr(header, 'info') and 'TAXIS_FLOATS' in header.info:
+            # from AFNI header
+            TR = header.info['TAXIS_FLOATS'][1]
+        else:
+            zooms = header.get_zooms()
+            if len(zooms) > 3:
+                TR = zooms[3]
+
+        # Get slice timing
         slice_timing = []
-        if hasattr(header, 'get_slice_times'):
+        if img_info and 'SliceTiming' in img_info:
+            # from json by dcm2niix
+            slice_timing = img_info['SliceTiming']
+        elif hasattr(header, 'info') and 'TAXIS_OFFSETS' in header.info:
+            slice_timing = header.info['TAXIS_OFFSETS']
+        elif hasattr(header, 'get_slice_times'):
             try:
                 slice_timing = header.get_slice_times()
             except nib.spatialimages.HeaderDataError:
                 pass
-        elif hasattr(header, 'info') and 'TAXIS_FLOATS' in header.info:
-            slice_timing = header.info['TAXIS_OFFSETS']
 
-        if len(slice_timing) == 0 and json_f.is_file():
-            # check json file
-            with open(json_f) as fd:
-                img_info = json.load(fd)
-            try:
-                slice_timing = img_info['SliceTiming']
-            except nib.spatialimages.HeaderDataError:
-                pass
+        # Get slice orientation
+        slice_dim = None
+        if img_info and 'ImageOrientationPatientDICOM' in img_info:
+            imgOri = img_info['ImageOrientationPatientDICOM']
+            F = np.reshape(imgOri, (2, 3)).T
+            d1 = 'xyz'[np.argmax(F[:, 0]).ravel()[0]]
+            d2 = 'xyz'[np.argmax(F[:, 1]).ravel()[0]]
+            slice_ori = ''.join(sorted([d1, d2]))
+            if slice_ori == 'xy':
+                slice_dim = 2
+            elif slice_ori == 'xz':
+                slice_dim = 1
+            elif slice_ori == 'yz':
+                slice_dim = 0
 
-        if len(slice_timing) == 0:
-            self.errmsg(f'{fname} has no slice timing info.')
-            return
+        # Set parameters
+        notset_params = []
+        if TR is not None:
+            self.set_param('TR', TR)
+            self.logmsg(f'TR = {self.TR}')
+        else:
+            notset_params.append('TR')
 
-        self.slice_timing = slice_timing
+        if len(slice_timing):
+            self.set_param('slice_timing', slice_timing)
+            self.logmsg(f'slice_timing = {self.slice_timing}')
+        else:
+            notset_params.append('slice_timing')
 
-        if self._verb:
-            msg = f'Slice timing = {self.slice_timing}.'
-            self.logmsg(msg)
+        if slice_dim is not None:
+            self.set_param('slice_dim', slice_dim)
+            self.logmsg(f'slice_dim = {self.slice_dim}')
+        else:
+            notset_params.append('slice_dim')
+
+        if len(notset_params):
+            msg = ', '.join(notset_params)
+            msg += ' cannot be read.'
+            self.errmsg(msg)
 
         # set interpolation weight
         self._pre_culc_weight(vol_shape)
@@ -493,10 +532,6 @@ class RTP_TSHIFT(RTP):
             if self.main_win is not None:
                 self.main_win.set_workDir(val)
 
-        elif attr == 'ignore_init' and reset_fn is None:
-            if hasattr(self, 'ui_ignorInit_spBx'):
-                self.ui_ignorInit_spBx.setValue(val)
-
         elif attr == 'method' and reset_fn is None:
             if hasattr(self, 'ui_method_cmbBx'):
                 self.ui_method_cmbBx.setCurrentText(val)
@@ -505,7 +540,7 @@ class RTP_TSHIFT(RTP):
             if hasattr(self, 'ui_refTime_dSpBx'):
                 self.ui_refTime_dSpBx.setValue(val)
 
-        elif attr == 'slice_timing_from_sample':
+        elif attr == 'set_from_sample':
             if val is None:
                 fname = self.select_file_dlg(
                         'TSHIFT: Selct slice timing sample',
@@ -515,7 +550,7 @@ class RTP_TSHIFT(RTP):
 
                 val = fname[0]
 
-            self.slice_timing_from_sample(val)
+            self.set_from_sample(val)
             self.set_slice_timing_uis()
             return 0
 
@@ -524,7 +559,7 @@ class RTP_TSHIFT(RTP):
                 self.ui_TR_dSpBx.setValue(val)
 
         elif attr == 'slice_timing':
-            if type(val) == str:
+            if type(val) is str:
                 try:
                     val = eval(val)
                 except Exception:
@@ -574,17 +609,6 @@ class RTP_TSHIFT(RTP):
                                self.ui_enabled_rdb.setChecked))
         ui_rows.append((self.ui_enabled_rdb, None))
 
-        # ignore_init
-        var_lb = QtWidgets.QLabel("Ignore initial volumes :")
-        self.ui_ignorInit_spBx = QtWidgets.QSpinBox()
-        self.ui_ignorInit_spBx.setValue(self.ignore_init)
-        self.ui_ignorInit_spBx.setMinimum(0)
-        self.ui_ignorInit_spBx.valueChanged.connect(
-                lambda x: self.set_param('ignore_init', x,
-                                         self.ui_ignorInit_spBx.setValue))
-        ui_rows.append((var_lb, self.ui_ignorInit_spBx))
-        self.ui_objs.extend([var_lb, self.ui_ignorInit_spBx])
-
         # method
         var_lb = QtWidgets.QLabel("Temporal interpolation method :")
         self.ui_method_cmbBx = QtWidgets.QComboBox()
@@ -614,9 +638,9 @@ class RTP_TSHIFT(RTP):
 
         # Load from sample button
         self.ui_setfrmSample_btn = QtWidgets.QPushButton(
-                'Get slice timing parameters from a sample file')
+                'Get parameters from a sample file')
         self.ui_setfrmSample_btn.clicked.connect(
-                lambda: self.set_param('slice_timing_from_sample'))
+                lambda: self.set_param('set_from_sample'))
         ui_rows.append((self.ui_setfrmSample_btn,))
         self.ui_objs.append(self.ui_setfrmSample_btn)
 
@@ -715,15 +739,14 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP_TSHIFT instance
-    rtp_tshift = RTP_TSHIFT()
+    # Create RtpTshift instance
+    rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
-    rtp_tshift.ignore_init = 3
     rtp_tshift.verb = True
     rtp_tshift.ref_time = 0
 
     # Set slice timing from a sample data
-    rtp_tshift.slice_timing_from_sample(testdata_f)
+    rtp_tshift.set_from_sample(testdata_f)
 
     # Set parameters for debug
     rtp_tshift.work_dir = work_dir

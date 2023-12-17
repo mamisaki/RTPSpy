@@ -37,8 +37,8 @@ except Exception:
     librtp_path = f'./{lib_name}'
 
 
-# %% RTP_SMOOTH class =========================================================
-class RTP_SMOOTH(RTP):
+# %% RtpSmooth class =========================================================
+class RtpSmooth(RTP):
     """
     RTP spatial smoothing
     """
@@ -56,7 +56,7 @@ class RTP_SMOOTH(RTP):
             The default is 0.
 
         """
-        super(RTP_SMOOTH, self).__init__(**kwargs)
+        super(RtpSmooth, self).__init__(**kwargs)
 
         # Set instance parameters
         self.blur_fwhm = blur_fwhm
@@ -171,7 +171,7 @@ class RTP_SMOOTH(RTP):
         if type(self.mask_file) == int and self.mask_file == 0:
             self.mask_byte = None
 
-        return super(RTP_SMOOTH, self).end_reset()
+        return super(RtpSmooth, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_libfuncs(self):
@@ -496,18 +496,18 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP_TSHIFT and RTP_VOLREG  instance
-    from rtpspy.rtp_tshift import RTP_TSHIFT
-    from rtpspy.rtp_volreg import RTP_VOLREG
+    # Create RtpTshift and RtpVolreg  instance
+    from rtpspy.rtp_tshift import RtpTshift
+    from rtpspy.rtp_volreg import RtpVolreg
 
-    rtp_tshift = RTP_TSHIFT()
+    rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
     rtp_tshift.ignore_init = 3
     rtp_tshift.ref_time = 0
 
-    rtp_volreg = RTP_VOLREG(regmode='cubic')
+    rtp_volreg = RtpVolreg(regmode='cubic')
 
-    rtp_smooth = RTP_SMOOTH(blur_fwhm=6)
+    rtp_smooth = RtpSmooth(blur_fwhm=6)
 
     # Set slice timing from a sample data
     rtp_tshift.slice_timing_from_sample(testdata_f)

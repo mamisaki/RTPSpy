@@ -92,7 +92,7 @@ If the simulation is enabled, the 'Simulation' tab will be shown.
 
 ### 8. Start the scan and real-time processing
 You are ready to start the scan.  
-* If the TTL signal trigger is set (in the 'RTP' -> 'SCANONSET' tab), the RTP and the psychopy application will start with the trigger input.  
+* If the TTL signal trigger is set (in the 'RTP' -> 'EXTSIG' tab), the RTP and the psychopy application will start with the trigger input.  
 * You can also start the process manually by pressing the 'Manual start' button.  
 Here, for the real-time simulation, let's press the 'Start scan simulation' button on the 'Simulation' tab.  
 Then, the simulated ECG/respiration recordings and fMRI image creation will start.  
@@ -102,16 +102,16 @@ Then, the simulated ECG/respiration recordings and fMRI image creation will star
 * This boilerplate psychopy application just displays the received value. Edit the '[example/ROI-NF/NF_psypy.py](/example/ROI-NF/NF_psypy.py)' to make a proper feedback application.
 
 ## Customize the application
-The ROI-NF application, '[example/ROI-NF/ROI_NF.py](/example/ROI-NF/roi_nf.py)', extracts the mean signal in the ROI to send the value to an external application.  
+The ROI-NF application, '[example/ROI-NF/ROINF.py](/example/ROI-NF/roi_nf.py)', extracts the mean signal in the ROI to send the value to an external application.  
 The external psychopy application, '[example/ROI-NF/NF_psypy.py](/example/ROI-NF/NF_psypy.py)', displays the received value on the screen.  
 You can customize the application by editing these files.
 
 ### roi_nf.py
-Neurofeedback signal extraction is performed in the 'do_proc' method in the ROI_NF class, defined in the 'roi_nf.py' file.  
-The figure below shows the code snippet of the signal extraction from a processed fMRI image (the output of RTP_REGRESS). By modifying this part, a user can define a custom neurofeedback signal extraction.  
+Neurofeedback signal extraction is performed in the 'do_proc' method in the ROINF class, defined in the 'roi_nf.py' file.  
+The figure below shows the code snippet of the signal extraction from a processed fMRI image (the output of RtpRegress). By modifying this part, a user can define a custom neurofeedback signal extraction.  
 <img src="/example/ROI-NF/doc/roi_nf_custom.png" width=600>  
 
-To customize the neurofeedback signal calculation, you should make a new application class inheriting RTP_APP (A) and override the 'do_proc' method (B). The example script calculates the mean value within the ROI mask (D). The ROI mask file is defined in the 'ROI_orig' property (C), which has been set in the mask creation process. The signal can be sent to an external application in real-time using the 'send_extApp' method (F) by putting it in a specific format string (E).
+To customize the neurofeedback signal calculation, you should make a new application class inheriting RtpApp (A) and override the 'do_proc' method (B). The example script calculates the mean value within the ROI mask (D). The ROI mask file is defined in the 'ROI_orig' property (C), which has been set in the mask creation process. The signal can be sent to an external application in real-time using the 'send_extApp' method (F) by putting it in a specific format string (E).
 
 ### NF_psypy.py
 The neurofeedback application is defined in the 'NF_psypy.py' file. This is an independent PsychoPy application with the functionality of communicating to an RTPSpy application. The figure below shows the snippet of the script for the communication.  
