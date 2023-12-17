@@ -30,8 +30,8 @@ class RTP_PHYSIO_DUMMY(RTP):
         resp_f: Path object or string
         sample_freq: float
             Frequency of signal in the files (Hz)
-        rtp_retrots: RTP_RETROTS object
-            instance of RTP_RETROTS for making RetroTS reggressor
+        rtp_retrots: RtpRetrots object
+            instance of RtpRetrots for making RetroTS reggressor
         verb: bool
             verbose flag to print log message
         """

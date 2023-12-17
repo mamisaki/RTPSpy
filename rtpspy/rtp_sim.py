@@ -22,14 +22,14 @@ import nibabel as nib
 
 try:
     from .rtp_physio import RTP_PHYSIO_DUMMY
-    from .rtp_app import RTP_APP
+    from .rtp_app import RtpApp
 except Exception:
     from rtpspy.rtp_physio import RTP_PHYSIO_DUMMY
-    from rtpspy.rtp_app import RTP_APP
+    from rtpspy.rtp_app import RtpApp
 
 
 # %% RTP_SIM class ============================================================
-class RTP_SIM(RTP_APP):
+class RTP_SIM(RtpApp):
     """ RTP simulation class """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -155,12 +155,8 @@ class RTP_SIM(RTP_APP):
         # Save parameter list
         # Get parameters
         all_params = {}
-        for rtp in ('TSHIFT', 'VOLREG', 'SMOOTH', 'REGRESS', 'PHYSIO'):
+        for rtp in ('TSHIFT', 'VOLREG', 'SMOOTH', 'REGRESS', 'EXTSIG'):
             if rtp not in self.rtp_objs or not self.rtp_objs[rtp].enabled:
-                continue
-
-            if rtp in ('PHYSIO') and \
-                    self.rtp_objs[rtp].not_available:
                 continue
 
             if not self.rtp_objs[rtp].enabled:

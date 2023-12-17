@@ -48,7 +48,7 @@ Press a module button to set detailed parameters.
 
 ### 4. Run a task session
 Return to the 'App' tab by pressing the 'App' above the yellow 'ROI-NF' bar.
-Press the 'Go to task' button at the bottom of the 'Mask creation' tab or press the 'Task' tab to show the 'Task' operation interface.   
+Press the 'Go to task' button at the bottom of the 'Preprocessing' tab or press the 'Task' tab to show the 'Task' operation interface.   
 <img src="/example/LA-NF/doc/TaskOperation.png" height=400>  
 
 Press one of the session setup buttons (e.g., resting state, baseline run without neurofeedback, neurofeedback training run 1, etc.) in the 'Session setup' area. This starts the neurofeedback presentation application if it is not running, and run the RTP setup. 
@@ -70,7 +70,7 @@ The psychopy application window shows a 'Ready' message.
 
 ### 6. Start the scan and real-time processing
 You are ready to start the scan.  
-* If the TTL signal trigger is set (in the 'RTP' -> 'SCANONSET' tab), the RTP and the psychopy application will start with the trigger input.  
+* If the TTL signal trigger is set (in the 'RTP' -> 'EXTSIG' tab), the RTP and the psychopy application will start with the trigger input.  
 * You can also start the process manually by pressing the 'Manual start' button.  
 
 The regression starts after receiving enough samples.   

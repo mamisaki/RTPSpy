@@ -78,8 +78,8 @@ def lstsq_SVDsolver(A, B, rcond=None):
     return X
 
 
-# %% RTP_REGRESS class ========================================================
-class RTP_REGRESS(RTP):
+# %% RtpRegress class ========================================================
+class RtpRegress(RTP):
     """
     RTP online regression analysis.
     Cumulative GLM that recalculates GLM with all available time points is
@@ -112,8 +112,8 @@ class RTP_REGRESS(RTP):
             'mot12': mot6 plus their temporal derivative
             'dmot6': six motion derivatives
             The default is 'None'.
-        volreg : RTP_VOLREG object instance, optional
-            RTP_VOLREG instance to read motion parameters. The default is None.
+        volreg : RtpVolreg object instance, optional
+            RtpVolreg instance to read motion parameters. The default is None.
         GS_reg : bool, optional
             Flag to use the global signal regressor.
             The default is False.
@@ -129,7 +129,7 @@ class RTP_REGRESS(RTP):
             Mask file for the ventricle region. The default is None.
         mask_src_proc : RTP class object, optional
             Region mask regressors (GS_mask, WM_mask, Vent_mask) should be
-            calculated with unsmoothed signals. If the input to RTP_REGRESS is
+            calculated with unsmoothed signals. If the input to RtpRegress is
             a smoothed one, this option allows using other RTP module's output
             for calculating masked signal regressors. The default is None.
         phys_reg : str, ['None'|'RICOR8'|'RVT5'|'RVT+RICOR13'], optional
@@ -169,7 +169,7 @@ class RTP_REGRESS(RTP):
             Default is True.
 
         """
-        super(RTP_REGRESS, self).__init__(**kwargs)
+        super(RtpRegress, self).__init__(**kwargs)
 
         # --- Set parameters ---
         # Polynomial regressors
@@ -245,7 +245,7 @@ class RTP_REGRESS(RTP):
             self._proc_ready = False
 
         if self.mot_reg != 'None' and self.volreg is None:
-            self.errmsg('RTP_VOLREG object is not set.')
+            self.errmsg('RtpVolreg object is not set.')
             self._proc_ready = False
 
         if self.rtp_physio is None or self.rtp_physio.not_available:
@@ -651,7 +651,7 @@ class RTP_REGRESS(RTP):
         self.WM_maskdata = None
         self.Vent_maskdata = None
 
-        return super(RTP_REGRESS, self).end_reset()
+        return super(RtpRegress, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_mask(self, maskdata, sub_i=0, method='zero_out'):
@@ -1774,33 +1774,33 @@ if __name__ == '__main__':
         work_dir.mkdir()
 
     # Create RTP instances and set parameters
-    from rtpspy.rtp_tshift import RTP_TSHIFT
-    from rtpspy.rtp_volreg import RTP_VOLREG
-    from rtpspy.rtp_smooth import RTP_SMOOTH
+    from rtpspy.rtp_tshift import RtpTshift
+    from rtpspy.rtp_volreg import RtpVolreg
+    from rtpspy.rtp_smooth import RtpSmooth
     from rtpspy.rtp_physio import RTP_PHYSIO_DUMMY
-    from rtpspy.rtp_retrots import RTP_RETROTS
-    # RTP_TSHIFT
-    rtp_tshift = RTP_TSHIFT()
+    from rtpspy.rtp_retrots import RtpRetrots
+    # RtpTshift
+    rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
     rtp_tshift.ignore_init = 3
     rtp_tshift.ref_time = 0
     rtp_tshift.slice_timing_from_sample(testdata_f)
 
-    # RTP_VOLREG
-    rtp_volreg = RTP_VOLREG(regmode='cubic')
+    # RtpVolreg
+    rtp_volreg = RtpVolreg(regmode='cubic')
     refname = str(testdata_f) + '[0]'
     rtp_volreg.set_ref_vol(refname)
-    # RTP_SMOOTH
-    rtp_smooth = RTP_SMOOTH(blur_fwhm=6)
+    # RtpSmooth
+    rtp_smooth = RtpSmooth(blur_fwhm=6)
     rtp_smooth.set_param('mask_file', mask_data_f)
 
     # RTP_RETOTS and RTP_PHYSIO
     sample_freq = 40
-    rtp_retrots = RTP_RETROTS()
+    rtp_retrots = RtpRetrots()
     rtp_physio = RTP_PHYSIO_DUMMY(ecg_f, resp_f, sample_freq, rtp_retrots)
 
-    # RTP_REGRESS
-    rtp_regress = RTP_REGRESS()
+    # RtpRegress
+    rtp_regress = RtpRegress()
 
     # Set parameters
     rtp_regress.TR = 2.0

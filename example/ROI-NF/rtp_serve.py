@@ -196,9 +196,9 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
 # %% RTP_SERVE ==============================================================
 class RTP_SERVE():
     """
-    Application server class to communicate with RTP_APP
+    Application server class to communicate with RtpApp
     The class offers communication methods for an external application with
-    RTP_APP via TCP socket.
+    RtpApp via TCP socket.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -286,7 +286,7 @@ class RTP_SERVE():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send(self, data):
         """
-        Send data to RTP_APP
+        Send data to RtpApp
         The data in send_queue will be sent by a handler.
 
         Parameters
@@ -302,7 +302,7 @@ class RTP_SERVE():
     def get_recv_queue(self, timeout=0):
         """
         Get data from recv_queue.
-        The data sent by RTP_APP is put in recv_queue by a handler with
+        The data sent by RtpApp is put in recv_queue by a handler with
         converting a str or any type unpickled.
 
         Parameters
@@ -464,7 +464,7 @@ if __name__ == '__main__':
     srv_address = rtp_srv.server.server_address
     print("Open server at ", srv_address)
 
-    # Open client socket (e.g., from RTP_APP) and connect to rtp_srv
+    # Open client socket (e.g., from RtpApp) and connect to rtp_srv
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect(srv_address)
     time.sleep(0.001)

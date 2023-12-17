@@ -22,8 +22,8 @@ from PyQt5 import QtWidgets
 from .rtp_common import RTP
 
 
-# %% RTP_IMGPROC class =======================================================
-class RTP_IMGPROC(RTP):
+# %% RtpImgProc class =======================================================
+class RtpImgProc(RTP):
     """
     Image processing utility class.
 

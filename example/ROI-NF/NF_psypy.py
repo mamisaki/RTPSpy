@@ -275,7 +275,7 @@ class NFApp():
                         if time.time()-last_NF_time < 0.5:
                             '''
                             Suppress too frequent updates of the signal.
-                            This could happen when volumes in the RTP_REGRESS's
+                            This could happen when volumes in the RtpRegress's
                             wait periods are retrospectively processed and sent.
                             '''
                             continue
@@ -283,7 +283,7 @@ class NFApp():
                         '''
                         self.rtp_srv.NF_signal is a pandas DataFrame with
                         columns=('Time', 'TR', 'Signal'), keeping the NF
-                        signals received from RTPSpy RTP_APP.
+                        signals received from RTPSpy RtpApp.
                         self.rtp_srv.NF_signal.Signal is a list of NF signals.
                         '''
                         last_NF_idx = len(self.rtp_srv.NF_signal)

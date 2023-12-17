@@ -28,8 +28,8 @@ if len(list(Path('/dev').glob('parport*'))) > 0:
 mpl.rcParams['font.size'] = 8
 
 
-# %% RTP_SCANONSET class ======================================================
-class RTP_SCANONSET(RTP):
+# %% RtpExtSignal class ======================================================
+class RtpExtSignal(RTP):
     """
     Scan onset monitor class
 
@@ -90,7 +90,7 @@ class RTP_SCANONSET(RTP):
 
         # Search serial (usb) ports
         for pt in comports():
-            for desc in RTP_SCANONSET.SUPPORT_DEVS:
+            for desc in RtpExtSignal.SUPPORT_DEVS:
                 if desc in pt.description:
                     if desc in self.dict_onsig_port:
                         num_dev = np.sum(
@@ -326,7 +326,7 @@ class RTP_SCANONSET(RTP):
         self.scan_onset = -1.0
 
         self.thMonitor = QtCore.QThread()
-        self.monitor = RTP_SCANONSET.Monitoring(self, main_win=self.main_win)
+        self.monitor = RtpExtSignal.Monitoring(self, main_win=self.main_win)
         self.monitor.moveToThread(self.thMonitor)
         self.thMonitor.started.connect(self.monitor.run)
         self.monitor.finished.connect(self.thMonitor.quit)
@@ -492,7 +492,7 @@ class RTP_SCANONSET(RTP):
 
             self.thPltOnsigPort = QtCore.QThread()
             self.pltOnsigPort = \
-                RTP_SCANONSET.PlotOnsigPort(self, main_win=self.main_win)
+                RtpExtSignal.PlotOnsigPort(self, main_win=self.main_win)
             self.pltOnsigPort.moveToThread(self.thPltOnsigPort)
             self.thPltOnsigPort.started.connect(self.pltOnsigPort.run)
             self.pltOnsigPort.finished.connect(self.thPltOnsigPort.quit)
@@ -609,8 +609,8 @@ class RTP_SCANONSET(RTP):
             Path(self.dict_onsig_port['Unix domain socket']).unlink()
 
 
-# %% Dummy SCANONSET class for debug
-class DUMMY_SCANONSET(RTP):
+# %% Dummy EXTSIG class for debug
+class DUMMY_EXTSIG(RTP):
     def __init__(self):
         super().__init__()  # call __init__() in RTP class
         self.scanning = False

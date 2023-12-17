@@ -12,13 +12,13 @@ from datetime import datetime
 import numpy as np
 from scipy.stats import norm
 import time
-from rtpspy.rtp_appserv import boot_RTP_APPSERV_app, pack_data
+from rtpspy.rtp_appserv import boot_RtpAppSERV_app, pack_data
 
 
 # %% Boot
 def boot_connect_app():
     cmd = './NF_APP.py --position 1920 0 --size 1280 1024 --log_dir ./'
-    addr, proc = boot_RTP_APPSERV_app(cmd)
+    addr, proc = boot_RtpAppSERV_app(cmd)
     if addr is None:
         sys.stderr.write(proc+'\n')
         return None, None, None

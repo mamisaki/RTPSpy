@@ -21,7 +21,7 @@ from PyQt5 import QtWidgets, QtCore
 import matplotlib as mpl
 
 from rtpspy.rtp_common import RTP, RingBuffer, MatplotlibWindow
-from rtpspy.rtp_scanonset import RTP_SCANONSET
+from rtpspy.rtp_ext_signal import RtpExtSignal
 
 mpl.rcParams['font.size'] = 8
 
@@ -32,7 +32,7 @@ class RTP_PHYSIO(RTP):
     Physiological signal receiver for real-time processing
     """
 
-    # These devices will be used for RTP_SCANONSET
+    # These devices will be used for RtpExtSignal
     excl_ports = ['CDC RS-232 Emulation Demo',
                   'Numato Lab 8 Channel USB GPIO M']
 
@@ -42,8 +42,8 @@ class RTP_PHYSIO(RTP):
         """
         Parameters
         ----------
-        scan_onset : RTP_SCANONSET object
-            RTP_SCANONSET that send a recording start signal.
+        scan_onset : RtpExtSignal object
+            RtpExtSignal that send a recording start signal.
         ser_port : str, optional
             Serial port name. The default is None.
         sample_freq : float, optional
@@ -52,8 +52,8 @@ class RTP_PHYSIO(RTP):
             Number of samples to average data for smoothing and reducing noise.
             Output frequency will be 'sample_freq/samples_to_average'.
             The default is 5.
-        rtp_retrots : RTP_RETROTS object, optional
-            RTP_RETROTS object instance for making RetroTS reggressor.
+        rtp_retrots : RtpRetrots object, optional
+            RtpRetrots object instance for making RetroTS reggressor.
             The default is None.
         plot_len_sec : float, optional
             Length (seconds) of signal plot. The default is 10.
@@ -350,8 +350,8 @@ class RTP_PHYSIO(RTP):
             self.finished.emit()
 
             if self.main_win is not None:
-                if hasattr(self.main_win, 'chbShowPhysio'):
-                    self.main_win.chbShowPhysio.setCheckState(0)
+                if hasattr(self.main_win, 'chbShowExtSig'):
+                    self.main_win.chbShowExtSig.setCheckState(0)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class Recording(QtCore.QObject):
@@ -844,7 +844,7 @@ class RTP_PHYSIO(RTP):
         self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
         self.ui_verb_chb.setChecked(self.verb)
         self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'polling_interval', state > 0))
+                lambda state: setattr(self, 'verb', state > 0))
         self.ui_objs.append(self.ui_verb_chb)
 
         chb_hLayout = QtWidgets.QHBoxLayout()
@@ -896,8 +896,8 @@ class RTP_PHYSIO_DUMMY(RTP):
         resp_f: Path object or string
         sample_freq: float
             Frequency of signal in the files (Hz)
-        rtp_retrots: RTP_RETROTS object
-            instance of RTP_RETROTS for making RetroTS reggressor
+        rtp_retrots: RtpRetrots object
+            instance of RtpRetrots for making RetroTS reggressor
         verb: bool
             verbose flag to print log message
         """
@@ -1006,11 +1006,11 @@ if __name__ == '__main__':
     #shell = IPython.get_ipython()
     #shell.enable_matplotlib(gui='qt')
 
-    #from rtp_retrots import RTP_RETROTS
-    #rtp_retrots = RTP_RETROTS()
+    #from rtp_retrots import RtpRetrots
+    #rtp_retrots = RtpRetrots()
 
     # Standalone test
-    scan_onset = RTP_SCANONSET()
+    scan_onset = RtpExtSignal()
     rtp_phys = RTP_PHYSIO(scan_onset)
     #rtp_phys.rtp_retrots = rtp_retrots
 

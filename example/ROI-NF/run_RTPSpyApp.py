@@ -18,7 +18,7 @@ from PyQt5 import QtWidgets
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
 from rtpspy import RTP_UI
-from ROI_NF import ROI_NF
+from roi_nf import ROINF
 
 
 # %% Default parameters =======================================================
@@ -33,9 +33,9 @@ else:
     cmd_path = f"{this_dir / 'boot_psychopy.sh'} {this_dir / 'NF_psypy.py'}"
 extApp_cmd = f"{cmd_path} --screen 0 --size 640 480 --pos 0 0"
 
-rtp_params = {'WATCH': {'clean_rt_src': True, 'clean_warning': True},
-              'TSHIFT': {'method': 'cubic', 'ignore_init': 3},
-              'VOLREG': {'regmode': 'cubic'},
+# RTP pipeline
+rtp_params = {'VOLREG': {'regmode': 'cubic'},
+              'TSHIFT': {'method': 'cubic'},
               'SMOOTH': {'blur_fwhm': 6.0},
               'REGRESS': {'wait_num': 30, 'max_poly_order': np.inf,
                           'mot_reg': 'mot12', 'GS_reg': True, 'WM_reg': True,
@@ -50,8 +50,8 @@ rtp_params = {'WATCH': {'clean_rt_src': True, 'clean_warning': True},
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
-    # Make RTP_APP instance
-    rtp_app = ROI_NF(default_rtp_params=rtp_params)
+    # Make RtpApp instance
+    rtp_app = ROINF(default_rtp_params=rtp_params)
 
     # Make GUI (RTP_UI) instance
     app_obj = {'ROI-NF': rtp_app}
@@ -63,7 +63,7 @@ if __name__ == '__main__':
 
     # Ask if loading the previous settings.
     load = QtWidgets.QMessageBox.question(
-        None, 'Load parameters', 'Load the previous settings?',
+        None, 'Load parameters', 'Load previous settings?',
         QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
     if load == QtWidgets.QMessageBox.Yes:
         # Load saved parameters: This will override the rtp_params settings

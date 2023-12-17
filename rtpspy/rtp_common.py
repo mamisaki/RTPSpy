@@ -749,7 +749,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
 
     # Check afni process
     cmd0 = f"afni .* {boot_dir}"
-    pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"), 
+    pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
                           stdout=subprocess.PIPE)
     procs = pret.stdout
     procs = [ll for ll in procs.decode().rstrip().split('\n')

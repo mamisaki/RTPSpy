@@ -3,7 +3,7 @@
 """
 Watching new file creation for real-time processing
 
-@author: mmisaki@laureateinstitute.org
+@author: mmisaki@libr.net
 """
 
 
@@ -22,11 +22,10 @@ import pydicom
 
 from watchdog.observers.polling import PollingObserverVFS
 from watchdog.events import FileSystemEventHandler
-from PyQt5 import QtWidgets, QtCore
-
 from dicom2nifti.convert_dicom import dicom_array_to_nifti
 from dicom2nifti.image_volume import load, ImageVolume
 from dicom2nifti.image_reorientation import _reorient_4d, _reorient_3d
+from PyQt5 import QtWidgets, QtCore
 
 try:
     from .rtp_common import RTP
@@ -34,19 +33,20 @@ except Exception:
     from rtpspy.rtp_common import RTP
 
 
-# %% class RTP_WATCH ==========================================================
-class RTP_WATCH(RTP):
+# %% class RtpWatch ==========================================================
+class RtpWatch(RTP):
     """
-    Watching new file creation, reading data from the file, and sending data to
-    a next process.
+    Monitor the creation of new files, read data from a file and send data to
+    a downstream process.
 
     e.g.
     # Make an instance
-    rtp_watch = RTP_WATCH(watch_dir='watching/path',
+    rtp_watch = RtpWatch(watch_dir='watching/path',
                           watch_file_pattern='nr_\d+.+\.BRIK')
 
     # Start wathing
-    rtp_watch.start_watching()
+    rtp_watch.start_watching(watch_dir='watching/path',
+                          watch_file_pattern='nr_\d+.+\.BRIK')
 
     When the name of a new file in watch_dir matches watch_file_pattern,
     the file is read by nibabel.
@@ -54,145 +54,48 @@ class RTP_WATCH(RTP):
     Refer also to the python watchdog package:
     https://pypi.org/project/watchdog/
     """
-
-    # -------------------------------------------------------------------------
-    class RTPFileHandler(FileSystemEventHandler):
-        """ File handling class """
-
-        def __init__(self, watch_file_pattern, data_proc, scan_onset=None):
-            """
-            Parameters
-            ----------
-            watch_file_pattern : str
-                Regular expression to filter the file.
-            data_proc : function
-                Applied function to the file.
-            scan_onset : RTP_SCANNONSET object, optional
-                If scan_onset is not None, and the scan is not running
-                (scan_onset.is_scan_on() is False), the file creation event is
-                ignored. The default is None.
-            """
-            super().__init__()
-            self.watch_file_pattern = watch_file_pattern
-            self.data_proc = data_proc
-            self.scan_onset = scan_onset
-
-        def on_created(self, event):
-            if event.is_directory:
-                return
-
-            if self.scan_onset is not None and \
-                    not self.scan_onset.is_scan_on():
-                return
-
-            if re.search(self.watch_file_pattern, Path(event.src_path).name):
-                self.data_proc(event.src_path)
-
-    # -------------------------------------------------------------------------
-    class RTP_Observer(PollingObserverVFS):
-        """ Observer class with a custom thread function.
-        PollingObserverVFS is used to work wiht a network-shared drive. If the
-        number of file in the watching directory is large, this observer takes
-        long time to find a new one. So the watching directory should be
-        cleaned at every scan run.
-        """
-
-        def __init__(self, stat=os.stat, watch_file_pattern=None,
-                     polling_interval=0.001, verb=False, std_out=sys.stdout):
-            """
-            Parameters
-            ----------
-            See watchdog document.
-            https://pythonhosted.org/watchdog/api.html#watchdog.observers.polling.PollingObserver
-
-            verb : bool
-                Print process log.
-            std_out : output stream
-                Log output.
-            """
-            super().__init__(stat, self.listdir, polling_interval)
-
-            self._watch_file_pattern = watch_file_pattern
-            self._verb = verb
-            self._std_out = std_out
-
-        def listdir(self, root):
-            if self._watch_file_pattern is not None:
-                paths = [pp.name for pp in Path(root).glob('*')
-                         if re.search(self._watch_file_pattern, pp.name)]
-            else:
-                paths = [pp.name for pp in Path(root).glob('*')]
-
-            return paths
-
-        def logmsg(self, msg, ret_str=False):
-            # Add datetime and class name
-            dtstr = datetime.now().isoformat()
-            msg = f"{dtstr}:[{self.__class__.__name__}]: {msg}"
-            if ret_str:
-                return msg
-
-            print(msg, file=self._std_out)
-            if hasattr(self._std_out, 'flush'):
-                self._std_out.flush()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, watch_dir='', watch_file_pattern=r'nr_\d+.+\.BRIK',
-                 polling_interval=0.001, siemens_mosaic_dicom=False,
-                 clean_rt_src=False, clean_warning=True, scan_onset=None,
-                 **kwargs):
+    def __init__(self, scan_onset=None, clean_rt_src='mv',
+                 rt_src_dst=Path.home()/'rtp_src', **kwargs):
         """
         Parameters
         ----------
-        watch_dir : str
-            Watching directory.
-        watch_file_pattern : str
-            Regular expression for watching filename.
-        polling_interval : float, optional
-            Interval to check new file creation (second). The default is
-            0.001.
-        siemens_mosaic_dicom : bool, optional
-            The watching file is Siemens mosaic dicom. The default is False.
-        clean_rt_src : bool, optional
-            Delete real-time created soouce files. At starting the wachdog
-            thread, files matching watch_file_pattern in watch_dir are deleted.
-            The default is False.
-        clean_warning : bool, optional,
-            Show warning when cleaning the watch_dir. The default is True.
-        scan_onset : RTP_SCANONSET object, optional
+        scan_onset : RtpExtSignal object, optional
             If scan_onset is not None and the scan is not running
-            (scan_onset.is_scan_on() is False), the file creation event is
-            ignored. The default is None.
+            (scan_onset.is_scan_on() is False), the file creation event will
+            be is ignored. The default is None.
+        clean_rt_src : str ['mv|'rm'], optional
+            Move ('mv') or delete ('rm') source files created in real time.
+            The default is 'mv'.
+        rt_src_dst : Path or str, optional
+            Destination directory of source files when clean_rt_src is 'mv'.
+            The default is $HOME/rtp_src
         """
 
         super().__init__(**kwargs)  # call __init__() in RTP base class
 
-        # Set parameters
-        self.watch_dir = watch_dir
-        self.watch_file_pattern = watch_file_pattern
-        self.polling_interval = polling_interval
-        self.siemens_mosaic_dicom = siemens_mosaic_dicom
+        # Initialize parameters
         self.scan_onset = scan_onset
+        self.clean_rt_src = clean_rt_src
+        self.rt_src_dst = Path(rt_src_dst).absolute()
 
         self.last_proc_f = ''  # Last processed filename
         self.done_proc = -1  # Number of the processed volume
-        self.clean_rt_src = clean_rt_src
         self.clean_warning = True  # Show warning when cleaning the watch_dir.
-        self.imgType = 'AFNI BRIK'
+        self.imgType = 'DICOM'
+
+        # For collecting multiple DICOM files of one volume.
         self.NSlices = 0
         self.dicom_list = {}
         self.do_proc = None
+        self.watch_dir = None
 
-        # if watch_dir does not exist, set _proc_ready False.
-        if not Path(self.watch_dir).is_dir():
-            self._proc_ready = False
-
-        self.scan_name = None  # For LIBR, used at saving a physio signal file.
+        self._proc_ready = False
+        self.scan_name = None  # Used for saving a physio signal file.
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         self.dicom_list = {}
-        self._proc_ready  = True
+        self._proc_ready = True
 
         if self.imgType == 'GE DICOM':
             if self.NSlices < 1:
@@ -628,11 +531,11 @@ class RTP_WATCH(RTP):
 
         # set event_handler
         self.event_handler = \
-            RTP_WATCH.RTPFileHandler(self.watch_file_pattern, self.do_proc,
+            RtpWatch.RTPFileHandler(self.watch_file_pattern, self.do_proc,
                                      scan_onset=self.scan_onset)
 
         # self.observer = Observer(timeout=0.001)
-        self.observer = RTP_WATCH.RTP_Observer(
+        self.observer = RtpWatch.RTP_Observer(
                 stat=os.stat, watch_file_pattern=self.watch_file_pattern,
                 polling_interval=self.polling_interval,
                 verb=self._verb, std_out=self._std_out)
@@ -901,7 +804,7 @@ class RTP_WATCH(RTP):
         self.ui_wdir_lnEd.setReadOnly(True)
         self.ui_wdir_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        if Path(self.watch_dir).is_dir():
+        if self.watch_dir and Path(self.watch_dir).is_dir():
             self.ui_wdir_lnEd.setText(str(self.watch_dir))
         ui_rows.append((var_lb, self.ui_wdir_lnEd))
         self.ui_objs.extend([var_lb, self.ui_wdir_lnEd])
@@ -913,7 +816,7 @@ class RTP_WATCH(RTP):
         self.ui_pollingIntv_dSpBx.setSingleStep(0.001)
         self.ui_pollingIntv_dSpBx.setDecimals(4)
         self.ui_pollingIntv_dSpBx.setSuffix(" seconds")
-        self.ui_pollingIntv_dSpBx.setValue(self.polling_interval)
+        self.ui_pollingIntv_dSpBx.setValue(self._polling_interval)
         self.ui_pollingIntv_dSpBx.valueChanged.connect(
                 lambda x: self.set_param('polling_interval', x,
                                          self.ui_pollingIntv_dSpBx.setValue))
@@ -1067,6 +970,87 @@ class RTP_WATCH(RTP):
             self.observer.stop()
             self.observer.join()
 
+    # -------------------------------------------------------------------------
+    class RTPFileHandler(FileSystemEventHandler):
+        """ File handling class """
+
+        def __init__(self, watch_file_pattern, data_proc, scan_onset=None):
+            """
+            Parameters
+            ----------
+            watch_file_pattern : str
+                Regular expression to filter the file.
+            data_proc : function
+                Applied function to the file.
+            scan_onset : RTP_SCANNONSET object, optional
+                If scan_onset is not None, and the scan is not running
+                (scan_onset.is_scan_on() is False), the file creation event is
+                ignored. The default is None.
+            """
+            super().__init__()
+            self.watch_file_pattern = watch_file_pattern
+            self.data_proc = data_proc
+            self.scan_onset = scan_onset
+
+        def on_created(self, event):
+            if event.is_directory:
+                return
+
+            if self.scan_onset is not None and \
+                    not self.scan_onset.is_scan_on():
+                return
+
+            if re.search(self.watch_file_pattern, Path(event.src_path).name):
+                self.data_proc(event.src_path)
+
+    # -------------------------------------------------------------------------
+    class RTP_Observer(PollingObserverVFS):
+        """ Observer class with a custom thread function.
+        PollingObserverVFS is used to work wiht a network-shared drive. If the
+        number of file in the watching directory is large, this observer takes
+        long time to find a new one. So the watching directory should be
+        cleaned at every scan run.
+        """
+
+        def __init__(self, stat=os.stat, watch_file_pattern=None,
+                     polling_interval=0.001, verb=False, std_out=sys.stdout):
+            """
+            Parameters
+            ----------
+            See watchdog document.
+            https://pythonhosted.org/watchdog/api.html#watchdog.observers.polling.PollingObserver
+
+            verb : bool
+                Print process log.
+            std_out : output stream
+                Log output.
+            """
+            super().__init__(stat, self.listdir, polling_interval)
+
+            self._watch_file_pattern = watch_file_pattern
+            self._verb = verb
+            self._std_out = std_out
+
+        def listdir(self, root):
+            if self._watch_file_pattern is not None:
+                paths = [pp.name for pp in Path(root).glob('*')
+                         if re.search(self._watch_file_pattern, pp.name)]
+            else:
+                paths = [pp.name for pp in Path(root).glob('*')]
+
+            return paths
+
+        def logmsg(self, msg, ret_str=False):
+            # Add datetime and class name
+            dtstr = datetime.now().isoformat()
+            msg = f"{dtstr}:[{self.__class__.__name__}]: {msg}"
+            if ret_str:
+                return msg
+
+            print(msg, file=self._std_out)
+            if hasattr(self._std_out, 'flush'):
+                self._std_out.flush()
+
 
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
@@ -1094,11 +1078,11 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP_WATCH instance
+    # Create RtpWatch instance
     watch_file_pattern = r'nr_\d+.+\.nii'
     watch_file_pattern = r'\d+_\d+_\d+\.dcm'
     siemens_mosaic_dicom = True
-    rtp_watch = RTP_WATCH(watch_dir, watch_file_pattern,
+    rtp_watch = RtpWatch(watch_dir, watch_file_pattern,
                           siemens_mosaic_dicom=siemens_mosaic_dicom)
     rtp_watch.verb = True
     rtp_watch.save_proc = True  # save result

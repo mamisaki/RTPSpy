@@ -8,11 +8,14 @@ RTPSpy.egg-info/dependency_links.txt
 RTPSpy.egg-info/top_level.txt
 rtpspy/__init__.py
 rtpspy/ants_run.py
+rtpspy/dicom_converter.py
 rtpspy/fastSeg.py
 rtpspy/librtp.so
 rtpspy/mri_sim.py
 rtpspy/rtp_app.py
 rtpspy/rtp_common.py
+rtpspy/rtp_dcm2nii_srv.py
+rtpspy/rtp_ext_signal.py
 rtpspy/rtp_imgproc.py
 rtpspy/rtp_physio.py
 rtpspy/rtp_physio_dummy.py
@@ -26,3 +29,5 @@ rtpspy/rtp_tshift.py
 rtpspy/rtp_ui.py
 rtpspy/rtp_volreg.py
 rtpspy/rtp_watch.py
+rtpspy/rtp_watch_SiemensXA30.py
+rtpspy/rtp_watch_dicom.py

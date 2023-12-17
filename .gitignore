@@ -12,3 +12,9 @@ __pycache__/
 rsync*
 afni_module/afni
 rtpspy/FastSurfer
+tests/watch/*
+tests/work/*
+tests/dicom*
+log_*
+*.error
+log/
