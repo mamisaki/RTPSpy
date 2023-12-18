@@ -476,31 +476,48 @@ class RtpExtSignal(RTP):
         return data
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def save_data(self, prefix='./{}_scan', len_sec=None):
+    def save_data(self, prefix='./{}_ser', onset=None, len_sec=None):
+        if onset is None and self.scan_onset < 0:
+            errmsg = 'No onset information is available. '
+            errmsg += 'Physio data was not saved.'
+            self.errmsg(errmsg)
+
         if len_sec is not None:
-            data_len = int(len_sec*self.effective_sample_freq)
+            data_len = int(len_sec*self.sample_freq)
         else:
-            data_len = len(self.resp_data)
+            data_len = None
 
-        save_resp = self.resp_data[:data_len]
-        save_ecg = self.ecg_data[:data_len]
+        data = self.dump()
+        card = data['card']
+        resp = data['resp']
+        tstamp = data['tstamp']
 
-        resp_fname = prefix.format('Resp')
-        ecg_fname = prefix.format('ECG')
+        # Find the onset index
+        ons_index = np.argmin(np.abs(tstamp - onset)).ravel()
 
-        if Path(resp_fname).is_file():
+        if data_len:
+            save_card = card[ons_index:ons_index+data_len]
+            save_resp = resp[ons_index:ons_index+data_len]
+        else:
+            save_card = card[ons_index:]
+            save_resp = resp[ons_index:]
+
+        card_fname = prefix.format(f'Card_{self.sample_freq}Hz')
+        resp_fname = prefix.format(f'Resp_{self.sample_freq}Hz')
+
+        if Path(card_fname).is_file():
             # Add a number to the filename if the file exists.
             prefix0 = Path(prefix)
             ii = 1
-            while Path(resp_fname).is_file():
+            while Path(card_fname).is_file():
                 prefix = prefix0.parent / (prefix0.stem + f"_{ii}" +
                                            prefix0.suffix)
-                resp_fname = str(prefix).format('Resp')
-                ecg_fname = str(prefix).format('ECG')
+                card_fname = str(prefix).format(f'Card_{self.sample_freq}Hz')
+                resp_fname = str(prefix).format(f'Resp_{self.sample_freq}Hz')
                 ii += 1
 
+        np.savetxt(card_fname, np.reshape(save_card, [-1, 1]), '%.2f')
         np.savetxt(resp_fname, np.reshape(save_resp, [-1, 1]), '%.2f')
-        np.savetxt(ecg_fname, np.reshape(save_ecg, [-1, 1]), '%.2f')
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def wait_scan_onset(self):

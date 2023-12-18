@@ -895,8 +895,8 @@ class RtpApp(RTP):
                                 pobj.volreg = self.rtp_objs['VOLREG']
 
                         if pobj.phys_reg != 'None':
-                            pobj.rtp_physio = self.rtp_objs['PHYSIO']
-                            self.rtp_objs['PHYSIO'].rtp_retrots = \
+                            pobj.rtp_physio = self.rtp_objs['EXTSIG']
+                            self.rtp_objs['EXTSIG'].rtp_retrots = \
                                 self.rtp_objs['RETROTS']
 
                         if pobj.GS_reg:
@@ -1032,19 +1032,12 @@ class RtpApp(RTP):
                 if self.rtp_objs['REGRESS'].enabled and \
                         self.rtp_objs['REGRESS'].phys_reg != 'None':
                     # Start physio recording
-                    self.main_win.chbRecPhysio.setCheckState(2)
+                    self.main_win.chbRecSignal.setCheckState(2)
                     self.main_win.chbShowExtSig.setCheckState(2)
-                    # chbRecPhysio.setCheckState(2) enables physio UIs
-                    if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
-                        for ui in self.rtp_objs['PHYSIO'].ui_objs:
+                    # chbRecSignal.setCheckState(2) enables physio UIs
+                    if hasattr(self.rtp_objs['EXTSIG'], 'ui_objs'):
+                        for ui in self.rtp_objs['EXTSIG'].ui_objs:
                             ui.setEnabled(False)
-
-            else:
-                if self.rtp_objs['REGRESS'].enabled and \
-                        self.rtp_objs['REGRESS'].phys_reg != 'None':
-                    # Restart RTP_PHYSIO
-                    self.rtp_objs['PHYSIO'].stop_recording()
-                    self.rtp_objs['PHYSIO'].start_recording()
 
             # Reset process chain status
             proc_chain.end_reset()
@@ -1176,6 +1169,7 @@ class RtpApp(RTP):
                 self.mri_sim = None
                 self.sim_isRunning = False
 
+            # --- For simulation ---
             if hasattr(self, 'watch_imgType_orig'):
                 self.rtp_objs['WATCH'].set_param('imgType',
                                                  self.watch_imgType_orig)
@@ -1185,11 +1179,6 @@ class RtpApp(RTP):
                 self.rtp_objs['WATCH'].set_param('watch_file_pattern',
                                                  self.watch_suffix_pat_orig)
                 del self.watch_suffix_pat_orig
-
-            # End PHYSIO recording
-            if 'PHYSIO' in self.rtp_objs and self.rtp_objs['PHYSIO'].enabled:
-                self.rtp_objs['PHYSIO'].wait_scan = False
-                self.rtp_objs['PHYSIO'].scanning = False
 
             # Send 'END' message to an external application
             if self.isAlive_extApp():
@@ -1271,8 +1260,8 @@ class RtpApp(RTP):
                 if out_files is not None:
                     save_fnames.update(out_files)
 
-                if 'PHYSIO' in self.rtp_objs and \
-                        self.rtp_objs['PHYSIO'].enabled and proc_vol_num > 0:
+                if 'EXTSIG' in self.rtp_objs and \
+                        self.rtp_objs['EXTSIG'].enabled and proc_vol_num > 0:
                     # Save physio data
                     if not hasattr(self.rtp_objs['WATCH'], 'scan_name') or \
                             self.rtp_objs['WATCH'].scan_name is None:
@@ -1283,8 +1272,9 @@ class RtpApp(RTP):
                             prefix = ''
                         physio_prefix = str(Path(self.work_dir) /
                                                 ('{}' + f'_{prefix}.1D'))
-                        self.rtp_objs['PHYSIO'].save_data(prefix=physio_prefix,
-                                                          len_sec=len_sec)
+                        self.rtp_objs['EXTSIG'].save_data(
+                            prefix=physio_prefix, len_sec=len_sec)
+
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = '{}, {}:{}'.format(
@@ -1725,8 +1715,8 @@ class RtpApp(RTP):
                 if hasattr(pobj, 'ui_enabled_rdb'):
                     pobj.ui_enabled_rdb.setEnabled(enabled)
 
-            if hasattr(self.main_win, 'chbRecPhysio'):
-                self.main_win.chbRecPhysio.setEnabled(enabled)
+            if hasattr(self.main_win, 'chbRecSignal'):
+                self.main_win.chbRecSignal.setEnabled(enabled)
             if hasattr(self.main_win, 'chbUseGPU'):
                 self.main_win.chbUseGPU.setEnabled(enabled)
             self.main_win.btnSetWorkDir.setEnabled(enabled)
@@ -1838,33 +1828,32 @@ class RtpApp(RTP):
             recv_physio_port = re.search(r'slave:(.+)\)',
                                          self.simPhysPort).groups()[0]
 
-            # Stop physio recording
-            if self.main_win is not None:
-                self.main_win.chbRecPhysio.setCheckState(0)
-            else:
-                self.rtp_objs['PHYSIO'].stop_recording()
+            # # Stop physio recording
+            # if self.main_win is not None:
+            #     self.main_win.chbRecSignal.setCheckState(0)
+            # else:
+            #     self.rtp_objs['EXTSIG'].stop_recording()
 
-            # Change port
-            self.rtp_objs['PHYSIO'].update_port_list()
-            self.rtp_objs['PHYSIO'].set_param('ser_port', recv_physio_port)
+            # # Change port
+            # self.rtp_objs['PHYSIO'].update_port_list()
+            # self.rtp_objs['PHYSIO'].set_param('ser_port', recv_physio_port)
 
-            self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
-                                    recording_rate_ms, samples_to_average)
+            # self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
+            #                         recording_rate_ms, samples_to_average)
 
-            # Start physio recording
-            if self.main_win is not None:
-                self.main_win.chbRecPhysio.setCheckState(2)
-                self.main_win.chbShowExtSig.setCheckState(2)
-            else:
-                self.rtp_objs['PHYSIO'].start_recording()
-                self.rtp_objs['PHYSIO'].open_signal_plot()
+            # # Start physio recording
+            # if self.main_win is not None:
+            #     self.main_win.chbRecSignal.setCheckState(2)
+            #     self.main_win.chbShowExtSig.setCheckState(2)
+            # else:
+            #     self.rtp_objs['PHYSIO'].start_recording()
+            #     self.rtp_objs['PHYSIO'].open_signal_plot()
 
-            if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
-                for ui in self.rtp_objs['PHYSIO'].ui_objs:
-                    ui.setEnabled(False)
+            # if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
+            #     for ui in self.rtp_objs['PHYSIO'].ui_objs:
+            #         ui.setEnabled(False)
 
-            run_physio = True
-
+            # run_physio = True
         # --- Start ---
         if run_physio:
             self.mri_sim.run_Physio('start')
@@ -3203,10 +3192,10 @@ if __name__ == '__main__':
     watch_file_pattern = r'nr_\d+.*\.nii'
 
     # Set RTP_PHYSIO to RTP_PHYSIO_DUMMY
-    from rtpspy import RTP_PHYSIO_DUMMY
-    sample_freq = 40
-    rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
-        ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
+    # from rtpspy import RTP_PHYSIO_DUMMY
+    # sample_freq = 40
+    # rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
+    #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
 
     # RTP parameters
     rtp_params = {'WATCH': {'watch_dir': watch_dir,
