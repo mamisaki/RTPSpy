@@ -18,3 +18,4 @@ tests/dicom*
 log_*
 *.error
 log/
+rtpspy/FastSurfer
