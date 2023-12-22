@@ -569,7 +569,7 @@ if __name__ == '__main__':
     parser.add_argument('--watch_dir', default=RTMRI_DIR,
                         help='Watch directory, where MRI data is exported in' +
                         'real time')
-    parser.add_argument('--work_root', default=RTMRI_DIR,
+    parser.add_argument('--work_root', default=WORK_DIR,
                         help='Converted data output directory root')
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
