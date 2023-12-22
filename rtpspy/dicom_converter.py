@@ -5,7 +5,6 @@ mmisaki@laureateinstitute.org
 """
 
 # %% import ===================================================================
-import argparse
 from pathlib import Path
 import logging
 import subprocess
@@ -13,16 +12,9 @@ import shlex
 import sys
 import traceback
 import shutil
-from datetime import datetime
 import re
-from threading import Lock
-from multiprocessing import Process
-import time
 import os
 
-from watchdog.observers import Observer
-from watchdog.observers.polling import PollingObserver
-from watchdog.events import FileSystemEventHandler
 import numpy as np
 import pandas as pd
 import nibabel as nib

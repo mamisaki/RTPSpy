@@ -92,6 +92,7 @@ class RtpApp(RTP):
         self.WM_orig = ''
         self.Vent_orig = ''
         self.ROI_orig = ''
+        self.aseg_oirg = ''
         self.ROI_mask = None
 
         self.RTP_mask = ''
@@ -523,7 +524,7 @@ class RtpApp(RTP):
                 if re.search(r'\\.BRIK', pat):
                     pat = re.sub(r'\\.BRIK', '', pat)
                 if re.search(r'\\.HEAD', pat):
-                    pat = re.sub(r'\\.HEAF', '', pat)
+                    pat = re.sub(r'\\.HEAD', '', pat)
                 if re.search(r'\\.nii', pat):
                     pat = re.sub(r'\\.nii', '', pat)
 
@@ -566,7 +567,8 @@ class RtpApp(RTP):
                     else:
                         dst_f_stem = dst_f.stem
                     dst_json_f = Path(dst_f).parent / (dst_f_stem + '.json')
-                    shutil.copy(json_f, dst_json_f)
+                    if not dst_json_f.is_file() and not overwrite:
+                        shutil.copy(json_f, dst_json_f)
                 else:
                     # Save TR and slice timing
                     header = nib.load(src_f).header
@@ -617,10 +619,9 @@ class RtpApp(RTP):
                 # Make Brain, WM, Vent segmentations
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
-                seg_files = improc.FastSeg(
+                seg_files = improc.run_fast_seg(
                     self.work_dir, self.anat_orig, total_ETA,
-                    progress_bar=progress_bar, ask_cmd=ask_cmd,
-                    overwrite=overwrite)
+                    progress_bar=progress_bar, overwrite=overwrite)
                 assert seg_files is not None
 
                 # Use self.set_param() to update GUI fields
@@ -1148,10 +1149,6 @@ class RtpApp(RTP):
             # Run custom end process
             self.end_proc()
 
-            # Abort scan_onset if it is waiting
-            self.rtp_objs['EXTSIG'].abort_waiting()
-            self.rtp_objs['EXTSIG'].end_reset()
-
             # Abort WAIT_ONSET thread if it is running
             if hasattr(self, 'th_wait_onset') and \
                     self.th_wait_onset.isRunning():
@@ -1260,20 +1257,25 @@ class RtpApp(RTP):
                 if out_files is not None:
                     save_fnames.update(out_files)
 
-                if 'EXTSIG' in self.rtp_objs and \
-                        self.rtp_objs['EXTSIG'].enabled and proc_vol_num > 0:
-                    # Save physio data
-                    if not hasattr(self.rtp_objs['WATCH'], 'scan_name') or \
-                            self.rtp_objs['WATCH'].scan_name is None:
-                        if last_proc.saved_filename is not None:
-                            prefix = last_proc.saved_filename.name.replace(
-                                '.nii.gz', '')
-                        else:
-                            prefix = ''
-                        physio_prefix = str(Path(self.work_dir) /
-                                                ('{}' + f'_{prefix}.1D'))
-                        self.rtp_objs['EXTSIG'].save_data(
-                            prefix=physio_prefix, len_sec=len_sec)
+            # Save physio recording
+            if 'EXTSIG' in self.rtp_objs and \
+                    self.rtp_objs['EXTSIG'].enabled:
+                # Save physio data
+                # if not hasattr(self.rtp_objs['WATCH'], 'scan_name') or \
+                #         self.rtp_objs['WATCH'].scan_name is None:
+                #     if last_proc.saved_filename is not None:
+                #         prefix = last_proc.saved_filename.name.replace(
+                #             '.nii.gz', '')
+                #     else:
+                #         prefix = ''
+                #     physio_prefix = str(Path(self.work_dir) /
+                #                             ('{}' + f'_{prefix}.1D'))
+                #     self.rtp_objs['EXTSIG'].save_data(
+                #         prefix=physio_prefix, len_sec=len_sec)
+
+                # Abort scan_onset if it is waiting
+                self.rtp_objs['EXTSIG'].abort_waiting()
+                self.rtp_objs['EXTSIG'].end_reset()
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1818,15 +1820,16 @@ class RtpApp(RTP):
                 self.rtp_objs['REGRESS'].set_param('phys_reg', 'None')
             run_physio = False
         else:
-            ecg_src = self.simECGData
-            resp_src = self.simRespData
-            physio_port = self.simPhysPort.split()[0]
-            recording_rate_ms = \
-                1000 / self.rtp_objs['PHYSIO'].effective_sample_freq
-            samples_to_average = self.rtp_objs['PHYSIO'].samples_to_average
+            pass
+            # ecg_src = self.simECGData
+            # resp_src = self.simRespData
+            # physio_port = self.simPhysPort.split()[0]
+            # recording_rate_ms = \
+            #     1000 / self.rtp_objs['PHYSIO'].effective_sample_freq
+            # samples_to_average = self.rtp_objs['PHYSIO'].samples_to_average
 
-            recv_physio_port = re.search(r'slave:(.+)\)',
-                                         self.simPhysPort).groups()[0]
+            # recv_physio_port = re.search(r'slave:(.+)\)',
+            #                              self.simPhysPort).groups()[0]
 
             # # Stop physio recording
             # if self.main_win is not None:
@@ -2219,7 +2222,7 @@ class RtpApp(RTP):
         elif attr in ('anat_orig', 'func_orig', 'func_param_ref',
                       'template', 'ROI_template', 'WM_template',
                       'Vent_template', 'alAnat', 'brain_anat_orig',
-                      'ROI_orig', 'WM_orig', 'Vent_orig',
+                      'ROI_orig', 'WM_orig', 'Vent_orig', 'aseg_orig',
                       'RTP_mask', 'GSR_mask', 'simfMRIData', 'simECGData',
                       'simRespData'):
             msglab = {'anat_orig': 'anatomy image in original space',
@@ -2235,6 +2238,7 @@ class RtpApp(RTP):
                       'ROI_orig': 'ROI mask in original space',
                       'WM_orig': 'white matter mask in original space',
                       'Vent_orig': 'ventricle mask in original space',
+                      'aseg_orig': 'aseg in original space',
                       'RTP_mask': 'mask for real-time processing',
                       'GSR_mask': 'mask for global signal regression',
                       'simfMRIData': 'fMRI data for simulation',
@@ -2554,16 +2558,16 @@ class RtpApp(RTP):
         var_lb = QtWidgets.QLabel("fMRI parameter refrence : ")
         RefImg_gLayout.addWidget(var_lb, ri, 0)
 
-        self.ui_param_ref_lnEd = QtWidgets.QLineEdit()
-        self.ui_param_ref_lnEd.setReadOnly(True)
-        self.ui_param_ref_lnEd.setStyleSheet(
+        self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
+        self.ui_func_param_ref_lnEd.setReadOnly(True)
+        self.ui_func_param_ref_lnEd.setStyleSheet(
             'background: white; border: 0px none;')
-        RefImg_gLayout.addWidget(self.ui_param_ref_lnEd, ri, 1)
+        RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
 
         self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
         self.ui_param_ref_btn.clicked.connect(
                 lambda: self.set_param('func_param_ref', '',
-                                       self.ui_param_ref_lnEd.setText))
+                                       self.ui_func_param_ref_lnEd.setText))
         self.ui_param_ref_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
         RefImg_gLayout.addWidget(self.ui_param_ref_btn, ri, 2)
