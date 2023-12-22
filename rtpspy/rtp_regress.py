@@ -92,7 +92,7 @@ class RtpRegress(RTP):
                  WM_mask=None, Vent_reg=False, Vent_mask=None,
                  mask_src_proc=None, phys_reg='None', rtp_physio=None,
                  tshift=0.0, desMtx=None, wait_num=0, mask_file=0,
-                 max_scan_length=300, onGPU=gpu_available, reg_retro_proc=True,
+                 max_scan_length=800, onGPU=gpu_available, reg_retro_proc=True,
                  **kwargs):
         """
         Parameters

@@ -607,7 +607,11 @@ class DlgProgressBar(QtWidgets.QDialog):
         st = time.time()
         while proc.poll() is None:
             try:
-                out0 = proc.stdout.read(4).decode()
+                out0 = proc.stdout.read(4)
+                try:
+                    out0 = out0.decode()
+                except UnicodeDecodeError:
+                    out0 = '\n'
                 out = '\n'.join(out0.splitlines())
                 if len(out0) and out0[-1] == '\n':
                     out += '\n'
@@ -629,9 +633,14 @@ class DlgProgressBar(QtWidgets.QDialog):
                 break
 
         try:
-            out = proc.stdout.read().decode()
-            out = '\n'.join(out.splitlines()) + '\n\n'
-            self.add_desc(out)
+            out = proc.stdout.read()
+            try:
+                out = out.decode()
+                out = '\n'.join(out.splitlines()) + '\n\n'
+                self.add_desc(out)
+            except UnicodeDecodeError:
+                pass
+            
         except subprocess.TimeoutExpired:
             pass
 

@@ -1,9 +1,13 @@
-name: RTPSpy
+name: RTPSpyDev
 channels:
   - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
+  - tqdm
+  - simpleitk
+  - h5py
   - cmake
   - dcm2niix
   - pydicom
@@ -16,10 +20,12 @@ dependencies:
   - pip
   - pyqt
   - pyserial
-  - python=3.11
+  - python=3.10
   - pytorch
+  - pytorch-cuda=12.1
   - scikit-sparse
   - torchvision
   - watchdog
+  - yacs
   - pip:
     - antspyx

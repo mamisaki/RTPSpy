@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Convert the exported DICOM files in 'watch_dir' to NIfTI files in the working
+directory under 'work_root' and move the DICOM files to the working directory.
+
 mmisaki@laureateinstitute.org
 """
 
@@ -50,7 +53,7 @@ class RtpDcm2NiiServer:
       a request via a network socket at the 'rpc_port'.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, dcm_dir, work_root, watch_file_pattern=r'.+\.dcm',
+    def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
                  study_prefix='P', series_timeout=60, rpc_port=63210,
                  make_brik=False, polling_observer=False, **kwargs):
         """
@@ -87,7 +90,7 @@ class RtpDcm2NiiServer:
         self._logger = logging.getLogger('RtpDcm2NiiServer')
 
         # Initialize parameters
-        self.watch_dir = dcm_dir
+        self.watch_dir = watch_dir
         self.work_root = work_root
         self.watch_file_pattern = watch_file_pattern
         self.study_prefix = study_prefix
@@ -557,12 +560,17 @@ class RtpDcm2NiiServer:
 
 # %% __main__ =================================================================
 if __name__ == '__main__':
+    RTMRI_DIR = Path('/RTMRI/RTExport')
+    WORK_DIR = Path('/data/rt')
+    RT_COPY_DST_DIR = Path('/RTMRI/RTExport_rt')
+
     # --- Parse arguments -----------------------------------------------------
     parser = argparse.ArgumentParser(description='RTPSPy dcm2nii server')
-    parser.add_argument('--dcm_dir', help='DICOM root ditectory',
-                        default='/RTMRI/RTExport')
-    parser.add_argument('--work_root', default='/data/rt',
-                        help='Converted data output directory')
+    parser.add_argument('--watch_dir', default=RTMRI_DIR,
+                        help='Watch directory, where MRI data is exported in' +
+                        'real time')
+    parser.add_argument('--work_root', default=RTMRI_DIR,
+                        help='Converted data output directory root')
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
     parser.add_argument('--study_prefix', default='P', help='Study ID prefix')
@@ -574,9 +582,8 @@ if __name__ == '__main__':
                         help='Make BRIK files')
     parser.add_argument('--polling_observer', action='store_true',
                         help='Use Polling observer')
-
     args = parser.parse_args()
-    dcm_dir = Path(args.dcm_dir)
+    watch_dir = Path(args.watch_dir)
     work_root = Path(args.work_root)
     watch_file_pattern = args.watch_file_pattern
     study_prefix = args.study_prefix
@@ -598,9 +605,15 @@ if __name__ == '__main__':
 
     # Run the server
     dcm2nii_serv = RtpDcm2NiiServer(
-        dcm_dir, work_root, watch_file_pattern=watch_file_pattern,
+        watch_dir, work_root, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, series_timeout=series_timeout,
         rpc_port=rpc_port, make_brik=make_brik,
         polling_observer=polling_observer)
 
-    dcm2nii_serv.run()
+    # Run mainloop
+    try:
+        dcm2nii_serv.run()
+    except Exception:
+        pass
+
+    del dcm2nii_serv

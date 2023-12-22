@@ -20,6 +20,7 @@ import nibabel as nib
 
 from PyQt5 import QtWidgets
 from .rtp_common import RTP
+from .fast_seg import FastSeg
 
 
 # %% RtpImgProc class =======================================================
@@ -211,7 +212,7 @@ class RtpImgProc(RTP):
             Description shown in the progress_bar (in the text box).
             The default is ''.
         ETA : float, optional
-            Estimated time of arrival (seconds). This us used for online bar
+            Estimated time of arrival (seconds). This is used for online bar
             update. The default is None.
         total_ETA : float, optional
             Estimated time of arrival (seconds) for all processes if the proc
@@ -260,8 +261,8 @@ class RtpImgProc(RTP):
 
     # --- Image processing methos ---------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def FastSeg(self, work_dir, anat_orig, total_ETA, progress_bar=None,
-                ask_cmd=False, overwrite=False):
+    def run_fast_seg(self, work_dir, anat_orig, total_ETA, progress_bar=None,
+                     overwrite=False):
         """
         Segment anatomy image (anat_orig) with FasSeg to extract brain, white
         matter, and ventricle masks.
@@ -274,8 +275,6 @@ class RtpImgProc(RTP):
             anaotmy image file in individual's original space.
         progress_bar : rtp_common.DlgProgressBar, optional
             Progress_bar dialog object. The default is None.
-        ask_cmd : TYPE, optional
-            Allow to edit command line. The default is False.
         overwrite : bool, optional
             Overwrite existing files. When this is False and results exist,
             the process is skipped. The default is False.
@@ -311,29 +310,21 @@ class RtpImgProc(RTP):
         if not brain_anat_orig.is_file() or not wm_anat_orig.is_file() or \
                 not vent_anat_orig.is_file() or \
                 not aseg_anat_orig.is_file() or overwrite:
-            # Run the process
-            fastSeg_cmd = Path(__file__).absolute().parent / "fastSeg.py"
+            # Make FastSeg instance
+            fastSeg = FastSeg()
 
-            cmd = f"{fastSeg_cmd} {Path(anat_orig).absolute()}"
-            cmd += f"  --out {out_prefix}"
-            cmd += f" --batch_size {self.fastSeg_batch_size}"
-
-            if ask_cmd:
-                # Edit the command line.
-                labelTxt = 'Commdand line:'
-                cmd, okflag = self._edit_command(labelTxt=labelTxt, cmdTxt=cmd)
-                if not okflag:
-                    return -1
-
-                self.fastSeg_batch_size = \
-                    int(re.search(r'--batch_size (\d+)', cmd).groups()[0])
-
+            # Prepare files (Convert BRIK to NIfTI)
+            in_f, prefix = fastSeg.prep_files(anat_orig,
+                                              work_dir / out_prefix)
+            subj_dir = prefix
+            
             # Spawn the process
             st = time.time()
-            proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, cwd=work_dir)
+            proc, fsSeg_mgz = fastSeg.run_seg_only(
+                in_f, prefix, self.fastSeg_batch_size)
+
             assert proc.returncode is None or proc.returncode == 0, \
-                'Failed at segmentation.\n'
+                'Failed at FastSeg.\n'
 
             # Wait for the process to finish with showing the progress.
             ret = self._show_proc_progress(
@@ -343,13 +334,31 @@ class RtpImgProc(RTP):
             if ret != 0:
                 return None
 
+            # make_seg_images
+            show_proc_progress = lambda proc : self._show_proc_progress(
+                proc, progress_bar, msgTxt='FastSeg image segnemtation',
+                total_ETA=total_ETA)
+            
+            out_fs = fastSeg.make_seg_images(
+                in_f, fsSeg_mgz, prefix,
+                segs=['Brain', 'WM', 'Vent', 'aseg'],
+                show_proc_progress=show_proc_progress)
+
+            if out_fs is None:
+                return None
+            
+            # Delete woring files
+            if subj_dir.is_dir():
+                shutil.rmtree(subj_dir)
+
+            # Record processing time
             self.proc_times["FastSeg"] = np.ceil(time.time() - st)
 
             if progress_bar is not None:
                 progress_bar.add_desc('\n')
 
         else:
-            # Report using existing files.
+            # Report that existing files are used.
             if progress_bar is not None:
                 bar_inc = (self.proc_times["FastSeg"]) / total_ETA * 100
                 progress_bar.set_value(bar_inc)

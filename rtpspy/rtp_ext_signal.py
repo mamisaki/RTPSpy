@@ -147,11 +147,11 @@ class RtpExtSignal(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _init_onsig_port(self, sig_port):
-        # Delete string after ' : ('
-        sig_port = re.sub(r' : \(.+', '', sig_port).rstrip()
-
         if sig_port is None:
             return
+
+        # Delete string after ' : ('
+        sig_port = re.sub(r' : \(.+', '', sig_port).rstrip()
 
         if 'CDC RS-232 Emulation Demo' in sig_port or \
                 'Numato Lab 8 Channel USB GPIO M' in sig_port:
