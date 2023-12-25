@@ -666,26 +666,30 @@ class RtSignalRecorder():
         self.close()
 
 
-# %% TTLPhysioPlot ============================================================
-class TTLPhysioPlot():
+# %% SignalPlot ===============================================================
+class SignalPlot():
     """ View class for dispaying real-time TTL and physio recordings
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, recorder, plt_root, as_root=False,
-                 geometry='600x600+1024+0', plot_len_sec=10):
-        self.logger = logging.getLogger('TTLPhysioPlot')
+                 geometry='600x600+1024+0', plot_len_sec=10,
+                 disable_close=False):
+        self.logger = logging.getLogger('SignalPlot')
+
+        self.recorder = recorder
 
         self._plt_root = plt_root
         if as_root:
             self._plt_win = plt_root
         else:
             self._plt_win = tk.Toplevel(self._plt_root)
+
         self._plt_win.geometry(geometry)
         self._plt_win.title('Physio signals')
         self.set_position(geometry)
 
         self.plot_len_sec = plot_len_sec
-        self.recorder = recorder
+        self.disable_close = disable_close
 
         # Set the margins in inches
         self.left_margin_inch = 0.75
@@ -994,8 +998,8 @@ class TTLPhysioPlot():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_closing(self):
-        # Disable close button
-        pass
+        if not self.disable_close:
+            self._plt_win.destroy()
 
 
 # %% main =====================================================================
@@ -1010,11 +1014,14 @@ if __name__ == '__main__':
                         help='RPC socket server port')
     parser.add_argument('--geometry', default='600x600+1024+0',
                         help='Plot window position')
+    parser.add_argument('--disable_close', action='store_true',
+                        help='Disable close button')
 
     args = parser.parse_args()
     log_file = args.log_file
     rpc_port = args.rpc_port
     geometry = args.geometry
+    disable_close = args.disable_close
 
     # Logger
     logging.basicConfig(level=logging.INFO,
@@ -1028,8 +1035,9 @@ if __name__ == '__main__':
     plt_root = tk.Tk()
 
     #  Open plot
-    signal_plot = TTLPhysioPlot(
-        recorder, plt_root, as_root=True, geometry=geometry)
+    signal_plot = SignalPlot(
+        recorder, plt_root, as_root=True, geometry=geometry,
+        disable_close=disable_close)
 
     # Start recorder
     recorder.start_recording()
