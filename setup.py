@@ -4,7 +4,7 @@ setup(
     name='RTPSpy',
     packages=['rtpspy'],
     package_data={'rtpspy': ['librtp.so']},
-    version='0.2.0',
+    version='1.0.0',
     author='Masaya Misaki',
     author_email='mamisaki@gmail.com',
     description='fMRI Real-Time Processing System in python',
