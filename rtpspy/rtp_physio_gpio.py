@@ -286,7 +286,6 @@ class TTLPhysioPlot():
         self._ln_card = self._ax_card.plot(
             sig_xi, np.zeros(buf_size), 'k-')
         self._ax_card.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_card.set_xlabel('second')
         self._ax_card.yaxis.set_ticks_position("right")
 
         # Set Resp axis
@@ -295,7 +294,7 @@ class TTLPhysioPlot():
         self._ln_resp = self._ax_resp.plot(
             sig_xi, np.zeros(buf_size), 'k-')
         self._ax_resp.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_resp.yaxis.set_ticks_position("right")
+        self._ax_resp.set_xlabel('second')
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def update(self, ttl=None, resp=None, card=None):
