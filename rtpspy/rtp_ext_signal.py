@@ -34,7 +34,7 @@ class RtpExtSignal(RTP):
         # --- recording status ---
         self._wait_start = False
         self._scanning = False
-        self.scan_onset = -1.0
+        self.scan_onset = 0.0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # +++ getter method +++
@@ -79,7 +79,7 @@ class RtpExtSignal(RTP):
             onset = np.ndarray((1,), dtype=np.dtype(float), buffer=shm.buf)[0]
             shm.close()
 
-            if onset != 0:
+            if onset > 0:
                 self.scan_onset = onset
                 self._scanning = True
                 self._wait_start = False
@@ -102,7 +102,7 @@ class RtpExtSignal(RTP):
     def end_reset(self):
         self._wait_start = False
         self._scanning = False
-        self.scan_onset = -1.0
+        self.scan_onset = 0.0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):

@@ -159,22 +159,6 @@ class RTP_UI(QtWidgets.QMainWindow):
         self.btnSetWorkDir.clicked.connect(self.set_workDir)
 
         # --- Devices and plot checkbox ---------------------------------------
-        # EXTSIG
-        if 'EXTSIG' in rtp_objs:
-            self.chbRecSignal = QtWidgets.QCheckBox('Recording signal',
-                                                    self.mainWidget)
-            self.chbRecSignal.setCheckState(0)
-            self.chbRecSignal.stateChanged.connect(
-                    lambda x: self.rec_sig_chk(x))
-
-            self.chbShowExtSig = QtWidgets.QCheckBox('Show signals',
-                                                     self.mainWidget)
-            self.chbShowExtSig.setCheckState(0)
-            self.chbShowExtSig.stateChanged.connect(
-                    lambda x: self.show_sig_chk(x))
-            if self.chbRecSignal.checkState() != 2:
-                self.chbShowExtSig.setEnabled(False)
-
         # Show motion
         if 'VOLREG' in rtp_objs:
             self.chbShowMotion = QtWidgets.QCheckBox('Show motion',
@@ -518,38 +502,6 @@ class RTP_UI(QtWidgets.QMainWindow):
                     btnObj.setStyleSheet("background-color: rgb(255,201,32)")
                 else:
                     btnObj.setStyleSheet("")
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def rec_sig_chk(self, state):
-        if 'EXTSIG' not in self.rtp_objs:
-            return
-
-        if state == 2:
-            # self.rtp_objs['EXTSIG'].start_recording()
-            self.chbShowExtSig.setEnabled(True)
-            self.rtp_objs['EXTSIG'].set_param('enabled', True)
-        else:
-            if self.chbShowExtSig.checkState():
-                self.chbShowExtSig.setCheckState(0)
-
-            # self.rtp_objs['EXTSIG'].stop_recording()
-            self.chbShowExtSig.setEnabled(False)
-            self.rtp_objs['EXTSIG'].set_param('enabled', False)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show_sig_chk(self, state):
-        if 'EXTSIG' not in self.rtp_objs:
-            return
-
-        if state == 2:
-            if not self.chbRecSignal.checkState():
-                self.chbShowExtSig.setCheckState(0)
-                return
-
-            # self.rtp_objs['EXTSIG'].open_signal_plot()
-        else:
-            pass
-            # self.rtp_objs['EXTSIG'].close_signal_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_mot_chk(self, state):
