@@ -7,7 +7,7 @@ CC     = /usr/bin/gcc -O2 -DDARWIN -m64 -Wcomment -Wformat -DUSE_TRACING -DHAVE_
 	 -DDONT_USE_MCW_MALLOC
 
 RM = /bin/rm -f
-AFNI_SRC = ../afni/src
+AFNI_SRC = afni/src
 USE_ZLIB = -DHAVE_ZLIB
 
 XROOT   = /opt/X11

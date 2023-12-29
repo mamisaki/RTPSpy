@@ -12,6 +12,7 @@ import ctypes
 import pickle
 import sys
 from pathlib import Path
+import time
 
 if sys.platform == 'linux':
     lib_name = 'librtp.so'
@@ -70,36 +71,36 @@ class RetroTSOpt(ctypes.Structure):
             ]
 
     def __init__(self, VolTR, PhysFS, tshift=0):
-        self.VolTR = VolTR
-        self.PhysFS = PhysFS
-        self.tshift = tshift
+        self.VolTR = np.float32(VolTR)
+        self.PhysFS = np.float32(PhysFS)
+        self.tshift = np.float32(tshift)
 
 
 # %% RtpRetrots class ========================================================
 class RtpRetrots:
-
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self):
         librtp = ctypes.cdll.LoadLibrary(librtp_path)
 
-        # -- Define rtp_align_setup --
+        # -- Define librtp.rtp_retrots setups --
         self.rtp_retrots = librtp.rtp_retrots
-        """
-        int rtp_retrots(RetroTSOpt *rtsOpt, double *Resp, double *ECG, int len,
-                        *regOut);
+        """ C definition
+        int rtp_retrots(RetroTSOpt *rtsOpt, double *Resp, double *Card,
+                        int len, *regOut);
         """
 
         self.rtp_retrots.argtypes = \
             [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
              ctypes.c_void_p]
 
-        self.rtsOpt = None
+        self._rtsOpt = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_RetroTSOpt(self, TR, PhysFS, tshift=0):
         self.TR = TR
         self.PhysFS = PhysFS
         self.tshift = tshift
-        self.rtsOpt = RetroTSOpt(TR, PhysFS, tshift)
+        self._rtsOpt = RetroTSOpt(TR, PhysFS, tshift)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, Resp, ECG, TR, PhysFS, tshift=0):
@@ -135,14 +136,14 @@ class RtpRetrots:
         regOut_ptr = regOut.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         # Set rtsOpt
-        if self.rtsOpt is None:
+        if self._rtsOpt is None:
             self.setup_RetroTSOpt(TR, PhysFS, tshift)
         else:
-            self.rtsOpt.VolTR = TR
+            self._rtsOpt.VolTR = TR
             self.PhysFS = PhysFS
             self.tshift = tshift
 
-        self.rtp_retrots(ctypes.byref(self.rtsOpt), Resp_ptr, ECG_ptr, dlen,
+        self.rtp_retrots(ctypes.byref(self._rtsOpt), Resp_ptr, ECG_ptr, dlen,
                          regOut_ptr)
 
         return regOut
@@ -167,3 +168,20 @@ class RtpRetrots:
                 continue
 
         return opts
+
+
+# %% __main__ (test) ==========================================================
+if __name__ == '__main__':
+    
+    
+    
+    
+    restrots = RtpRetrots()
+
+    restrots.init_physio_access()
+    TR = 2
+    while True:
+        st = time.time()
+        print(restrots.get_retrots(TR))
+        print(time.time-st)
+        time.sleep(TR)
