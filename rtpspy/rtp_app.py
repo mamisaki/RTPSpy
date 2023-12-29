@@ -1086,6 +1086,7 @@ class RtpApp(RTP):
             # Stand by scan onset monitor
             self.main_win.chbRecSignal.setCheckState(2)
             self.main_win.chbShowExtSig.setCheckState(2)
+            self.rtp_objs['EXTSIG'].reset()
             self.rtp_objs['EXTSIG'].wait_scan_onset()
 
             # Run wait_onset thread

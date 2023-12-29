@@ -640,7 +640,7 @@ class DlgProgressBar(QtWidgets.QDialog):
                 self.add_desc(out)
             except UnicodeDecodeError:
                 pass
-            
+
         except subprocess.TimeoutExpired:
             pass
 
