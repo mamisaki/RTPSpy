@@ -16,6 +16,7 @@ tests/watch/*
 tests/work/*
 tests/dicom*
 log_*
+*.log
 *.error
 log/
 rtpspy/FastSurfer
