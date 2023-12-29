@@ -90,7 +90,7 @@ class RtpRegress(RTP):
     def __init__(self, max_poly_order=np.inf, TR=2.0, mot_reg='None',
                  volreg=None, GS_reg=False, GS_mask=None, WM_reg=False,
                  WM_mask=None, Vent_reg=False, Vent_mask=None,
-                 mask_src_proc=None, phys_reg='None', rtp_physio=None,
+                 mask_src_proc=None, phys_reg='None', rtp_retrots=None,
                  tshift=0.0, desMtx=None, wait_num=0, mask_file=0,
                  max_scan_length=800, onGPU=gpu_available, reg_retro_proc=True,
                  **kwargs):
@@ -140,8 +140,8 @@ class RtpRegress(RTP):
             RVT+RICOR13: both RVT5 and RICOR8
             RVT is not recomended for RTP (see Misaki and Bodrka, 2021.)
             The default is 'None'.
-        rtp_physio : RTP_PHYSIO object, optional
-            RTP_PHYSIO object to read retrots regressors. The default is None.
+        rtp_retrots : RtpRetroTS object, optional
+            RtpRetroTS object to read retrots regressors. The default is None.
         tshift : float, optional
             Slice timing offset (second) for calculating the restrots
             regressors. The default is 0.0.
@@ -188,7 +188,7 @@ class RtpRegress(RTP):
         self.mask_src_proc = mask_src_proc
         # Physiological signal regressors
         self.phys_reg = phys_reg
-        self.rtp_physio = rtp_physio
+        self.rtp_retrots = rtp_retrots
         self.tshift = tshift
         # Other regressors design matrix
         self.desMtx_read = desMtx
@@ -248,12 +248,12 @@ class RtpRegress(RTP):
             self.errmsg('RtpVolreg object is not set.')
             self._proc_ready = False
 
-        if self.rtp_physio is None or self.rtp_physio.not_available:
-            self.set_param('phys_reg', 'None')
-
-        if self.phys_reg != 'None' and self.rtp_physio is None:
-            self.errmsg('RTP_PHYSIO object is not set.')
-            self._proc_ready = False
+        if self.phys_reg != 'None':
+            if self.rtp_retrots is None:
+                self.errmsg('RtpRetroTS object is not set.')
+                self._proc_ready = False
+            else:
+                self._proc_ready &= self.rtp_retrots.ready_proc()
 
         if self.desMtx0 is None and self.max_scan_length is None:
             self.errmsg('Either design matrix or max scanlength must be set.')
@@ -460,8 +460,8 @@ class RtpRegress(RTP):
                 return
 
             # --- Update retroicor regressors ---------------------------------
-            if self.phys_reg != 'None' and self.rtp_physio is not None:
-                retrots = self.rtp_physio.get_retrots(
+            if self.phys_reg != 'None' and self.rtp_retrots is not None:
+                retrots = self.rtp_retrots.get_retrots(
                     self.TR, vol_idx+1, self.tshift, timeout=self.TR)
                 if retrots is None:
                     self.errmsg("RETROTS regressors cannot be made.",
@@ -1030,18 +1030,18 @@ class RtpRegress(RTP):
                 self.main_win.set_workDir(val)
 
         elif attr == 'mask_file':
-            if type(val) == int and val == 0:
+            if type(val) is int and val == 0:
                 if hasattr(self, 'ui_mask_lnEd'):
                     self.ui_mask_lnEd.setText(
                         'zero-out initial received volume')
 
-            elif type(val) == str and 'initial volume' in val:
+            elif type(val) is str and 'initial volume' in val:
                 val = 0
                 if hasattr(self, 'ui_mask_lnEd'):
                     self.ui_mask_lnEd.setText(
                         'zero-out initial received volume')
 
-            elif type(val) == str and 'external file' in val:
+            elif type(val) is str and 'external file' in val:
                 fname = self.select_file_dlg('REGRESS: Selct mask volume',
                                              self.work_dir, "*.BRIK* *.nii*")
                 if fname[0] == '':
@@ -1070,7 +1070,7 @@ class RtpRegress(RTP):
                     self.ui_mask_lnEd.setText(str(mask_fname))
                 val = mask_fname
 
-            elif type(val) == str or isinstance(val, Path):
+            elif type(val) is str or isinstance(val, Path):
                 val = str(val)
                 ma = re.search(r"\[(\d+)\]", val)
                 if ma:
@@ -1091,7 +1091,7 @@ class RtpRegress(RTP):
                     self.ui_mask_lnEd.setText(str(val))
 
         elif attr == 'wait_num':
-            if type(val) == int:
+            if type(val) is int:
                 self.set_wait_num(val)
                 if reset_fn is None:
                     if hasattr(self, 'ui_waitNum_cmbBx'):
@@ -1159,7 +1159,7 @@ class RtpRegress(RTP):
                     self.ui_maxPoly_cmbBx.setCurrentIndex(0)
                     self.ui_maxPoly_lb.setText('Increase polynomial order ' +
                                                'with the scan length')
-            elif type(val) == int and reset_fn is None:
+            elif type(val) is int and reset_fn is None:
                 if hasattr(self, 'ui_maxPoly_cmbBx'):
                     self.ui_maxPoly_cmbBx.setCurrentIndex(1)
                     self.ui_maxPoly_lb.setText('Increase polynomial order ' +
@@ -1233,7 +1233,7 @@ class RtpRegress(RTP):
                 if reset_fn:
                     reset_fn(str(val))
 
-            elif type(val) == str or isinstance(val, Path):
+            elif type(val) is str or isinstance(val, Path):
                 if not Path(val).is_file():
                     val = ''
 
@@ -1270,7 +1270,7 @@ class RtpRegress(RTP):
                 if reset_fn:
                     reset_fn(str(val))
 
-            elif type(val) == str or isinstance(val, Path):
+            elif type(val) is str or isinstance(val, Path):
                 if not Path(val).is_file():
                     val = ''
 
@@ -1307,7 +1307,7 @@ class RtpRegress(RTP):
                 if reset_fn:
                     reset_fn(str(val))
 
-            elif type(val) == str or isinstance(val, Path):
+            elif type(val) is str or isinstance(val, Path):
                 if not Path(val).is_file():
                     val = ''
 
@@ -1736,7 +1736,7 @@ class RtpRegress(RTP):
         all_opts = super().get_params()
         excld_opts = ('desMtx0', 'mot0', 'tshift',
                       'mask_byte', 'retrocols', 'volreg', 'YMtx', 'TR',
-                      'desMtx', 'maskV', 'motcols', 'rtp_physio',
+                      'desMtx', 'maskV', 'motcols', 'rtp_retrots',
                       'col_names_read', 'Y_mean', 'Y_mean_mask', 'GS_maskdata',
                       'WM_maskdata', 'Vent_maskdata', 'GS_col', 'WM_col',
                       'Vent_col', 'desMtx_read', 'mask_src_proc', 'work_dir')
@@ -1777,7 +1777,6 @@ if __name__ == '__main__':
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_physio import RTP_PHYSIO_DUMMY
     from rtpspy.rtp_retrots import RtpRetrots
     # RtpTshift
     rtp_tshift = RtpTshift()
@@ -1797,8 +1796,7 @@ if __name__ == '__main__':
     # RTP_RETOTS and RTP_PHYSIO
     sample_freq = 40
     rtp_retrots = RtpRetrots()
-    rtp_physio = RTP_PHYSIO_DUMMY(ecg_f, resp_f, sample_freq, rtp_retrots)
-
+   
     # RtpRegress
     rtp_regress = RtpRegress()
 
@@ -1808,7 +1806,7 @@ if __name__ == '__main__':
     rtp_regress.mot_reg = 'mot12'
     rtp_regress.volreg = rtp_volreg
     rtp_regress.phys_reg = 'RICOR8'
-    rtp_regress.rtp_physio = rtp_physio
+    rtp_regress.rtp_retrots = rtp_retrots
     rtp_regress.tshift = 0.0
     rtp_regress.GS_reg = True
     rtp_regress.GS_mask = test_dir / "GSR_mask.nii.gz"

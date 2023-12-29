@@ -15,12 +15,10 @@ import sys
 import traceback
 from datetime import datetime
 import re
-from threading import Lock, Thread
+from threading import Lock
 from multiprocessing import Process
 import time
 import os
-import socketserver
-import socket
 
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -28,13 +26,15 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
+from rtpspy.rtp_physio_gpio import call_rt_physio
+from rpc_socket_server import RPCSocketServer
 
 if '__file__' not in locals():
     __file__ = 'this.py'
 
 
-# %% class RtpDcm2NiiServer ===================================================
-class RtpDcm2NiiServer:
+# %% class RtpDcm2Nii ===================================================
+class RtpDcm2Nii:
     """A server process that converts DICOM to NIfTI in real time or on demand.
     Procedures:
     - Monitor a directory (self.dcm_dir) to which DICOM files are exported in
@@ -55,7 +55,8 @@ class RtpDcm2NiiServer:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
                  study_prefix='P', series_timeout=60, rpc_port=63210,
-                 make_brik=False, polling_observer=False, **kwargs):
+                 make_brik=False, polling_observer=False,
+                 rtp_physio_address='localhost:63212', **kwargs):
         """
         Parameters
         ----------
@@ -98,6 +99,8 @@ class RtpDcm2NiiServer:
         self.rpc_port = rpc_port
         self.make_brik = make_brik
         self.polling_observer = polling_observer
+        host, port = rtp_physio_address.split(':')
+        self.rtp_physio_address = (host, int(port))
 
         self._dcmread_timeout = 3
         self._polling_timeout = 3
@@ -113,11 +116,11 @@ class RtpDcm2NiiServer:
         self._last_dicom_header = None
         self._last_proc_f = None
         self._study_dir = None
+        self._series_nr = None
 
         # Parameters to set the physio recording length
         self._TR = None
         self._NVol = 0
-        self._physio_prefix = './{}_scan.1D'
         self._process_lock = Lock()
         self._cancel = False
         self._end_complete = False
@@ -133,15 +136,12 @@ class RtpDcm2NiiServer:
         # Start watchdog
         self.start_watching(callback=self.do_proc)
 
-        # Strat RPC server
-        self.start_RPC_server()
-
         # Application loop
         while not self._cancel:
             try:
                 # Check if the series ends
                 if self._TR is not None:
-                    time_out = max(self.series_timeout, self._TR*2)
+                    time_out = self._TR * 2.5
                 else:
                     time_out = self.series_timeout
 
@@ -194,7 +194,7 @@ class RtpDcm2NiiServer:
             self._observer = Observer()
 
         self._event_handler = \
-            RtpDcm2NiiServer._FileHandler(
+            RtpDcm2Nii._FileHandler(
                 self.watch_file_pattern, callback=callback)
 
         self._observer.schedule(self._event_handler, self.watch_dir,
@@ -238,78 +238,6 @@ class RtpDcm2NiiServer:
         self._logger.info("Stop watchdog observer.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def start_RPC_server(self):
-        # Boot server
-        socketserver.TCPServer.allow_reuse_address = True
-        try:
-            self._RPCserver = socketserver.TCPServer(
-                ('0.0.0.0', self.rpc_port), RtpDcm2NiiServer._dataRecvHandler)
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
-            self._logger.error(errstr)
-            self.server = None
-            return
-
-        self._RPCserver._callback = self._RPC_handler
-        self._RPCserver._cancel = False
-
-        # Start the server on another thread.
-        self._RPCserver_thread = Thread(
-            target=self._RPCserver.serve_forever, args=(0.5,))
-        # Make the server thread exit when the main thread terminates
-        self._RPCserver_thread.daemon = True
-        self._RPCserver_thread.start()
-
-    # /////////////////////////////////////////////////////////////////////////
-    class _dataRecvHandler(socketserver.BaseRequestHandler):
-        def handle(self):
-            self._logger = logging.getLogger('RtpDcm2NiiServer')
-
-            # --- Initialize ---
-            client_addr, port = self.client_address
-            self._logger.info(f"Connected from {client_addr}:{port}")
-            self.request.settimeout(1)
-            call = None
-            while not self.server._cancel:
-                try:
-                    call = self.request.recv(1024)
-                    if len(call) == 0:
-                        break
-                except socket.timeout:
-                    continue
-                except BlockingIOError:
-                    # No more data available at the moment
-                    continue
-                except BrokenPipeError:
-                    break
-                except Exception:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errstr = ''.join(
-                        traceback.format_exception(exc_type, exc_obj, exc_tb))
-                    self._logger.error(f'Data receiving error: {errstr}')
-                    break
-
-                if call is not None:
-                    call = call.decode()
-                    if call == 'END':
-                        break
-                    self._logger.info(f"Received {call}")
-                    self.server._callback(call)
-                    call = None
-
-            self._logger.info(f"Close connection from {client_addr}:{port}")
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _RPC_handler(self, call):
-        if call == 'CLOSE_SERIES':
-            self.end_series()
-
-        elif call == 'QUIT':
-            self._cancel = True
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
         # Remove characters that are not safe for paths
         cleaned_string = re.sub(r'[\\/:"*?<>|]+', '_', input_string)
@@ -329,7 +257,7 @@ class RtpDcm2NiiServer:
             study_prefix = self.study_prefix
         dateTime = datetime.strptime(
                 dcm.StudyDate+dcm.StudyTime, '%Y%m%d%H%M%S.%f')
-        studyID = study_prefix+dateTime.strftime('_%Y%m%d%H%M%S')
+        studyID = study_prefix+dateTime.strftime('%Y%m%d%H%M%S')
         studyID = self._make_path_safe(studyID)
 
         return studyID
@@ -458,17 +386,15 @@ class RtpDcm2NiiServer:
             TR = self.series_timeout
 
         self._TR = TR / 1000
+        self._series_nr = int(dcm.SeriesNumber)
 
         # Start physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
         if 'FMRI' in imageType:
-            # if self.rt_mri_disp_ctrl_proc:
-            #     self.rt_mri_disp_ctrl_pipe.send('PHYSIO_START_SAVING')
-            #     self.rt_mri_disp_ctrl_pipe.send(self._TR)
-            #     self.rt_mri_disp_ctrl_pipe.send('CHECK_SERIES_END')
-            #     self.rt_mri_disp_ctrl_pipe.send(self._TR)
-            self._physio_prefix = str(
-                self._study_dir / ("{}_ser-" + f"{dcm.SeriesNumber}.1D"))
+            if call_rt_physio(self.rtp_physio_address, 'ping'):
+                call_rt_physio(self.rtp_physio_address, 'START_SCAN')
+                call_rt_physio(self.rtp_physio_address,
+                               ('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
             self._NVol = 0
 
         self._isRun_series = True
@@ -483,21 +409,22 @@ class RtpDcm2NiiServer:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._NVol > 1:
-                    # Write saved physio data in a file
-                    # if self._TR is not None:
-                    #     series_duration = self._NVol * self._TR
-                    # else:
-                    #     series_duration = None
+                if self._NVol > 1 and \
+                        call_rt_physio(self.rtp_physio_address, 'ping'):
+                    call_rt_physio(self.rtp_physio_address, 'END_SCAN')
+                    # Save physio data
+                    if self._TR is not None:
+                        series_duration = self._NVol * self._TR
+                    else:
+                        series_duration = None
+                    fname_fmt = str(self._study_dir) + '/' + '{}_ser-' + \
+                        f"{self._series_nr}.1D"
 
-                    # Stop Physio saving
-                    # if self.rt_mri_disp_ctrl_proc:
-                    #     self.rt_mri_disp_ctrl_pipe.send('PHYSIO_STOP_SAVING')
-                    #     self.rt_mri_disp_ctrl_pipe.send(
-                    #         (self.physio_prefix, series_duration))
+                    args = ('SAVE_PHYSIO_DATA', None, series_duration,
+                            fname_fmt)
+                    call_rt_physio(self.rtp_physio_address, args, pkl=True)
 
                     # Reset physio parameters
-                    self._physio_prefix = './{}_scan.1D'
                     self._NVol = 0
 
                 # Run DICOM convert process
@@ -535,6 +462,21 @@ class RtpDcm2NiiServer:
             self._isRun_series = False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def RPC_handler(self, call):
+        if call == 'CLOSE_SERIES':
+            self.end_series()
+
+        elif call == 'GET_SERIES_NAME':
+            if self._study_dir is None or self._series_nr is None:
+                return 'None'.encode('utf-8')
+
+            retstr = f"{str(self._study_dir)}/ser-{self._series_nr}"
+            return retstr.encode('utf-8')
+
+        elif call == 'QUIT':
+            self._cancel = True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def exit(self):
         # This can be called multiple times. To avoid multiple exits, keep a
         # completion record of the exit process.
@@ -564,8 +506,13 @@ if __name__ == '__main__':
     WORK_DIR = Path('/data/rt')
     RT_COPY_DST_DIR = Path('/RTMRI/RTExport_rt')
 
-    # --- Parse arguments -----------------------------------------------------
-    parser = argparse.ArgumentParser(description='RTPSPy dcm2nii server')
+    dstr = datetime.now().strftime("%Y%m%d")
+    LOG_FILE = Path(f'log/RtpDcm2NiiServer_{dstr}.log')
+    if not LOG_FILE.parent.is_dir():
+        os.makedirs(LOG_FILE.parent)
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='RTPSpy dcm2nii server')
     parser.add_argument('--watch_dir', default=RTMRI_DIR,
                         help='Watch directory, where MRI data is exported in' +
                         'real time')
@@ -573,15 +520,20 @@ if __name__ == '__main__':
                         help='Converted data output directory root')
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
-    parser.add_argument('--study_prefix', default='P', help='Study ID prefix')
-    parser.add_argument('--series_timeout', default=60,
+    parser.add_argument('--study_prefix', default='S', help='Study ID prefix')
+    parser.add_argument('--series_timeout', default=10,
                         help='Timeout period to close a series')
     parser.add_argument('--rpc_port', default=63210,
-                        help='Port number to receive a remote request')
+                        help='RPC socket server port')
     parser.add_argument('--make_brik', action='store_true',
                         help='Make BRIK files')
     parser.add_argument('--polling_observer', action='store_true',
                         help='Use Polling observer')
+    parser.add_argument('--log_file', default=LOG_FILE,
+                        help='Log file path')
+    parser.add_argument('--rtp_physio_address', default='localhost:63212',
+                        help='rtp_physio socket server port')
+
     args = parser.parse_args()
     watch_dir = Path(args.watch_dir)
     work_root = Path(args.work_root)
@@ -591,24 +543,26 @@ if __name__ == '__main__':
     rpc_port = args.rpc_port
     make_brik = args.make_brik
     polling_observer = args.polling_observer
+    log_file = Path(args.log_file)
+    rtp_physio_address = args.rtp_physio_address
 
-    # Make log file
-    dstr = datetime.now().strftime("%Y%m%d")
-    log_file = Path(f'log/RtpDcm2NiiServer_{dstr}.log')
-    if not log_file.parent.is_dir():
-        os.makedirs(log_file.parent)
-
+    # Logger
     logging.basicConfig(
         level=logging.INFO, filename=log_file, filemode='a',
         format='%(asctime)s.%(msecs)03d,[%(levelname)s],%(name)s,%(message)s',
         datefmt='%Y-%m-%dT%H:%M:%S')
 
-    # Run the server
-    dcm2nii_serv = RtpDcm2NiiServer(
+    # Create the server
+    dcm2nii_serv = RtpDcm2Nii(
         watch_dir, work_root, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, series_timeout=series_timeout,
         rpc_port=rpc_port, make_brik=make_brik,
-        polling_observer=polling_observer)
+        polling_observer=polling_observer,
+        rtp_physio_address=rtp_physio_address)
+
+    # Start RPC socket server
+    socekt_srv = RPCSocketServer(rpc_port, dcm2nii_serv.RPC_handler,
+                                 socket_name='RtpDcm2NiiSocketServer')
 
     # Run mainloop
     try:

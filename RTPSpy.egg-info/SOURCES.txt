@@ -13,6 +13,8 @@ rtpspy/fastSeg.py
 rtpspy/fast_seg.py
 rtpspy/librtp.so
 rtpspy/mri_sim.py
+rtpspy/rpc_socket_server.py
+rtpspy/rt_physio_gpio.py
 rtpspy/rtp_app.py
 rtpspy/rtp_common.py
 rtpspy/rtp_dcm2nii_srv.py

@@ -27,8 +27,8 @@ static int extp = 0;  // bool flag to extrapolate at interp1
 
 typedef struct {
 	int sig_len; // length of input signal
-	double *v; // input signal
-	double* t; // time (sec) of input signal
+	double * v; // input signal
+	double * t; // time (sec) of input signal
 	fftw_complex* X; // (double) complex representation of input signal
 	double* ptrace; // real values of X at positive change points
 	double * tptrace; // time (sec) of positive change points

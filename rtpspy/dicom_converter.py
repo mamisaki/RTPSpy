@@ -126,7 +126,7 @@ class DicomConverter():
             addrow['Patient'] = str(dcm.PatientName).split('^')[0]
             addrow['SeriesNumber'] = int(dcm.SeriesNumber)
             addrow['SeriesDescription'] = dcm.SeriesDescription
-            addrow['AcquisitionDateTime'] = str(dcm.AcquisitionDateTime)
+            addrow['AcquisitionDateTime'] = float(dcm.AcquisitionDateTime)
             addrow['InstanceNumber'] = int(dcm.InstanceNumber)
             addrow['IsImage'] = hasattr(dcm, 'pixel_array')
             if hasattr(dcm, 'NumberOfTemporalPositions'):

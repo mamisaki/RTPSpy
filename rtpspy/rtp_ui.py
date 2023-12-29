@@ -525,14 +525,14 @@ class RTP_UI(QtWidgets.QMainWindow):
             return
 
         if state == 2:
-            self.rtp_objs['EXTSIG'].start_recording()
+            # self.rtp_objs['EXTSIG'].start_recording()
             self.chbShowExtSig.setEnabled(True)
             self.rtp_objs['EXTSIG'].set_param('enabled', True)
         else:
             if self.chbShowExtSig.checkState():
                 self.chbShowExtSig.setCheckState(0)
 
-            self.rtp_objs['EXTSIG'].stop_recording()
+            # self.rtp_objs['EXTSIG'].stop_recording()
             self.chbShowExtSig.setEnabled(False)
             self.rtp_objs['EXTSIG'].set_param('enabled', False)
 
@@ -546,9 +546,10 @@ class RTP_UI(QtWidgets.QMainWindow):
                 self.chbShowExtSig.setCheckState(0)
                 return
 
-            self.rtp_objs['EXTSIG'].open_signal_plot()
+            # self.rtp_objs['EXTSIG'].open_signal_plot()
         else:
-            self.rtp_objs['EXTSIG'].close_signal_plot()
+            pass
+            # self.rtp_objs['EXTSIG'].close_signal_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_mot_chk(self, state):
