@@ -1,0 +1,29 @@
+name: RTPSpyDev
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - tqdm
+  - simpleitk
+  - h5py
+  - cmake
+  - dcm2niix
+  - pydicom
+  - f2c
+  - matplotlib
+  - nibabel
+  - openpyxl
+  - pandas
+  - pexpect
+  - pip
+  - pyqt
+  - pyserial
+  - python=3.10
+  - pytorch::pytorch
+  - scikit-sparse
+  - torchvision
+  - watchdog
+  - yacs
+  - pip:
+    - antspyx

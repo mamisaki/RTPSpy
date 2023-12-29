@@ -34,7 +34,8 @@ import matplotlib.pyplot as plt
 
 try:
     # Load modules from the same directory
-    from .rtp_common import RTP, boot_afni, MatplotlibWindow, DlgProgressBar
+    from .rtp_common import (RTP, boot_afni, MatplotlibWindow, DlgProgressBar,
+                             excepthook, save_parameters)
     from .rtp_watch_SiemensXA30 import RtpWatch
     from .rtp_volreg import RtpVolreg
     from .rtp_tshift import RtpTshift
@@ -50,7 +51,7 @@ except Exception:
     # For DEBUG environment
     sys.path.append("./")
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
-                                   DlgProgressBar)
+                                   DlgProgressBar, excepthook, save_parameters)
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
                         RtpRegress, RtpExtSignal, RtpRetrots,
                         RtpImgProc)
@@ -3140,113 +3141,147 @@ class RtpApp(RTP):
                 os.killpg(os.getpgid(self.extApp_proc.pid), signal.SIGTERM)
 
 
-# %% __main__ (test) ==========================================================
+# %%
+# def test():
+#     # --- Initialize ----------------------------------------------------------
+#     # test data directory
+#     test_dir = Path(__file__).absolute().parent.parent / 'test'
+
+#     # Set test data files
+#     testdata_f = test_dir / 'func_epi.nii.gz'
+#     assert testdata_f.is_file()
+#     anat_f = test_dir / 'anat_mprage.nii.gz'
+#     template_f = test_dir / 'MNI152_2009_template.nii.gz'
+#     ROI_template_f = test_dir / 'MNI152_2009_template_LAmy.nii.gz'
+#     WM_template_f = test_dir / 'MNI152_2009_template_WM.nii.gz'
+#     Vent_template_f = test_dir / 'MNI152_2009_template_Vent.nii.gz'
+
+#     ecg_f = test_dir / 'ECG.1D'
+#     resp_f = test_dir / 'Resp.1D'
+
+#     work_dir = test_dir / 'work'
+#     if not work_dir.is_dir():
+#         work_dir.mkdir()
+
+#     # Create RtpApp instance
+#     rtp_app = RtpApp()
+#     rtp_app.work_dir = work_dir
+
+#     # --- Make mask images ----------------------------------------------------
+#     no_FastSeg = False
+#     if not no_FastSeg:
+#         rtp_app.fastSeg_batch_size = 1  # Adjust the size for GPU memory
+
+#     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
+#                        template=template_f, ROI_template=ROI_template_f,
+#                        no_FastSeg=no_FastSeg, WM_template=WM_template_f,
+#                        Vent_template=Vent_template_f, overwrite=True)
+
+#     rtp_app.check_onAFNI('anat', 'func')
+
+#     # --- Setup RTP -----------------------------------------------------------
+#     # Prepare watch dir
+#     watch_dir = test_dir / 'watch_test_tmp'
+#     if not watch_dir.is_dir():
+#         watch_dir.mkdir()
+#     else:
+#         # Clean up watch_dir
+#         for ff in watch_dir.glob('*'):
+#             if ff.is_dir():
+#                 for fff in ff.glob('*'):
+#                     fff.unlink()
+#                 ff.rmdir()
+#             else:
+#                 ff.unlink()
+
+#     watch_file_pattern = r'nr_\d+.*\.nii'
+
+#     # Set RTP_PHYSIO to RTP_PHYSIO_DUMMY
+#     # from rtpspy import RTP_PHYSIO_DUMMY
+#     # sample_freq = 40
+#     # rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
+#     #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
+
+#     # RTP parameters
+#     rtp_params = {'WATCH': {'watch_dir': watch_dir,
+#                             'watch_file_pattern': watch_file_pattern},
+#                   'VOLREG': {'regmode': 'cubic'},
+#                   'TSHIFT': {'slice_timing_from_sample': testdata_f,
+#                              'method': 'cubic', 'ignore_init': 3,
+#                              'ref_time': 0},
+#                   'SMOOTH': {'blur_fwhm': 6.0},
+#                   'REGRESS': {'max_poly_order': np.inf, 'mot_reg': 'mot12',
+#                               'GS_reg': True, 'WM_reg': True, 'Vent_reg': True,
+#                               'phys_reg': 'RICOR8', 'wait_num': 45}}
+
+#     # RTP setup
+#     rtp_app.RTP_setup(rtp_params=rtp_params)
+
+#     # Mask files made by make_masks() are automatically set in RTP_setup().
+
+#     # --- Load data -----------------------------------------------------------
+#     img = nib.load(testdata_f)
+#     fmri_data = np.asanyarray(img.dataobj)
+#     N_vols = img.shape[-1]
+
+#     # --- Feed data to the do_proc chain (skip RtpWatch for debug) -----------
+#     rtp_app.ready_to_run()
+#     rtp_app.rtp_objs['EXTSIG'].manual_start()
+#     for ii in range(N_vols):
+#         save_filename = f"test_nr_{ii:04d}.nii.gz"
+#         fmri_img = nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine)
+#         fmri_img.set_filename(save_filename)
+#         st = time.time()
+#         rtp_app.rtp_objs['TSHIFT'].do_proc(fmri_img, ii, st)
+
+#     rtp_app.end_run()
+
+#     # --- Simulate scan (Copy data volume-by-volume) --------------------------
+#     rtp_app.ready_to_run()
+#     rtp_app.rtp_objs['EXTSIG'].manual_start()
+#     next_tr = 2.0
+#     for ii in range(N_vols):
+#         next_tr = (ii+1)*2.0
+#         while time.time() - rtp_app.rtp_objs['EXTSIG'].scan_onset < next_tr:
+#             time.sleep(0.001)
+
+#         save_filename = watch_dir / f"test_nr_{ii:04d}.nii.gz"
+#         nib.save(nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
+#                  save_filename)
+
+#     time.sleep(2.0)
+#     rtp_app.end_run()
+
+
+# %% __main__ =================================================================
 if __name__ == '__main__':
-    # --- Initialize ----------------------------------------------------------
-    # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    from rtpspy import RTP_UI
 
-    # Set test data files
-    testdata_f = test_dir / 'func_epi.nii.gz'
-    assert testdata_f.is_file()
-    anat_f = test_dir / 'anat_mprage.nii.gz'
-    template_f = test_dir / 'MNI152_2009_template.nii.gz'
-    ROI_template_f = test_dir / 'MNI152_2009_template_LAmy.nii.gz'
-    WM_template_f = test_dir / 'MNI152_2009_template_WM.nii.gz'
-    Vent_template_f = test_dir / 'MNI152_2009_template_Vent.nii.gz'
+    app = QtWidgets.QApplication(sys.argv)
 
-    ecg_f = test_dir / 'ECG.1D'
-    resp_f = test_dir / 'Resp.1D'
-
-    work_dir = test_dir / 'work'
-    if not work_dir.is_dir():
-        work_dir.mkdir()
-
-    # Create RtpApp instance
+    # Make RtpApp instance
     rtp_app = RtpApp()
-    rtp_app.work_dir = work_dir
 
-    # --- Make mask images ----------------------------------------------------
-    no_FastSeg = False
-    if not no_FastSeg:
-        rtp_app.fastSeg_batch_size = 1  # Adjust the size for GPU memory
+    # Make RTP_UI instance
+    app_obj = {'RTP App': rtp_app}
+    rtp_ui = RTP_UI(rtp_app.rtp_objs, app_obj, log_dir='./log')
 
-    rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
-                       template=template_f, ROI_template=ROI_template_f,
-                       no_FastSeg=no_FastSeg, WM_template=WM_template_f,
-                       Vent_template=Vent_template_f, overwrite=True)
+    # Keep RTP objects for loading and saving the parameters
+    all_rtp_objs = rtp_app.rtp_objs
+    all_rtp_objs.update(app_obj)
 
-    rtp_app.check_onAFNI('anat', 'func')
+    # Run the application
+    sys.excepthook = excepthook
+    try:
+        rtp_ui.show()
+        exit_code = app.exec_()
 
-    # --- Setup RTP -----------------------------------------------------------
-    # Prepare watch dir
-    watch_dir = test_dir / 'watch_test_tmp'
-    if not watch_dir.is_dir():
-        watch_dir.mkdir()
-    else:
-        # Clean up watch_dir
-        for ff in watch_dir.glob('*'):
-            if ff.is_dir():
-                for fff in ff.glob('*'):
-                    fff.unlink()
-                ff.rmdir()
-            else:
-                ff.unlink()
+    except Exception as e:
+        with open('rtpspy.error', 'w') as fd:
+            fd.write(str(e))
 
-    watch_file_pattern = r'nr_\d+.*\.nii'
+        print(str(e))
+        exit_code = -1
 
-    # Set RTP_PHYSIO to RTP_PHYSIO_DUMMY
-    # from rtpspy import RTP_PHYSIO_DUMMY
-    # sample_freq = 40
-    # rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
-    #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
-
-    # RTP parameters
-    rtp_params = {'WATCH': {'watch_dir': watch_dir,
-                            'watch_file_pattern': watch_file_pattern},
-                  'VOLREG': {'regmode': 'cubic'},
-                  'TSHIFT': {'slice_timing_from_sample': testdata_f,
-                             'method': 'cubic', 'ignore_init': 3,
-                             'ref_time': 0},
-                  'SMOOTH': {'blur_fwhm': 6.0},
-                  'REGRESS': {'max_poly_order': np.inf, 'mot_reg': 'mot12',
-                              'GS_reg': True, 'WM_reg': True, 'Vent_reg': True,
-                              'phys_reg': 'RICOR8', 'wait_num': 45}}
-
-    # RTP setup
-    rtp_app.RTP_setup(rtp_params=rtp_params)
-
-    # Mask files made by make_masks() are automatically set in RTP_setup().
-
-    # --- Load data -----------------------------------------------------------
-    img = nib.load(testdata_f)
-    fmri_data = np.asanyarray(img.dataobj)
-    N_vols = img.shape[-1]
-
-    # --- Feed data to the do_proc chain (skip RtpWatch for debug) -----------
-    rtp_app.ready_to_run()
-    rtp_app.rtp_objs['EXTSIG'].manual_start()
-    for ii in range(N_vols):
-        save_filename = f"test_nr_{ii:04d}.nii.gz"
-        fmri_img = nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine)
-        fmri_img.set_filename(save_filename)
-        st = time.time()
-        rtp_app.rtp_objs['TSHIFT'].do_proc(fmri_img, ii, st)
-
-    rtp_app.end_run()
-
-    # --- Simulate scan (Copy data volume-by-volume) --------------------------
-    rtp_app.ready_to_run()
-    rtp_app.rtp_objs['EXTSIG'].manual_start()
-    next_tr = 2.0
-    for ii in range(N_vols):
-        next_tr = (ii+1)*2.0
-        while time.time() - rtp_app.rtp_objs['EXTSIG'].scan_onset < next_tr:
-            time.sleep(0.001)
-
-        save_filename = watch_dir / f"test_nr_{ii:04d}.nii.gz"
-        nib.save(nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
-                 save_filename)
-
-    time.sleep(2.0)
-    rtp_app.end_run()
+    # --- End ---
+    sys.exit(exit_code)
