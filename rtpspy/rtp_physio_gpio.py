@@ -294,6 +294,7 @@ class TTLPhysioPlot():
         self._ln_resp = self._ax_resp.plot(
             sig_xi, np.zeros(buf_size), 'k-')
         self._ax_resp.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_resp.yaxis.set_ticks_position("right")
         self._ax_resp.set_xlabel('second')
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1173,7 +1174,7 @@ if __name__ == '__main__':
                         help='Log file path')
     parser.add_argument('--rpc_port', default=63212,
                         help='RPC socket server port')
-    parser.add_argument('--geometry', default='450x450+866+0',
+    parser.add_argument('--geometry', default='450x450+910+0',
                         help='Plot window position')
     parser.add_argument('--disable_close', action='store_true',
                         help='Disable close button')
