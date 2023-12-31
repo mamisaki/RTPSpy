@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 try:
     # Load modules from the same directory
     from .rtp_common import (RTP, boot_afni, MatplotlibWindow, DlgProgressBar,
-                             excepthook, save_parameters)
+                             excepthook)
     from .rtp_watch_SiemensXA30 import RtpWatch
     from .rtp_volreg import RtpVolreg
     from .rtp_tshift import RtpTshift
@@ -51,7 +51,7 @@ except Exception:
     # For DEBUG environment
     sys.path.append("./")
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
-                                   DlgProgressBar, excepthook, save_parameters)
+                                   DlgProgressBar, excepthook)
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
                         RtpRegress, RtpExtSignal, RtpRetrots,
                         RtpImgProc)
@@ -208,7 +208,7 @@ class RtpApp(RTP):
     #  ready_proc, do_proc, end_reset, end_proc
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
-        """ Ready the process. """
+        """ Ready process """
         self._proc_ready = True
 
         if not Path(self.ROI_orig).is_file():
@@ -219,6 +219,14 @@ class RtpApp(RTP):
         if self._proc_ready and self.ROI_mask is None:
             # Load ROI mask
             self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
+
+        # Reset plot values
+        self.plt_xi[:] = []
+        for ii in range(self.num_ROIs):
+            self.roi_sig[ii][:] = []
+
+        if hasattr(self, 'pltROISig'):
+            self.pltROISig.reset_plot()
 
         return self._proc_ready
 
@@ -307,11 +315,6 @@ class RtpApp(RTP):
 
         # Reset ROI_mask
         self.ROI_mask = None
-
-        # Reset plot values
-        self.plt_xi[:] = []
-        for ii in range(self.num_ROIs):
-            self.roi_sig[ii][:] = []
 
         return super(RtpApp, self).end_reset()
 
@@ -1231,7 +1234,6 @@ class RtpApp(RTP):
 
                 # Get the root and last processes
                 root_proc = None
-                last_proc = None
                 for rtp, obj in self.rtp_objs.items():
                     if rtp in ('EXTSIG', 'RETROTS'):
                         continue
@@ -1513,20 +1515,24 @@ class RtpApp(RTP):
 
             self.plt_win.canvas.figure.subplots_adjust(
                     left=0.15, bottom=0.18, right=0.95, top=0.96, hspace=0.35)
-            self._ln = []
-            color_cycle = plt.get_cmap("tab10")
+            self._color_cycle = plt.get_cmap("tab10")
 
-            for ii, ax in enumerate(self._axes):
-                if len(self.roi_labels) > ii:
-                    ax.set_ylabel(self.roi_labels[ii])
-                ax.set_xlim(0, 10)
-                self._ln.append(ax.plot(0, 0, color=color_cycle(ii+1)))
-
-            ax.set_xlabel('TR')
+            self.reset_plot()
 
             # show window
             self.plt_win.show()
             self.plt_win.canvas.draw()
+
+        # ---------------------------------------------------------------------
+        def reset_plot(self):
+            self._ln = []
+            for ii, ax in enumerate(self._axes):
+                ax.cla()
+                if len(self.roi_labels) > ii:
+                    ax.set_ylabel(self.roi_labels[ii])
+                ax.set_xlim(0, 10)
+                self._ln.append(ax.plot(0, 0, color=self._color_cycle(ii+1)))
+            self._axes[-1].set_xlabel('TR')
 
         # ---------------------------------------------------------------------
         def run(self):
@@ -1554,19 +1560,17 @@ class RtpApp(RTP):
                         # Adjust y scale
                         ax.relim()
                         if np.sum(~np.isnan(y)) > 10:
-                            yl = np.array(ax.get_ylim())
+                            yl_orig = np.array(ax.get_ylim())
+                            yl = yl_orig.copy()
                             sd = np.nanstd(y)
                             mu = np.nanmean(y)
-                            rescale = False
-                            if np.nanmin(y) < mu-3*sd:
-                                yl[0] = mu-3.5*sd
-                                rescale = True
+                            if np.nanmin(y) < yl[0]:
+                                yl[0] = max(np.nanmin(y), mu-4*sd)
 
-                            if np.nanmax(y) > mu+3*sd:
-                                yl[1] = mu+3.5*sd
-                                rescale = True
+                            if np.nanmax(y) > yl[0]:
+                                yl[1] = min(np.nanmax(y), mu+4*sd)
 
-                            if rescale:
+                            if np.any(yl != yl_orig):
                                 ax.set_ylim(yl)
 
                         ax.autoscale_view()
@@ -1681,7 +1685,7 @@ class RtpApp(RTP):
             self.abort = False
 
         def run(self):
-            while not self.onsetObj.scanning and not self.abort:
+            while not self.onsetObj._scanning and not self.abort:
                 time.sleep(0.001)
 
             if self.abort:
@@ -2183,6 +2187,7 @@ class RtpApp(RTP):
                     return
 
                 if self.extApp_sock is not None:
+                    print(self.extApp_addr)
                     if self.extApp_addr[0] != val[0] or \
                             self.extApp_addr[1] != val[1]:
                         # Address is changed. Close the current socket.
@@ -2190,6 +2195,7 @@ class RtpApp(RTP):
                         self.extApp_sock = None
 
         elif attr == 'extApp_isAlive':
+            print(self.extApp_addr)
             isAlive = self.isAlive_extApp()
             address_str = "{}:{}".format(*self.extApp_addr)
             if isAlive:
@@ -3142,7 +3148,7 @@ class RtpApp(RTP):
 
 # %%
 # def test():
-#     # --- Initialize ----------------------------------------------------------
+#     # --- Initialize --------------------------------------------------------
 #     # test data directory
 #     test_dir = Path(__file__).absolute().parent.parent / 'test'
 

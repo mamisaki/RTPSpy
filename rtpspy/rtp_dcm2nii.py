@@ -124,6 +124,7 @@ class RtpDcm2Nii:
         self._process_lock = Lock()
         self._cancel = False
         self._end_complete = False
+        self._save_physio = False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
@@ -388,15 +389,16 @@ class RtpDcm2Nii:
         self._TR = TR / 1000
         self._series_nr = int(dcm.SeriesNumber)
 
-        # Start physio saving if FMRI
+        # Set physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
         if 'FMRI' in imageType:
             if call_rt_physio(self.rtp_physio_address, 'ping'):
                 call_rt_physio(self.rtp_physio_address, 'START_SCAN')
                 call_rt_physio(self.rtp_physio_address,
                                ('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
-            self._NVol = 0
+                self._save_physio = True
 
+        self._NVol = 0
         self._isRun_series = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -409,7 +411,7 @@ class RtpDcm2Nii:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._NVol > 1 and \
+                if self._save_physio and self._NVol > 2 and \
                         call_rt_physio(self.rtp_physio_address, 'ping'):
                     call_rt_physio(self.rtp_physio_address, 'END_SCAN')
                     # Save physio data
@@ -425,7 +427,7 @@ class RtpDcm2Nii:
                     call_rt_physio(self.rtp_physio_address, args, pkl=True)
 
                     # Reset physio parameters
-                    self._NVol = 0
+                    self._save_physio = False
 
                 # Run DICOM convert process
                 dicom_dir = self._last_proc_f.parent
