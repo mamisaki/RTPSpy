@@ -148,6 +148,8 @@ class RingBuffer:
 
         shm.close()
 
+        # self._data = np.ones(self.max_size, dtype=self.dtype) * initialize
+
         return True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -158,6 +160,7 @@ class RingBuffer:
             data = np.ndarray(self.max_size, dtype=float, buffer=shm.buf)
             data[self._cpos] = x
             shm.close()
+            # self._data[self._cpos] = x
             self._cpos = (self._cpos+1) % self.max_size
 
         except Exception:
@@ -174,6 +177,7 @@ class RingBuffer:
             data = np.ndarray(
                 self.max_size, dtype=float, buffer=shm.buf).copy()
             shm.close()
+            # data = self._data
             return np.concatenate([data[self._cpos:], data[:self._cpos]])
 
         except Exception:
@@ -189,6 +193,7 @@ class RingBuffer:
             shm = shared_memory.SharedMemory(name=self.shm_name)
             shm.close()
             shm.unlink()
+            pass
         except FileNotFoundError:
             pass
 
@@ -250,7 +255,9 @@ class TTLPhysioPlot():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_position(self, geometry):
+        
         self._plt_win.geometry(geometry)
+        # RuntimeError: main thread is not in main loop
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_plot(self):
@@ -353,8 +360,6 @@ class TTLPhysioPlot():
             ymin = max(0, np.floor(np.nanmin(card) / 100) * 100)
             ymax = min(1024, np.ceil(np.nanmax(card) / 100) * 100)
         self._ax_card.set_ylim((ymin, ymax))
-        # self._ax_card.relim()
-        # self._ax_card.autoscale_view()
 
         # Resp
         self._ln_resp[0].set_ydata(resp)
@@ -363,8 +368,6 @@ class TTLPhysioPlot():
             ymin = max(0, np.floor(np.nanmin(resp) / 100) * 100)
             ymax = min(1024, np.ceil(np.nanmax(resp) / 100) * 100)
         self._ax_resp.set_ylim((ymin, ymax))
-        # self._ax_resp.relim()
-        # self._ax_resp.autoscale_view()
 
         if self.recorder.is_scanning:
             self._ln_card[0].set_color('r')
@@ -550,7 +553,7 @@ class NumatoGPIORecoding():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, rbuf_names, sport, sample_freq=500,
-                 buf_len_sec=1800, verb=True):
+                 buf_len_sec=1800, verb=True, debug=False, sim_data=None):
         """ Initialize real-time physio recordign class
         Set parameter values and list of serial ports.
 
@@ -596,6 +599,11 @@ class NumatoGPIORecoding():
             for buf in self._rbuf_names:
                 self._rbuf[buf] = RingBuffer(self._rbuf_names[buf],
                                              self.buf_len)
+
+        self._debug = debug
+        if debug:
+            self._sim_card, self._sim_resp = sim_data
+            self._sim_data_pos = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # +++ getter and setter methods +++
@@ -710,6 +718,7 @@ class NumatoGPIORecoding():
         self.rec_pipe, cmd_pipe = Pipe()
         # self.run(cmd_pipe)
         self.rec_proc = Process(target=self.run, args=(cmd_pipe,))
+        # self.rec_proc = Thread(target=self.run, args=(cmd_pipe,))
         self.rec_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -756,17 +765,22 @@ class NumatoGPIORecoding():
             self.scan_onset(tstamp)
             self._wait_ttl_on = False
 
-        # Card
-        try:
-            card = float(resp1.decode().split('\n\r')[1])
-        except Exception:
-            card = np.nan
+        if self._debug:
+            card = self._sim_card[self._sim_data_pos]
+            resp = self._sim_resp[self._sim_data_pos]
+            self._sim_data_pos = (self._sim_data_pos + 1) % len(self._sim_card)
+        else:
+            # Card
+            try:
+                card = float(resp1.decode().split('\n\r')[1])
+            except Exception:
+                card = np.nan
 
-        # Resp
-        try:
-            resp = float(resp2.decode().split('\n\r')[1])
-        except Exception:
-            resp = np.nan
+            # Resp
+            try:
+                resp = float(resp2.decode().split('\n\r')[1])
+            except Exception:
+                resp = np.nan
 
         with self.rbuf_lock:
             self._rbuf['ttl'].append(ttl)
@@ -860,7 +874,7 @@ class RtSignalRecorder():
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, cmd_pipe=None, buf_len_sec=1800, sport=None,
-                 sample_freq=500):
+                 sample_freq=500, debug=False, sim_data=None):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -906,7 +920,8 @@ class RtSignalRecorder():
 
         # Create recorder
         self._recoder = NumatoGPIORecoding(
-            self._rbuf_names, sport, sample_freq, buf_len_sec)
+            self._rbuf_names, sport, sample_freq, buf_len_sec,
+            debug=debug, sim_data=sim_data)
 
         self._rtp_retrots = RtpRetrots()
 
@@ -1006,6 +1021,10 @@ class RtSignalRecorder():
             shm = shared_memory.SharedMemory(name='resp')
             resp = np.ndarray(buf_len, dtype=float, buffer=shm.buf).copy()
             shm.close()
+            # timestamp = self._recoder._rbuf['tstamp']._data.copy()
+            # ttl = self._recoder._rbuf['ttl']._data.copy()
+            # card = self._recoder._rbuf['card']._data.copy()
+            # resp = self._recoder._rbuf['resp']._data.copy()
 
         ttl = ttl[~np.isnan(timestamp)]
         card = card[~np.isnan(timestamp)]
@@ -1075,7 +1094,7 @@ class RtSignalRecorder():
         shm.close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def get_retrots(self, PhysFS, TR, tshift):
+    def get_retrots(self, PhysFS, TR, tshift, NVol):
         shm = shared_memory.SharedMemory(name='scan_onset')
         sacn_onset = np.ndarray((1,), dtype=np.dtype(float), buffer=shm.buf)[0]
         if sacn_onset == 0.0:
@@ -1094,6 +1113,10 @@ class RtSignalRecorder():
             Card = f(xt)
             f = interpolate.interp1d(tstamp, resp, bounds_error=False)
             Resp = f(xt)
+
+        n = int(NVol * TR * PhysFS)
+        Card = Card[:n]
+        Resp = Resp[:n]
 
         retroTSReg = self._rtp_retrots.do_proc(Resp, Card, TR, PhysFS, tshift)
 
@@ -1178,12 +1201,14 @@ if __name__ == '__main__':
                         help='Plot window position')
     parser.add_argument('--disable_close', action='store_true',
                         help='Disable close button')
+    parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
     log_file = args.log_file
     rpc_port = args.rpc_port
     geometry = args.geometry
     disable_close = args.disable_close
+    debug = args.debug
 
     # Logger
     logging.basicConfig(level=logging.INFO,
@@ -1191,7 +1216,15 @@ if __name__ == '__main__':
                         format='%(name)s - %(levelname)s - %(message)s')
 
     # recorder
-    recorder = RtSignalRecorder()
+    if debug:
+        card_f = Path('/data/rt/S20231229091434/Card_500Hz_ser-2.1D')
+        resp_f = Path('/data/rt/S20231229091434/Resp_500Hz_ser-2.1D')
+        resp = np.loadtxt(resp_f)
+        card = np.loadtxt(card_f)
+        recorder = RtSignalRecorder(sample_freq=500, debug=True,
+                                    sim_data=(card, resp))
+    else:
+        recorder = RtSignalRecorder()
 
     # TKinter root window
     plt_root = tk.Tk()
@@ -1210,33 +1243,34 @@ if __name__ == '__main__':
                                  socket_name='RtPhysioSocketServer')
 
     # DEBUG
-    # st = time.time()
-    # TR = 2
-    # set_scan_onset = True
-    # last_tr = 0
-    # while True:
-    #     time.sleep(1/60)
-    #     signal_plot.update()
-    #     plt_root.update()
-    #     try:
-    #         assert plt_root.winfo_exists()
-    #     except Exception:
-    #         break
+    st = time.time()
+    TR = 2
+    set_scan_onset = True
+    last_tr = 0
+    while True:
+        time.sleep(1/60)
+        signal_plot.update()
+        plt_root.update()
+        try:
+            assert plt_root.winfo_exists()
+        except Exception:
+            break
 
-    #     if time.time() - st > 20:
-    #         if set_scan_onset:
-    #             recorder.set_scan_onset_bkwd()
-    #             set_scan_onset = False
+        if time.time() - st > 20:
+            if set_scan_onset:
+                recorder.set_scan_onset_bkwd()
+                set_scan_onset = False
 
-    #         if time.time() - last_tr > TR:
-    #             retroTSReg = recorder.get_retrots(50, TR, 0)
-    #             last_tr = time.time()
-    #             print(retroTSReg)
+            if time.time() - last_tr > TR:
+                NVol = int((time.time() - st) // TR)
+                retroTSReg = recorder.get_retrots(50, TR, 0, NVol)
+                last_tr = time.time()
+                print(retroTSReg)
 
-    #         # retroTSReg = call_rt_physio(
-    #         #     ('localhost', rpc_port),
-    #         #     ('GET_RETROTS', 50, 2, 0),
-    #         #     pkl=True, get_return=True)
+            # retroTSReg = call_rt_physio(
+            #     ('localhost', rpc_port),
+            #     ('GET_RETROTS', 50, 2, 0),
+            #     pkl=True, get_return=True)
 
     while True:
         time.sleep(1/60)

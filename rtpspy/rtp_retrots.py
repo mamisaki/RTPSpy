@@ -103,33 +103,33 @@ class RtpRetrots:
         self._rtsOpt = RetroTSOpt(TR, PhysFS, tshift)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, Resp, ECG, TR, PhysFS, tshift=0):
+    def do_proc(self, Resp, Card, TR, PhysFS, tshift=0):
         """
         RetroTS process function, which will be called from RTP_PHYSIO instance
 
         Options
         -------
         Resp : array
-            respiration data array
-        ECG : array
-            ECG data array
+            Respiration signal data array
+        Card : array
+            Cardiac sighnal data array
 
         Retrun
         ------
         RetroTS regressor
         """
 
-        # Get pointer ot Resp and ECG data array
+        # Get pointer ot Resp and Card data array
         Resp_arr = np.array(Resp, dtype=np.float64)
         Resp_ptr = Resp_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        ECG_arr = np.array(ECG, dtype=np.float64)
-        ECG_ptr = ECG_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        Card_arr = np.array(Card, dtype=np.float64)
+        Card_ptr = Card_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         # Set data length and prepare output array
         dlenR = len(Resp)
-        dlenE = len(ECG)
-        dlen = min(dlenR, dlenE)
+        dlenC = len(Card)
+        dlen = min(dlenR, dlenC)
 
         outlen = int((dlen * 1.0/PhysFS) / TR)
         regOut = np.ndarray((outlen, 13), dtype=np.float32)
@@ -143,7 +143,7 @@ class RtpRetrots:
             self.PhysFS = PhysFS
             self.tshift = tshift
 
-        self.rtp_retrots(ctypes.byref(self._rtsOpt), Resp_ptr, ECG_ptr, dlen,
+        self.rtp_retrots(ctypes.byref(self._rtsOpt), Resp_ptr, Card_ptr, dlen,
                          regOut_ptr)
 
         return regOut
@@ -172,16 +172,33 @@ class RtpRetrots:
 
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
-    
-    
-    
-    
+
+    import warnings
+    from scipy import interpolate
+
+    card_f = Path('/data/rt/S20231229091434/Card_500Hz_ser-2.1D')
+    resp_f = Path('/data/rt/S20231229091434/Resp_500Hz_ser-2.1D')
+    resp = np.loadtxt(resp_f)
+    card = np.loadtxt(card_f)
+
+    # Resample
+    PhysFS = 100
+
+    tstamp = np.arange(0, len(resp)/500, 1.0/500)
+    xt = np.arange(0, tstamp[-1], 1.0/PhysFS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        f = interpolate.interp1d(tstamp, card, bounds_error=False)
+        Card = f(xt)
+        f = interpolate.interp1d(tstamp, resp, bounds_error=False)
+        Resp = f(xt)
+
+    TR = 2.0
+    tshift = 0
+
     restrots = RtpRetrots()
 
-    restrots.init_physio_access()
-    TR = 2
-    while True:
-        st = time.time()
-        print(restrots.get_retrots(TR))
-        print(time.time-st)
-        time.sleep(TR)
+    for n in range(20, 201):
+        num_points = int(n * TR * PhysFS)
+        reg = restrots.do_proc(Resp[:num_points], Card[:num_points], TR,
+                               PhysFS)

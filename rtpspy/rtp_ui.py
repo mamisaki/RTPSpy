@@ -322,10 +322,6 @@ class RTP_UI(QtWidgets.QMainWindow):
         if hasattr(self, 'chbUseGPU'):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
 
-        if hasattr(self, 'chbRecSignal'):
-            self.ui_hChkBoxes.addWidget(self.chbRecSignal)
-            self.ui_hChkBoxes.addWidget(self.chbShowExtSig)
-
         if hasattr(self, 'chbShowMotion'):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
 
@@ -553,10 +549,6 @@ class RTP_UI(QtWidgets.QMainWindow):
             if not enable_RTP and rtp in ('WATCH', 'VOLREG', 'TSHIFT',
                                           'SMOOTH', 'REGRESS', 'EXTSIG'):
                 continue
-
-            if rtp == 'EXTSIG':
-                if self.chbRecSignal.checkState() != 2:
-                    continue
 
             param_list += '<p>'
             param_list += f"<font size='+1'><b>{rtp}</b></font><br/>\n"
