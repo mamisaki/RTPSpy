@@ -255,7 +255,6 @@ class TTLPhysioPlot():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_position(self, geometry):
-        
         self._plt_win.geometry(geometry)
         # RuntimeError: main thread is not in main loop
 
@@ -357,16 +356,16 @@ class TTLPhysioPlot():
         self._ln_card[0].set_ydata(card)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            ymin = max(0, np.floor(np.nanmin(card) / 100) * 100)
-            ymax = min(1024, np.ceil(np.nanmax(card) / 100) * 100)
+            ymin = max(0, np.floor(np.nanmin(card) / 50) * 50)
+            ymax = min(1024, np.ceil(np.nanmax(card) / 50) * 50)
         self._ax_card.set_ylim((ymin, ymax))
 
         # Resp
         self._ln_resp[0].set_ydata(resp)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            ymin = max(0, np.floor(np.nanmin(resp) / 100) * 100)
-            ymax = min(1024, np.ceil(np.nanmax(resp) / 100) * 100)
+            ymin = max(0, np.floor(np.nanmin(resp) / 50) * 50)
+            ymax = min(1024, np.ceil(np.nanmax(resp) / 50) * 50)
         self._ax_resp.set_ylim((ymin, ymax))
 
         if self.recorder.is_scanning:
@@ -1061,6 +1060,9 @@ class RtSignalRecorder():
     def set_scan_onset_bkwd(self, TR=None):
         # Read data
         data = self.dump()
+        if data is None:
+            return
+
         ttl = data['ttl']
         tstamp = data['tstamp']
         ttl_ons = tstamp[1:][np.diff(ttl) > 0]
@@ -1243,34 +1245,34 @@ if __name__ == '__main__':
                                  socket_name='RtPhysioSocketServer')
 
     # DEBUG
-    st = time.time()
-    TR = 2
-    set_scan_onset = True
-    last_tr = 0
-    while True:
-        time.sleep(1/60)
-        signal_plot.update()
-        plt_root.update()
-        try:
-            assert plt_root.winfo_exists()
-        except Exception:
-            break
+    # st = time.time()
+    # TR = 2
+    # set_scan_onset = True
+    # last_tr = 0
+    # while True:
+    #     time.sleep(1/60)
+    #     signal_plot.update()
+    #     plt_root.update()
+    #     try:
+    #         assert plt_root.winfo_exists()
+    #     except Exception:
+    #         break
 
-        if time.time() - st > 20:
-            if set_scan_onset:
-                recorder.set_scan_onset_bkwd()
-                set_scan_onset = False
+    #     if time.time() - st > 20:
+    #         if set_scan_onset:
+    #             recorder.set_scan_onset_bkwd()
+    #             set_scan_onset = False
 
-            if time.time() - last_tr > TR:
-                NVol = int((time.time() - st) // TR)
-                retroTSReg = recorder.get_retrots(50, TR, 0, NVol)
-                last_tr = time.time()
-                print(retroTSReg)
+    #         if time.time() - last_tr > TR:
+    #             NVol = int((time.time() - st) // TR)
+    #             retroTSReg = recorder.get_retrots(50, TR, 0, NVol)
+    #             last_tr = time.time()
+    #             print(retroTSReg)
 
-            # retroTSReg = call_rt_physio(
-            #     ('localhost', rpc_port),
-            #     ('GET_RETROTS', 50, 2, 0),
-            #     pkl=True, get_return=True)
+    #         # retroTSReg = call_rt_physio(
+    #         #     ('localhost', rpc_port),
+    #         #     ('GET_RETROTS', 50, 2, 0),
+    #         #     pkl=True, get_return=True)
 
     while True:
         time.sleep(1/60)
