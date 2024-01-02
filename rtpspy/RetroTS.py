@@ -657,34 +657,43 @@ Output:
         "-phys_json":None
     }
 
-    if len(sys.argv) < 2:
-        print(
-            "You need to provide parameters. If you need help, rerun the"
-            'program using the "-help" argument:'
-            '\n"python RetroTS.py -help"'
-        )
-        quit()
-    else:
-        opts = sys.argv[1:]
-        temp_opt = None
-        for opt in opts:
-            if opt in opt_dict:
-                if opt == "-help":
-                    print(opt_dict[opt])
-                    quit()
-                elif opt == "-debug":
-                    setup_exceptionhook()
+    # if len(sys.argv) < 2:
+    #     print(
+    #         "You need to provide parameters. If you need help, rerun the"
+    #         'program using the "-help" argument:'
+    #         '\n"python RetroTS.py -help"'
+    #     )
+    #     quit()
+    # else:
+    #     opts = sys.argv[1:]
+    #     temp_opt = None
+    #     for opt in opts:
+    #         if opt in opt_dict:
+    #             if opt == "-help":
+    #                 print(opt_dict[opt])
+    #                 quit()
+    #             elif opt == "-debug":
+    #                 setup_exceptionhook()
 
-            elif temp_opt in opt_dict:
-                opt_dict[temp_opt] = opt
-            else:
-                print("No such command '%s', try:" % opt)
-                for key in list(opt_dict.keys()):
-                    print("%s" % key)
-                quit()
-            temp_opt = opt
-    if opt_dict["-p"]:
-        opt_dict["-p"] = float(opt_dict["-p"])
+    #         elif temp_opt in opt_dict:
+    #             opt_dict[temp_opt] = opt
+    #         else:
+    #             print("No such command '%s', try:" % opt)
+    #             for key in list(opt_dict.keys()):
+    #                 print("%s" % key)
+    #             quit()
+    #         temp_opt = opt
+    # if opt_dict["-p"]:
+    #     opt_dict["-p"] = float(opt_dict["-p"])
+
+    from pathlib import Path
+
+    opt_dict["-r"] = Path.home() / 'RTPSpy' / 'tests' / 'Resp_500Hz_ser-2.1D'
+    opt_dict["-c"] = Path.home() / 'RTPSpy' / 'tests' / 'Card_500Hz_ser-2.1D'
+    opt_dict["-p"] = float(500)
+    opt_dict["-v"] = 2.0
+    opt_dict["-n"] = 1
+    opt_dict["-rvt_out"] = False
 
     # change phys_fs and volume_tr to float     6 Mar 2017 [rickr]
     retro_ts(
