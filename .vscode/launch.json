@@ -12,7 +12,8 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "cwd": "${workspaceFolder}",
-            "purpose":["debug-in-terminal"]
+            "purpose":["debug-in-terminal"],
+            "args": ["--debug"]
         }
     ]
 }
