@@ -224,6 +224,7 @@ class RtpWatch(RTP):
                 # Wait until the file is readable.
                 try:
                     dcm = pydicom.dcmread(file_path)
+                    _ = dcm.pixel_array
                 except Exception:
                     time.sleep(0.01)
 
