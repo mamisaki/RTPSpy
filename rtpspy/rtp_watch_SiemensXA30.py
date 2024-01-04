@@ -271,7 +271,12 @@ class RtpWatch(RTP):
             if self.proc_start_idx < 0:
                 self.proc_start_idx = 0
 
-            fmri_img = self.dcm2nii(dcm)
+            while True:
+                try:
+                    fmri_img = self.dcm2nii(dcm)
+                    break
+                except Exception:
+                    dcm = pydicom.dcmread(file_path)
 
             if self.nii_save_filename is None:
                 # Set save_filename
