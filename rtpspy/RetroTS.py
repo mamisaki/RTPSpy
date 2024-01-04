@@ -298,6 +298,8 @@ def retro_ts(
         else:
             respiration_peak = {}
         if cardiac_file:
+            cardiac_info['frequency_cutoff'] = [0.5, 3]
+            cardiac_info['detend_ma_sec'] = 5  # Detrend with moving average of this second
             cardiac_peak, error = peak_finder(cardiac_info, cardiac_file)
             if error:
                 print("Died in cardiac PeakFinder")
@@ -688,10 +690,10 @@ Output:
 
     from pathlib import Path
 
-    opt_dict["-r"] = Path.home() / 'RTPSpy' / 'tests' / 'Resp_500Hz_ser-2.1D'
-    opt_dict["-c"] = Path.home() / 'RTPSpy' / 'tests' / 'Card_500Hz_ser-2.1D'
+    opt_dict["-r"] = Path('/data/rt/S20240102165209/Resp_500Hz_ser-10.1D')
+    opt_dict["-c"] = Path('/data/rt/S20240102165209/Card_500Hz_ser-10.1D')
     opt_dict["-p"] = float(500)
-    opt_dict["-v"] = 2.0
+    opt_dict["-v"] = 1.5
     opt_dict["-n"] = 1
     opt_dict["-rvt_out"] = False
 

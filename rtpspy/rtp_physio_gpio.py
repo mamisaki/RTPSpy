@@ -59,9 +59,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
-from rtpspy.rpc_socket_server import (
-    RPCSocketServer, rpc_send_data, rpc_recv_data, pack_data)
-from rtpspy.rtp_retrots import RtpRetrots
+try:
+    from .rpc_socket_server import (
+        RPCSocketServer, rpc_send_data, rpc_recv_data, pack_data)
+except Exception:
+    from rtpspy.rpc_socket_server import (
+        RPCSocketServer, rpc_send_data, rpc_recv_data, pack_data)
 
 mpl.rcParams['font.size'] = 8
 
@@ -922,8 +925,6 @@ class RtSignalRecorder():
             self._rbuf_names, sport, sample_freq, buf_len_sec,
             debug=debug, sim_data=sim_data)
 
-        self._rtp_retrots = RtpRetrots()
-
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
         return self._recoder.get_config()
@@ -997,7 +998,7 @@ class RtSignalRecorder():
         np.savetxt(resp_fname, np.reshape(save_resp, [-1, 1]), '%.2f')
         np.savetxt(card_fname, np.reshape(save_card, [-1, 1]), '%.2f')
 
-        self.logger.info("Save physio data in {card_fname} and {resp_fname}")
+        self.logger.info(f"Save physio data in {card_fname} and {resp_fname}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):
@@ -1095,42 +1096,42 @@ class RtSignalRecorder():
 
         shm.close()
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def get_retrots(self, PhysFS, TR, tshift, NVol):
-        shm = shared_memory.SharedMemory(name='scan_onset')
-        sacn_onset = np.ndarray((1,), dtype=np.dtype(float), buffer=shm.buf)[0]
-        if sacn_onset == 0.0:
-            return (None, None)
+    # # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # def get_retrots(self, PhysFS, TR, tshift, NVol):
+    #     shm = shared_memory.SharedMemory(name='scan_onset')
+    #     sacn_onset = np.ndarray((1,), dtype=np.dtype(float), buffer=shm.buf)[0]
+    #     if sacn_onset == 0.0:
+    #         return (None, None)
 
-        data = self.dump()
-        tstamp = data['tstamp'] - sacn_onset
-        card = data['card']
-        resp = data['resp']
+    #     data = self.dump()
+    #     tstamp = data['tstamp'] - sacn_onset
+    #     card = data['card']
+    #     resp = data['resp']
 
-        # Resample
-        xt = np.arange(0, tstamp[-1], 1.0/PhysFS)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            f = interpolate.interp1d(tstamp, card, bounds_error=False)
-            Card = f(xt)
-            f = interpolate.interp1d(tstamp, resp, bounds_error=False)
-            Resp = f(xt)
+    #     # Resample
+    #     xt = np.arange(0, tstamp[-1], 1.0/PhysFS)
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter("ignore", category=RuntimeWarning)
+    #         f = interpolate.interp1d(tstamp, card, bounds_error=False)
+    #         Card = f(xt)
+    #         f = interpolate.interp1d(tstamp, resp, bounds_error=False)
+    #         Resp = f(xt)
 
-        n = int(NVol * TR * PhysFS)
-        Card = Card[:n]
-        Resp = Resp[:n]
+    #     n = int(NVol * TR * PhysFS)
+    #     Card = Card[:n]
+    #     Resp = Resp[:n]
 
-        retroTSReg = self._rtp_retrots.do_proc(Resp, Card, TR, PhysFS, tshift)
+    #     retroTSReg = self._rtp_retrots.do_proc(Resp, Card, TR, PhysFS, tshift)
 
-        return retroTSReg
+    #     return retroTSReg
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RPC_handler(self, call):
         """
         To return data other than str, pack_data() should be used.
         """
-        if call == 'GET_SAMPLE_FREQ':
-            return pack_data(self.sample_freq)
+        if call == 'GET_RECORDING_PARMAS':
+            return pack_data((self.sample_freq, self._recoder.buf_len))
 
         elif call == 'WAIT_TTL_ON':
             self._recoder.wait_ttl(True)
@@ -1167,9 +1168,9 @@ class RtSignalRecorder():
                 conf = call[1]
                 self.set_config(conf)
 
-            elif call[0] == 'GET_RETROTS':
-                args = call[1:]
-                return pack_data(self.get_retrots(*args))
+            # elif call[0] == 'GET_RETROTS':
+            #     args = call[1:]
+            #     return pack_data(self.get_retrots(*args))
 
         elif call == 'QUIT':
             self.close()

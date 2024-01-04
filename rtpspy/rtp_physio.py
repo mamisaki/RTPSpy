@@ -52,8 +52,8 @@ class RTP_PHYSIO(RTP):
             Number of samples to average data for smoothing and reducing noise.
             Output frequency will be 'sample_freq/samples_to_average'.
             The default is 5.
-        rtp_retrots : RtpRetrots object, optional
-            RtpRetrots object instance for making RetroTS reggressor.
+        rtp_retrots : RtpRetroTS object, optional
+            RtpRetroTS object instance for making RetroTS reggressor.
             The default is None.
         plot_len_sec : float, optional
             Length (seconds) of signal plot. The default is 10.
@@ -896,8 +896,8 @@ class RTP_PHYSIO_DUMMY(RTP):
         resp_f: Path object or string
         sample_freq: float
             Frequency of signal in the files (Hz)
-        rtp_retrots: RtpRetrots object
-            instance of RtpRetrots for making RetroTS reggressor
+        rtp_retrots: RtpRetroTS object
+            instance of RtpRetroTS for making RetroTS reggressor
         verb: bool
             verbose flag to print log message
         """
@@ -1006,8 +1006,8 @@ if __name__ == '__main__':
     #shell = IPython.get_ipython()
     #shell.enable_matplotlib(gui='qt')
 
-    #from rtp_retrots import RtpRetrots
-    #rtp_retrots = RtpRetrots()
+    #from rtp_retrots import RtpRetroTS
+    #rtp_retrots = RtpRetroTS()
 
     # Standalone test
     scan_onset = RtpExtSignal()

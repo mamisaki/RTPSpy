@@ -42,7 +42,7 @@ try:
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
     from .rtp_ext_signal import RtpExtSignal
-    from .rtp_retrots import RtpRetrots
+    from .rtp_retrots import RtpRetroTS
     from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
@@ -53,7 +53,7 @@ except Exception:
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
                                    DlgProgressBar, excepthook)
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
-                        RtpRegress, RtpExtSignal, RtpRetrots,
+                        RtpRegress, RtpExtSignal, RtpRetroTS,
                         RtpImgProc)
 
     from rtpspy.mri_sim import rtMRISim
@@ -187,7 +187,7 @@ class RtpApp(RTP):
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
-        rtp_objs['RETROTS'] = RtpRetrots()
+        rtp_objs['RETROTS'] = RtpRetroTS()
         rtp_objs['REGRESS'] = RtpRegress(
             volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['EXTSIG'])
         self.rtp_objs = rtp_objs
