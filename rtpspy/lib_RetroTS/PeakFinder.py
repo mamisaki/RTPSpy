@@ -486,11 +486,24 @@ def peak_finder(var_v, filename=None, v=None):
             ttemp = r['t'][tmask]
             v = r["x"][tmask].real
             if pol[nli] > 0:
-                n_trace = numpy.append(n_trace, numpy.min(v))
-                tn_trace = numpy.append(tn_trace, ttemp[numpy.argmin(v)])
+                peak_v = numpy.min(v)
+                # If the negative peak value is in the positive side,
+                # Two positve peaks are merged to the higest one.
+                if numpy.abs(peak_v - numpy.mean(r['n_trace'])) > \
+                        numpy.abs(peak_v - numpy.mean(r['p_trace'])):
+
+                    
+                    
+                    
+                else:
+                    # Add negative peak points
+                    n_trace = numpy.append(n_trace, peak_v)
+                    tn_trace = numpy.append(tn_trace, ttemp[numpy.argmin(v)])
             else:
+                peak_v = numpy.max(v)
                 p_trace = numpy.append(p_trace, numpy.max(v))
                 tp_trace = numpy.append(tp_trace, ttemp[numpy.argmax(v)])
+                
         sidx = numpy.argsort(tp_trace).ravel()
         r['p_trace'] = p_trace[sidx]
         r['tp_trace'] = tp_trace[sidx]
