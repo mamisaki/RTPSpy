@@ -12,8 +12,12 @@ import numpy as np
 from PyQt5 import QtWidgets, QtCore
 import matplotlib as mpl
 
-from rtpspy.rtp_common import RTP
-from rtpspy.rtp_physio_gpio import call_rt_physio
+try:
+    from .rtp_common import RTP
+    from .rtp_physio_gpio import call_rt_physio
+except Exception:
+    from rtpspy.rtp_common import RTP
+    from rtpspy.rtp_physio_gpio import call_rt_physio
 
 mpl.rcParams['font.size'] = 8
 
@@ -74,7 +78,7 @@ class RtpExtSignal(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_scan_on(self):
         if not self._scanning and self._wait_start and self.physio_available:
-            # Get TTL signal onset
+            # Get scan onset
             shm = shared_memory.SharedMemory(name='scan_onset')
             onset = np.ndarray((1,), dtype=np.dtype(float), buffer=shm.buf)[0]
             shm.close()

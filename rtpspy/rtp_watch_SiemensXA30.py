@@ -224,6 +224,7 @@ class RtpWatch(RTP):
                 # Wait until the file is readable.
                 try:
                     dcm = pydicom.dcmread(file_path)
+                    _ = dcm.pixel_array
                 except Exception:
                     time.sleep(0.01)
 
@@ -271,12 +272,7 @@ class RtpWatch(RTP):
             if self.proc_start_idx < 0:
                 self.proc_start_idx = 0
 
-            while True:
-                try:
-                    fmri_img = self.dcm2nii(dcm)
-                    break
-                except Exception:
-                    dcm = pydicom.dcmread(file_path)
+            fmri_img = self.dcm2nii(dcm)
 
             if self.nii_save_filename is None:
                 # Set save_filename

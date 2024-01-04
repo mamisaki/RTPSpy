@@ -278,10 +278,9 @@ class RPCSocketServer:
                             if prefix.startswith('Z'):
                                 pkldata = zlib.decompress(pkldata)
                             data = pickle.loads(pkldata)
-                            if self.server._verb:
-                                self._logger.info(
-                                    f'Received {dsize} byte data' +
-                                    f' by {self.server.server_address}')
+                            self._logger.info(
+                                f'Received {dsize} byte data' +
+                                f' by {self.server.server_address}')
                         except Exception:
                             exc_type, exc_obj, exc_tb = sys.exc_info()
                             errstr = ''.join(

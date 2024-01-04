@@ -1777,7 +1777,7 @@ if __name__ == '__main__':
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_retrots import RtpRetrots
+    from rtpspy.rtp_retrots import RtpRetroTS
     # RtpTshift
     rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
@@ -1795,7 +1795,7 @@ if __name__ == '__main__':
 
     # RTP_RETOTS and RTP_PHYSIO
     sample_freq = 40
-    rtp_retrots = RtpRetrots()
+    rtp_retrots = RtpRetroTS()
    
     # RtpRegress
     rtp_regress = RtpRegress()
