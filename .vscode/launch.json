@@ -5,6 +5,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: Current File with profiler",
+            "type": "python",
+            "request": "launch",
+            "module": "cProfile",
+            "args": [
+                "-o", "/tmp/tmp.prof", "${file}"
+            ]
+        },
+        {
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
@@ -13,7 +22,7 @@
             "justMyCode": false,
             "cwd": "${workspaceFolder}",
             "purpose":["debug-in-terminal"],
-            "args": ["--debug"]
+            "args": ["--study_prefix", "P", "--study_ID_field", "PatientID"]
         }
     ]
 }

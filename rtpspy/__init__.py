@@ -5,9 +5,8 @@ from .rtp_volreg import RtpVolreg
 from .rtp_smooth import RtpSmooth
 from .rtp_regress import RtpRegress
 from .rtp_app import RtpApp
-from .rtp_ui import RTP_UI
-from .rtp_ext_signal import RtpExtSignal
-from .rtp_physio import RTP_PHYSIO, RTP_PHYSIO_DUMMY
+from .rtp_gui import RtpGUI
+from .rtp_physio import RtpPhysio
 from .rtp_retrots import RtpRetroTS
 from .rtp_imgproc import RtpImgProc
 from .rpc_socket_server import RPCSocketServer, rpc_send_data, rpc_recv_data

@@ -451,9 +451,6 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
             props = pickle.load(fd)
 
         for mod in props.keys():
-            if mod in ('RETROTS',):
-                continue
-
             if mod in objs:
                 obj = objs[mod]
                 for var_name, val in props[mod].items():

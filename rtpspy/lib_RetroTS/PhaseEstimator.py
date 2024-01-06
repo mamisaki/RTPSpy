@@ -17,6 +17,7 @@ __author__ = "Joshua Zosky"
     along with "RetroTS".  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import numpy as np
 from numpy import zeros, ones, nonzero, pi, argmin, sin, cos
 from numpy import size, arange, clip, histogram, r_, Inf, divide, append, delete, array
 from .zscale import z_scale
@@ -152,17 +153,20 @@ def phase_base(amp_type, phasee):
         # Now that we have the polarity, without computing sign(dR/dt)
         #   as in Glover et al 2000, calculate the phase per eq. 3 of that paper
         # First the sum in the numerator
-        for i, val in enumerate(gR):
-            gR[i] = round(val / mxamp * 100) + 1
-        gR = clip(gR, 0, 99)
-        shb = sum(hb_value)
-        hbsum = []
-        hbsum.append(float(hb_value[0]) / shb)
-        for i in range(1, 100):
-            hbsum.append(hbsum[i - 1] + (float(hb_value[i]) / shb))
-        for i in range(len(phasee["t"])):
-            phasee["phase"].append(pi * hbsum[int(gR[i]) - 1] * phasee["phase_pol"][i])
-        phasee["phase"] = array(phasee["phase"])
+        # for i, val in enumerate(gR):
+        #     gR[i] = round(val / mxamp * 100) + 1
+        # gR = clip(gR, 0, 99)
+        # shb = sum(hb_value)
+        # hbsum = []
+        # hbsum.append(float(hb_value[0]) / shb)
+        # for i in range(1, 100):
+        #     hbsum.append(hbsum[i - 1] + (float(hb_value[i]) / shb))
+        # for i in range(len(phasee["t"])):
+        #     phasee["phase"].append(pi * hbsum[int(gR[i]) - 1] * phasee["phase_pol"][i])
+        # phasee["phase"] = array(phasee["phase"])
+        gR = np.clip(np.floor(gR / mxamp * 100).astype(int), 0, 99)
+        hbsum = np.cumsum(hb_value/np.sum(hb_value))
+        phasee["phase"] = np.pi * hbsum[gR] *  phasee["phase_pol"]
 
     # Time series time vector
     phasee["time_series_time"] = arange(

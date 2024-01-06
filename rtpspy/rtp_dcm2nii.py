@@ -54,7 +54,8 @@ class RtpDcm2Nii:
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
-                 study_prefix='P', series_timeout=60, rpc_port=63210,
+                 study_prefix='P', study_ID_field=None,
+                 series_timeout=60, rpc_port=63210,
                  make_brik=False, polling_observer=False,
                  rtp_physio_address='localhost:63212', **kwargs):
         """
@@ -74,8 +75,11 @@ class RtpDcm2Nii:
             The default is r'.+\\.dcm'.
         study_prefix : str
             Prefix for a study directory name. The study directory name will
-            be created as '{self.study_prefix}_{%Y%m%d%H%M%S}'.
+            be created as '{self.study_prefix}_{%Y%m%d%H%M%S}', unless the
+            study_ID_field is set.
             The default is 'P'.
+        study_ID_field : str
+            DICOM header field to be used as Study ID. The default is None.
         series_timeout : float
             Timeout period to consider as end of series to start conversion.
             The default is 60.
@@ -95,6 +99,7 @@ class RtpDcm2Nii:
         self.work_root = work_root
         self.watch_file_pattern = watch_file_pattern
         self.study_prefix = study_prefix
+        self.study_ID_field = study_ID_field
         self.series_timeout = series_timeout
         self.rpc_port = rpc_port
         self.make_brik = make_brik
@@ -256,9 +261,21 @@ class RtpDcm2Nii:
     def _make_study_id(self, dcm, study_prefix=None):
         if study_prefix is None:
             study_prefix = self.study_prefix
-        dateTime = datetime.strptime(
-                dcm.StudyDate+dcm.StudyTime, '%Y%m%d%H%M%S.%f')
-        studyID = study_prefix+dateTime.strftime('%Y%m%d%H%M%S')
+
+        studyID = None
+        if self.study_ID_field is not None:
+            try:
+                st_id = dcm[self.study_ID_field].value
+                if st_id[0] == study_prefix:
+                    studyID = st_id
+            except Exception:
+                pass
+
+        if studyID is None:
+            dateTime = datetime.strptime(
+                    dcm.StudyDate+dcm.StudyTime, '%Y%m%d%H%M%S.%f')
+            studyID = study_prefix+dateTime.strftime('%Y%m%d%H%M%S')
+
         studyID = self._make_path_safe(studyID)
 
         return studyID
@@ -523,6 +540,7 @@ if __name__ == '__main__':
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
     parser.add_argument('--study_prefix', default='S', help='Study ID prefix')
+    parser.add_argument('--study_ID_field', help='Study ID DICOM field')
     parser.add_argument('--series_timeout', default=10,
                         help='Timeout period to close a series')
     parser.add_argument('--rpc_port', default=63210,
@@ -535,18 +553,21 @@ if __name__ == '__main__':
                         help='Log file path')
     parser.add_argument('--rtp_physio_address', default='localhost:63212',
                         help='rtp_physio socket server port')
+    parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
     watch_dir = Path(args.watch_dir)
     work_root = Path(args.work_root)
     watch_file_pattern = args.watch_file_pattern
     study_prefix = args.study_prefix
+    study_ID_field = args.study_ID_field
     series_timeout = args.series_timeout
     rpc_port = args.rpc_port
     make_brik = args.make_brik
     polling_observer = args.polling_observer
     log_file = Path(args.log_file)
     rtp_physio_address = args.rtp_physio_address
+    debug = args.debug
 
     # Logger
     logging.basicConfig(
@@ -557,7 +578,8 @@ if __name__ == '__main__':
     # Create the server
     dcm2nii_serv = RtpDcm2Nii(
         watch_dir, work_root, watch_file_pattern=watch_file_pattern,
-        study_prefix=study_prefix, series_timeout=series_timeout,
+        study_prefix=study_prefix, study_ID_field=study_ID_field,
+        series_timeout=series_timeout,
         rpc_port=rpc_port, make_brik=make_brik,
         polling_observer=polling_observer,
         rtp_physio_address=rtp_physio_address)

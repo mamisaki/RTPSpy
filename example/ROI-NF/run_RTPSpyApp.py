@@ -17,7 +17,7 @@ from PyQt5 import QtWidgets
 
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
-from rtpspy import RTP_UI
+from rtpspy import RtpGUI
 from roi_nf import ROINF
 
 
@@ -53,9 +53,9 @@ if __name__ == '__main__':
     # Make RtpApp instance
     rtp_app = ROINF(default_rtp_params=rtp_params)
 
-    # Make GUI (RTP_UI) instance
+    # Make GUI (RtpGUI) instance
     app_obj = {'ROI-NF': rtp_app}
-    rtp_ui = RTP_UI(rtp_app.rtp_objs, app_obj, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_dir='./log')
 
     # Keep RTP objects for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs
@@ -84,7 +84,7 @@ if __name__ == '__main__':
 
     # --- End ---
     # Save parameters
-    # exit with 1 means exit wihtout saving (defined in RTP_UI)
+    # exit with 1 means exit wihtout saving (defined in RtpGUI)
     if exit_code != 1:
         save_parameters(all_rtp_objs)
 

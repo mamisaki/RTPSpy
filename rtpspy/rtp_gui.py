@@ -24,14 +24,14 @@ try:
     from .rtp_common import LogDev, save_parameters, load_parameters
 
 except Exception:
-    from rtp_common import LogDev, save_parameters, load_parameters
+    from rtpspy.rtp_common import LogDev, save_parameters, load_parameters
 
 GPU_available = torch.cuda.is_available()
 
 
-# %% RTP_UI class =============================================================
-class RTP_UI(QtWidgets.QMainWindow):
-    """ RTP_UI class """
+# %% RtpGUI class =============================================================
+class RtpGUI(QtWidgets.QMainWindow):
+    """ RtpGUI class """
 
     def __init__(self, rtp_objs, rtp_apps, log_dir='./log',
                  winTitle='RTPSpy', onGPU=GPU_available):
@@ -166,6 +166,14 @@ class RTP_UI(QtWidgets.QMainWindow):
             self.chbShowMotion.setCheckState(0)
             self.chbShowMotion.stateChanged.connect(
                         lambda x: self.show_mot_chk(x))
+
+        # Show Physio
+        if 'PHYSIO' in rtp_objs:
+            self.chbShowPhysio = QtWidgets.QCheckBox('Show physio',
+                                                     self.mainWidget)
+            self.chbShowPhysio.setCheckState(0)
+            self.chbShowPhysio.stateChanged.connect(
+                        lambda x: self.show_physio_chk(x))
 
         # GPU
         if self.GPU_available:
@@ -321,6 +329,9 @@ class RTP_UI(QtWidgets.QMainWindow):
         self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
         if hasattr(self, 'chbUseGPU'):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
+
+        if hasattr(self, 'chbShowPhysio'):
+            self.ui_hChkBoxes.addWidget(self.chbShowPhysio)
 
         if hasattr(self, 'chbShowMotion'):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
@@ -510,6 +521,31 @@ class RTP_UI(QtWidgets.QMainWindow):
             self.rtp_objs['VOLREG'].close_motion_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def show_physio_chk(self, state):
+        if 'PHYSIO' not in self.rtp_objs or \
+                not self.rtp_objs['PHYSIO'].is_recording():
+            if state != 0:
+                if hasattr(self, 'chbShowPhysio'):
+                    self.chbShowPhysio.blockSignals(True)
+                    self.chbShowPhysio.setCheckState(0)
+                    self.chbShowPhysio.blockSignals(False)
+
+        if state > 0:
+            self.rtp_objs['PHYSIO'].open_plot(
+                main_win=self, win_shape=(450, 450), plot_len_sec=10,
+                disable_close=False)
+            if hasattr(self, 'chbShowPhysio'):
+                self.chbShowPhysio.blockSignals(True)
+                self.chbShowPhysio.setCheckState(2)
+                self.chbShowPhysio.blockSignals(False)
+        else:
+            self.rtp_objs['PHYSIO'].close_plot()
+            if hasattr(self, 'chbShowPhysio'):
+                self.chbShowPhysio.blockSignals(True)
+                self.chbShowPhysio.setCheckState(0)
+                self.chbShowPhysio.blockSignals(False)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def enable_GPU(self, *args):
         for obj in self.rtp_objs.values():
             if hasattr(obj, 'onGPU'):
@@ -596,6 +632,12 @@ class RTP_UI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
+        # Stop physio
+        if 'PHYSIO' in self.rtp_objs and \
+                self.rtp_objs['PHYSIO'].is_recording():
+            self.rtp_objs['PHYSIO'].stop_recording()
+            del self.rtp_objs['PHYSIO']
+
         # Move logfile to work_dir
         cpfnames = {}
         for rtp in list(self.rtp_objs.values()) + list(self.rtp_apps.values()):

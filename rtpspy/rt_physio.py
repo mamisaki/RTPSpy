@@ -8,14 +8,14 @@ Model and controller classes:
     GEPhysioRecording:
         Recording cardiogram and respiration signals from a GE scanner's
         serial port.
-    RtPhysioRecoder:
+    RtPhysioRecorder:
         Interface for recording cardiogram and respiration signals using
         GEPhysioRecording as the backend.
     NumatoGPIORecoding
         REcording TTL signal from Numato Lab 8 Channel USB GPIO (
         https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
         ).
-    RtTTLRecoder:
+    RtTTLRecorder:
         Interface for recording TTL signal using NumatoGPIORecoding
         as the backend.
 
@@ -546,7 +546,7 @@ class RtSignalRecorder():
             shm.close()
 
         # Create recorder
-        self.recoder = NumatoGPIORecoding(
+        self.recorder = NumatoGPIORecoding(
             self.ttl_shm_name, self.card_shm_name, self.resp_shm_name,
             self.tstamp_shm_name, sport, sample_freq, buf_len_sec, verb=verb)
 
@@ -555,37 +555,37 @@ class RtSignalRecorder():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
-        return self.recoder.get_config()
+        return self.recorder.get_config()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, conf):
-        self.recoder.set_config(conf)
+        self.recorder.set_config(conf)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_recording(self, restart=False):
-        self.recoder.start_recording(restart)
+        self.recorder.start_recording(restart)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
-        return self.recoder.is_recording()
+        return self.recorder.is_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_recording(self):
-        self.recoder.stop_recording()
+        self.recorder.stop_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_saving(self, onset):
-        self.recoder.start_saving(onset)
+        self.recorder.start_saving(onset)
         self.saving = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_saving(self):
-        self.recoder.stop_saving()
+        self.recorder.stop_saving()
         self.saving = False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_data(self, prefix='./{}_scan.1D', len_sec=None):
-        self.recoder.save_data(prefix, len_sec)
+        self.recorder.save_data(prefix, len_sec)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):
@@ -594,8 +594,8 @@ class RtSignalRecorder():
             return None
 
         # Get data
-        with self.recoder.rbuf_lock:
-            buf_len = self.recoder.buf_len
+        with self.recorder.rbuf_lock:
+            buf_len = self.recorder.buf_len
             shm = shared_memory.SharedMemory(name='tstamp')
             timestamp = np.ndarray(buf_len, dtype=float, buffer=shm.buf).copy()
             shm.close()
