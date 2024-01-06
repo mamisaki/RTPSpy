@@ -23,3 +23,5 @@ rtpspy/FastSurfer
 *.log
 *.npy
 .vscode/launch.json
+*.1D
+rtpspy/lib_RetroTS/*
