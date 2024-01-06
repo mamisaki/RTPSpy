@@ -217,6 +217,7 @@ class RtpWatch(RTP):
             dcm = None
             try:
                 dcm = pydicom.dcmread(file_path)
+                _ = dcm.pixel_array
             except Exception:
                 pass
 
