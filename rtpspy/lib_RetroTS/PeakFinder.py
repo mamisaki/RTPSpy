@@ -18,6 +18,7 @@ __author__ = "Joshua Zosky"
 """
 
 import numpy
+import numpy as np
 
 # from scipy import *
 # from scipy.fftpack import fft
@@ -27,7 +28,7 @@ from numpy import zeros, ones, nonzero
 
 # rcr: omit new style sub-library of pylab
 from pylab import plot, subplot, show, text, figure
-from scipy.signal import lfilter, firwin
+from scipy.signal import lfilter, firwin, hilbert
 from scipy.interpolate import interp1d
 import glob
 
@@ -250,15 +251,24 @@ def peak_finder(var_v, filename=None, v=None):
     e = False  # default value for e
     r = {}
     # Some filtering
-    nyquist_filter = var_vector["phys_fs"] / 2.0
-    # w[1] = 0.1/filter_nyquist  # Cut frequencies below 0.1Hz
-    # w[2] = var_vector['frequency_cutoff']/filter_nyquist  # Upper cut off frequency normalized
-    # b = signal.firwin(var_vector['fir_order'], w, 'bandpass')  # FIR filter of order 40
-    w = var_vector["frequency_cutoff"] / nyquist_filter
-    b = firwin(
-        numtaps=(var_vector["fir_order"] + 1), cutoff=w, window="hamming"
-    )  # FIR filter of order 40
-    b = numpy.array(b)
+    # nyquist_filter = var_vector["phys_fs"] / 2.0
+    # # w[1] = 0.1/filter_nyquist  # Cut frequencies below 0.1Hz
+    # # w[2] = var_vector['frequency_cutoff']/filter_nyquist  # Upper cut off frequency normalized
+    # # b = signal.firwin(var_vector['fir_order'], w, 'bandpass')  # FIR filter of order 40
+    # w = var_vector["frequency_cutoff"] / nyquist_filter
+    # b = firwin(
+    #     numtaps=(var_vector["fir_order"] + 1), cutoff=w, window="hamming"
+    # )  # FIR filter of order 40
+    # b = numpy.array(b)
+
+    # FIR filter
+    if type(var_vector["frequency_cutoff"]) in (list, np.array):
+        pass_zero = 'bandpass'
+    else:
+        pass_zero = 'lowpass'
+    b = firwin(numtaps=(var_vector["fir_order"] + 1), cutoff=var_vector["frequency_cutoff"],
+               window="hamming", pass_zero=pass_zero, fs=var_vector["phys_fs"])
+
     no_dups = 1  # Remove duplicates that might come up when improving peak location
     """
     if isinstance(var_vector, str):
@@ -327,13 +337,25 @@ def peak_finder(var_v, filename=None, v=None):
     v_np = numpy.flipud(v_np)
     v_np = lfilter(b, 1, v_np)
     v_np = numpy.flipud(v_np)
+
+    if 'detend_ma_sec' in var_vector:
+        ww = int(var_vector['detend_ma_sec'] * var_vector["phys_fs"])
+        trend = np.convolve(v_np, np.ones(ww)/ww, mode='same')
+        n_conv = int(np.ceil(ww/2))
+        trend[0] *= ww/n_conv
+        for i in range(1, n_conv):
+            trend[i] *= ww/(i+n_conv)
+            trend[-i] *= ww/(i + n_conv - (ww % 2))
+        v_np = v_np - trend
+
     # Get the analytic signal
-    r["x"] = analytic_signal(
-        v_np,
-        var_vector["as_window_width"] * var_vector["phys_fs"],
-        var_vector["as_percover"],
-        var_vector["as_fftwin"],
-    )
+    # r["x"] = analytic_signal(
+    #     v_np, len(v_np)/var_vector["phys_fs"],
+    #     var_vector["as_window_width"] * var_vector["phys_fs"],
+    #     var_vector["as_percover"],
+    #     var_vector["as_fftwin"],
+    # )
+    r["x"] = hilbert(v_np)
 
     # Using local version to illustrate, can use hilbert
     # Doing ffts over smaller windows can improve peak detection in the few instances that go undetected but
@@ -380,8 +402,8 @@ def peak_finder(var_v, filename=None, v=None):
         subplot(211)
         plot(r["t"], real(r["x"]), "g")
         # plot (r_list[i_column].t, imag(r_list[i_column]['x']),'g')
-        plot(tp_trace, p_trace, "ro")
-        plot(tn_trace, n_trace, "bo")
+        plot(tp_trace, p_trace, "r.")
+        plot(tn_trace, n_trace, "b.")
         # plot (r_list[i_column].t, abs(r_list[i_column]['x']),'k')
         subplot(413)
         vn = real(r["x"]) / (abs(r["x"]) + numpy.spacing(1))
@@ -389,11 +411,11 @@ def peak_finder(var_v, filename=None, v=None):
         ppp = nonzero(pol > 0)
         ppp = ppp[0]
         for i in ppp:
-            plot(tiz[i], vn[iz[i]], "ro")
+            plot(tiz[i], vn[iz[i]], "r.")
         ppp = nonzero(pol < 0)
         ppp = ppp[0]
         for i in ppp:
-            plot(tiz[i], vn[iz[i]], "bo")
+            plot(tiz[i], vn[iz[i]], "b.")
         if var_vector["demo"]:
             # need to add a pause here - JZ
             # uiwait(msgbox('Press button to resume', 'Pausing', 'modal'))
@@ -458,59 +480,109 @@ def peak_finder(var_v, filename=None, v=None):
                 e = True
                 return r, e
 
+        # + CUSTOM xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
         # Remove peak points in the opposite side
-        irr_ppidx = numpy.argwhere(
-            (numpy.abs(r['p_trace'] - numpy.mean(r['p_trace'])) >
-                numpy.abs(r['p_trace'] - numpy.mean(r['n_trace'])))).ravel()
-        p_trace = numpy.delete(r['p_trace'], irr_ppidx)
-        tp_trace = numpy.delete(r['tp_trace'], irr_ppidx)
+        irr_ppidx = []
+        for ppidx, pv in enumerate(r['p_trace']):
+            mean_pp = np.mean(r['p_trace'][max(ppidx-5, 0):ppidx+5])
+            mean_np = np.mean(r['n_trace'][max(ppidx-5, 0):ppidx+5])
+            if np.abs(pv - mean_pp) > np.abs(pv - mean_np):
+                irr_ppidx.append(ppidx)
 
-        irr_npidx = numpy.argwhere(
-            (numpy.abs(r['n_trace'] - numpy.mean(r['n_trace'])) >
-                numpy.abs(r['n_trace'] - numpy.mean(r['p_trace'])))).ravel()
-        n_trace = numpy.delete(r['n_trace'], irr_npidx)
-        tn_trace = numpy.delete(r['tn_trace'], irr_npidx)
+        irr_npidx = []
+        for npidx, pv in enumerate(r['n_trace']):
+            mean_pp = np.mean(r['p_trace'][max(npidx-5, 0):npidx+5])
+            mean_np = np.mean(r['n_trace'][max(npidx-5, 0):npidx+5])
+            if np.abs(pv - mean_pp) < np.abs(pv - mean_np):
+                irr_npidx.append(npidx)
+
+        p_trace = np.delete(r['p_trace'], irr_ppidx)
+        tp_trace = np.delete(r['tp_trace'], irr_ppidx)
+
+        n_trace = np.delete(r['n_trace'], irr_npidx)
+        tn_trace = np.delete(r['tn_trace'], irr_npidx)
 
         # Positive and negative peaks must appear alternately.
-        tpn = numpy.concatenate([tp_trace, tn_trace])
-        pol = numpy.concatenate([numpy.ones_like(tp_trace),
-                                 numpy.ones_like(tn_trace)*-1])
-        tpn_sidx = numpy.argsort(tpn).ravel()
+        tpn = np.concatenate([tp_trace, tn_trace])
+        pol = np.concatenate([np.ones_like(tp_trace),
+                              np.ones_like(tn_trace)*-1])
+        tpn_sidx = np.argsort(tpn).ravel()
         tpn = tpn[tpn_sidx]
         pol = pol[tpn_sidx]
-        not_alt_idx = numpy.argwhere(numpy.diff(pol) == 0).ravel()
+        not_alt_idx = np.argwhere(np.diff(pol) == 0).ravel()
+        rm_tp = []
+        rm_np = []
         for nli in not_alt_idx:
             t0 = tpn[nli]
             t1 = tpn[nli+1]
             tmask = (r['t'] > t0) & (r['t'] < t1)
-            ttemp = r['t'][tmask]
+            trange = r['t'][tmask]
             v = r["x"][tmask].real
             if pol[nli] > 0:
-                peak_v = numpy.min(v)
-                # If the negative peak value is in the positive side,
-                # Two positve peaks are merged to the higest one.
-                if numpy.abs(peak_v - numpy.mean(r['n_trace'])) > \
-                        numpy.abs(peak_v - numpy.mean(r['p_trace'])):
-
-                    
-                    
-                    
+                peak_v = np.min(v)
+                # If the negative peak is on the positive side, two positive
+                # peaks are merged into the higher one.
+                tr_idx = np.argwhere(tp_trace == t0).ravel()[0]
+                p_mean = np.mean(p_trace[max(0, tr_idx-5): tr_idx+5])
+                n_mean = np.mean(n_trace[max(0, tr_idx-5): tr_idx+5])
+                if np.abs(peak_v - p_mean) < np.abs(peak_v - n_mean):
+                    # Remove the lower peak points
+                    p0 = p_trace[tp_trace == t0][0]
+                    p1 = p_trace[tp_trace == t1][0]
+                    if p0 < p1:
+                        rm_tp.append(t0)
+                    else:
+                        rm_tp.append(t1)
                 else:
                     # Add negative peak points
-                    n_trace = numpy.append(n_trace, peak_v)
-                    tn_trace = numpy.append(tn_trace, ttemp[numpy.argmin(v)])
+                    n_trace = np.append(n_trace, peak_v)
+                    tn_trace = np.append(tn_trace, trange[np.argmin(v)])
             else:
-                peak_v = numpy.max(v)
-                p_trace = numpy.append(p_trace, numpy.max(v))
-                tp_trace = numpy.append(tp_trace, ttemp[numpy.argmax(v)])
-                
-        sidx = numpy.argsort(tp_trace).ravel()
+                peak_v = np.max(v)
+                # If the positive peak is on the negative side, two negative
+                # peaks are merged into the lower one.
+                tr_idx = np.argwhere(tn_trace == t0).ravel()[0]
+                p_mean = np.mean(p_trace[max(0, tr_idx-5): tr_idx+5])
+                n_mean = np.mean(n_trace[max(0, tr_idx-5): tr_idx+5])
+                if np.abs(peak_v - p_mean) > np.abs(peak_v - n_mean):
+                    # Remove the lower peak points
+                    p0 = n_trace[tn_trace == t0][0]
+                    p1 = n_trace[tn_trace == t1][0]
+                    if p0 > p1:
+                        rm_np.append(t0)
+                    else:
+                        rm_np.append(t1)
+                else:
+                    # Add positive peak points
+                    p_trace = np.append(p_trace, peak_v)
+                    tp_trace = np.append(tp_trace, trange[np.argmin(v)])
+
+        if len(rm_tp):
+            rmidx = np.argwhere([t in rm_tp for t in tp_trace]).ravel()
+            p_trace = np.delete(p_trace, rmidx)
+            tp_trace = np.delete(tp_trace, rmidx)
+
+        if len(rm_np):
+            rmidx = np.argwhere([t in rm_np for t in tn_trace]).ravel()
+            n_trace = np.delete(n_trace, rmidx)
+            tn_trace = np.delete(tn_trace, rmidx)
+
+        sidx = np.argsort(tp_trace).ravel()
         r['p_trace'] = p_trace[sidx]
         r['tp_trace'] = tp_trace[sidx]
 
-        sidx = numpy.argsort(tn_trace).ravel()
+        sidx = np.argsort(tn_trace).ravel()
         r['n_trace'] = n_trace[sidx]
         r['tn_trace'] = tn_trace[sidx]
+
+        if len(r['p_trace']) > len(r['n_trace']):
+            r['p_trace'] = r['p_trace'][:-1]
+            r['tp_trace'] = r['tp_trace'][:-1]
+        elif len(r['p_trace']) < len(r['n_trace']):
+            r['n_trace'] = r['n_trace'][:-1]
+            r['tn_trace'] = r['tn_trace'][:-1]
+
+        # xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
         if var_vector["quiet"] == 0:
             print("--> Improved peak location\n--> Removed duplicates")

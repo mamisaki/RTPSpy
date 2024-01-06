@@ -304,6 +304,10 @@ class RPCSocketServer:
             self._logger.debug(f"Close connection from {client_addr}:{port}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __del__(self):
+    def shutdown(self):
         self._server.shutdown()
         self._server.server_close()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __del__(self):
+        self.shutdown()

@@ -90,7 +90,7 @@ class RtpRegress(RTP):
     def __init__(self, max_poly_order=np.inf, TR=2.0, mot_reg='None',
                  volreg=None, GS_reg=False, GS_mask=None, WM_reg=False,
                  WM_mask=None, Vent_reg=False, Vent_mask=None,
-                 mask_src_proc=None, phys_reg='None', rtp_retrots=None,
+                 mask_src_proc=None, phys_reg='None', rtp_physio=None,
                  tshift=0.0, desMtx=None, wait_num=0, mask_file=0,
                  max_scan_length=800, onGPU=gpu_available, reg_retro_proc=True,
                  **kwargs):
@@ -140,8 +140,8 @@ class RtpRegress(RTP):
             RVT+RICOR13: both RVT5 and RICOR8
             RVT is not recomended for RTP (see Misaki and Bodrka, 2021.)
             The default is 'None'.
-        rtp_retrots : RtpRetroTS object, optional
-            RtpRetroTS object to read retrots regressors. The default is None.
+        rtp_phyiso : RtpPyshio object, optional
+            RtpPyshio object to get retrots regressors. The default is None.
         tshift : float, optional
             Slice timing offset (second) for calculating the restrots
             regressors. The default is 0.0.
@@ -188,7 +188,7 @@ class RtpRegress(RTP):
         self.mask_src_proc = mask_src_proc
         # Physiological signal regressors
         self.phys_reg = phys_reg
-        self.rtp_retrots = rtp_retrots
+        self.rtp_physio = rtp_physio
         self.tshift = tshift
         # Other regressors design matrix
         self.desMtx_read = desMtx
@@ -249,11 +249,9 @@ class RtpRegress(RTP):
             self._proc_ready = False
 
         if self.phys_reg != 'None':
-            if self.rtp_retrots is None:
-                self.errmsg('RtpRetroTS object is not set.')
+            if self.rtp_physio is None:
+                self.errmsg('RtpPhysio object is not set.')
                 self._proc_ready = False
-            else:
-                self._proc_ready &= self.rtp_retrots.ready_proc()
 
         if self.desMtx0 is None and self.max_scan_length is None:
             self.errmsg('Either design matrix or max scanlength must be set.')
@@ -460,8 +458,8 @@ class RtpRegress(RTP):
                 return
 
             # --- Update retroicor regressors ---------------------------------
-            if self.phys_reg != 'None' and self.rtp_retrots is not None:
-                retrots = self.rtp_retrots.get_retrots(
+            if self.phys_reg != 'None' and self.rtp_physio is not None:
+                retrots = self.rtp_physio.get_retrots(
                     self.TR, vol_idx+1, self.tshift, timeout=self.TR)
                 if retrots is None:
                     self.errmsg("RETROTS regressors cannot be made.",
@@ -469,11 +467,6 @@ class RtpRegress(RTP):
                     return
 
                 retrots = retrots[self.proc_start_idx:, :]
-                if self.phys_reg == 'RVT5':
-                    retrots = retrots[:, :5]
-                elif self.phys_reg == 'RICOR8':
-                    retrots = retrots[:, 5:]
-
                 for ii, icol in enumerate(self.retrocols):
                     self.desMtx[:self.vol_num+1, icol] = \
                             torch.from_numpy(
@@ -1430,8 +1423,8 @@ class RtpRegress(RTP):
             return
 
         elif attr == 'reg_retro_proc':
-            if hasattr(self, 'ui_retroProcc_chb'):
-                self.ui_retroProcc_chb.setChecked(val)
+            if hasattr(self, 'ui_retroProc_chb'):
+                self.ui_retroProc_chb.setChecked(val)
 
         elif attr == 'save_proc':
             if hasattr(self, 'ui_saveProc_chb'):
@@ -1703,11 +1696,11 @@ class RtpRegress(RTP):
 
         # --- Checkbox row ----------------------------------------------------
         # Restrocpective process
-        self.ui_retroProcc_chb = QtWidgets.QCheckBox("Retrospective process")
-        self.ui_retroProcc_chb.setChecked(self.reg_retro_proc)
-        self.ui_retroProcc_chb.stateChanged.connect(
+        self.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
+        self.ui_retroProc_chb.setChecked(self.reg_retro_proc)
+        self.ui_retroProc_chb.stateChanged.connect(
                 lambda state: setattr(self, 'reg_retro_proc', state > 0))
-        self.ui_objs.append(self.ui_retroProcc_chb)
+        self.ui_objs.append(self.ui_retroProc_chb)
 
         # Save
         self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
@@ -1727,7 +1720,7 @@ class RtpRegress(RTP):
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
         chb_hLayout.addWidget(self.ui_verb_chb)
-        ui_rows.append((self.ui_retroProcc_chb, chb_hLayout))
+        ui_rows.append((self.ui_retroProc_chb, chb_hLayout))
 
         return ui_rows
 

@@ -41,8 +41,7 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
-    from .rtp_ext_signal import RtpExtSignal
-    from .rtp_retrots import RtpRetroTS
+    from .rtp_physio import RtpPhysio
     from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
@@ -53,8 +52,7 @@ except Exception:
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
                                    DlgProgressBar, excepthook)
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
-                        RtpRegress, RtpExtSignal, RtpRetroTS,
-                        RtpImgProc)
+                        RtpRegress, RtpPhysio, RtpImgProc)
 
     from rtpspy.mri_sim import rtMRISim
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
@@ -134,6 +132,11 @@ class RtpApp(RTP):
         self.ROI_resample_opts = ['nearestNeighbor', 'linear', 'bSpline']
         self.ROI_resample = 'nearestNeighbor'
 
+        # Scan onset
+        self._wait_start = False
+        self._scanning = False
+        self.scan_onset = 0.0
+
         # Prepare the timer to check the running status
         self.chk_run_timer = QtCore.QTimer()
         self.chk_run_timer.setSingleShot(True)
@@ -182,17 +185,16 @@ class RtpApp(RTP):
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
-        rtp_objs['EXTSIG'] = RtpExtSignal()
         rtp_objs['WATCH'] = RtpWatch()
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
-        rtp_objs['RETROTS'] = RtpRetroTS()
+        rtp_objs['PHYSIO'] = RtpPhysio()
         rtp_objs['REGRESS'] = RtpRegress(
-            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['EXTSIG'])
+            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['PHYSIO'])
         self.rtp_objs = rtp_objs
 
-        # --- Set the defaulr RTP parameters ----------------------------------
+        # --- Set the default RTP parameters ----------------------------------
         if default_rtp_params is not None:
             # Set default parameters
             for proc, params in default_rtp_params.items():
@@ -259,8 +261,8 @@ class RtpApp(RTP):
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
 
-            scan_onset = self.rtp_objs['EXTSIG'].scan_onset
-            val_str = f"{time.time()-scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
+            val_str = \
+                f"{time.time()-self.scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
             if self.extApp_sock is not None:
                 # Send data to the external application via socket,
                 # self.extApp_sock
@@ -900,9 +902,7 @@ class RtpApp(RTP):
                                 pobj.volreg = self.rtp_objs['VOLREG']
 
                         if pobj.phys_reg != 'None':
-                            pobj.rtp_physio = self.rtp_objs['EXTSIG']
-                            self.rtp_objs['EXTSIG'].rtp_retrots = \
-                                self.rtp_objs['RETROTS']
+                            pobj.rtp_physio = self.rtp_objs['PHYSIO']
 
                         if pobj.GS_reg:
                             if Path(self.GSR_mask).is_file():
@@ -1037,12 +1037,7 @@ class RtpApp(RTP):
                 if self.rtp_objs['REGRESS'].enabled and \
                         self.rtp_objs['REGRESS'].phys_reg != 'None':
                     # Start physio recording
-                    self.main_win.chbRecSignal.setCheckState(2)
-                    self.main_win.chbShowExtSig.setCheckState(2)
-                    # chbRecSignal.setCheckState(2) enables physio UIs
-                    if hasattr(self.rtp_objs['EXTSIG'], 'ui_objs'):
-                        for ui in self.rtp_objs['EXTSIG'].ui_objs:
-                            ui.setEnabled(False)
+                    self.main_win.chbShowPhysio.setCheckState(2)
 
             # Reset process chain status
             proc_chain.end_reset()
@@ -1087,23 +1082,26 @@ class RtpApp(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            self.rtp_objs['EXTSIG'].reset()
-            self.rtp_objs['EXTSIG'].wait_scan_onset()
+            self._wait_start = True
+            self.rtp_objs['PHYSIO']._recorder.wait_ttl(True)
+            self._scanning = False
+            self._wait_start = True
 
             # Run wait_onset thread
-            self.th_wait_onset = QtCore.QThread()
-            self.wait_onset = RtpApp.WAIT_ONSET(self.rtp_objs['EXTSIG'],
-                                                self.extApp_sock)
-            self.wait_onset.moveToThread(self.th_wait_onset)
-            self.th_wait_onset.started.connect(self.wait_onset.run)
-            self.wait_onset.finished.connect(self.th_wait_onset.quit)
-            self.th_wait_onset.start()
+            if self.rtp_objs['PHYSIO'] is not None and \
+                    self.rtp_objs['PHYSIO'].is_recording():
+                self.th_wait_onset = QtCore.QThread()
+                self.wait_onset = RtpApp.WAIT_ONSET(
+                    self, self.rtp_objs['PHYSIO'], self.extApp_sock)
+                self.wait_onset.moveToThread(self.th_wait_onset)
+                self.th_wait_onset.started.connect(self.wait_onset.run)
+                self.wait_onset.finished.connect(self.th_wait_onset.quit)
+                self.th_wait_onset.start()
 
             # Change button text
             self.ui_ready_btn.setText('Waiting for scan start ...')
             self.ui_ready_btn.setEnabled(False)
             self.ui_manStart_btn.setEnabled(True)
-            self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(True)
             self.ui_quit_btn.setEnabled(True)
 
             if self.simEnabled:
@@ -1116,8 +1114,18 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def manual_start(self):
-        self.rtp_objs['EXTSIG'].manual_start()
-        return self.rtp_objs['EXTSIG'].scan_onset
+        self.scan_onset = time.time()
+        self._scanning = True
+        self._wait_start = False
+
+        if self.extApp_sock is not None:
+            # Send message to self.extApp_sock
+            onset_str = datetime.fromtimestamp(self.scan_onset).isoformat()
+            msg = f"SCAN_START {onset_str};"
+            try:
+                self.extApp_sock.send(msg.encode())
+            except BrokenPipeError:
+                pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_run(self, quit_btn=False, scan_name=None):
@@ -1200,7 +1208,7 @@ class RtpApp(RTP):
                 # Get parameters
                 all_params = {}
                 for rtp in ('WATCH', 'VOLREG', 'TSHIFT', 'SMOOTH',
-                            'REGRESS', 'EXTSIG'):
+                            'REGRESS'):
                     if rtp not in self.rtp_objs or \
                             not self.rtp_objs[rtp].enabled:
                         continue
@@ -1235,49 +1243,16 @@ class RtpApp(RTP):
                 # Get the root and last processes
                 root_proc = None
                 for rtp, obj in self.rtp_objs.items():
-                    if rtp in ('EXTSIG', 'RETROTS'):
+                    if rtp in ('PHYSIO'):
                         continue
                     if obj.enabled:
                         if root_proc is None:
                             root_proc = obj
-                        last_proc = obj
 
-                proc_vol_num = root_proc.vol_num + 1
-                if proc_vol_num > 0:
-                    if self.rtp_objs['TSHIFT'].enabled:
-                        TR = self.rtp_objs['TSHIFT'].TR
-                    elif self.rtp_objs['REGRESS'].enabled:
-                        TR = self.rtp_objs['TR']
-                    len_sec = proc_vol_num * TR
-                    if hasattr(self.rtp_objs['WATCH'], 'scan_name') and \
-                            self.rtp_objs['WATCH'].scan_name is not None:
-                        scan_name = self.rtp_objs['WATCH'].scan_name
-                        physio_prefix = str(Path(self.work_dir) /
-                                            ('{}' + f'_{scan_name}.1D'))
                 # Reset all process chain
                 out_files = root_proc.end_reset()
                 if out_files is not None:
                     save_fnames.update(out_files)
-
-            # Save physio recording
-            if 'EXTSIG' in self.rtp_objs and \
-                    self.rtp_objs['EXTSIG'].enabled:
-                # Save physio data
-                # if not hasattr(self.rtp_objs['WATCH'], 'scan_name') or \
-                #         self.rtp_objs['WATCH'].scan_name is None:
-                #     if last_proc.saved_filename is not None:
-                #         prefix = last_proc.saved_filename.name.replace(
-                #             '.nii.gz', '')
-                #     else:
-                #         prefix = ''
-                #     physio_prefix = str(Path(self.work_dir) /
-                #                             ('{}' + f'_{prefix}.1D'))
-                #     self.rtp_objs['EXTSIG'].save_data(
-                #         prefix=physio_prefix, len_sec=len_sec)
-
-                # Abort scan_onset if it is waiting
-                self.rtp_objs['EXTSIG'].abort_waiting()
-                self.rtp_objs['EXTSIG'].end_reset()
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1293,12 +1268,12 @@ class RtpApp(RTP):
         if self.main_win is not None:
             # Enable ui
             self.ui_setEnabled(True)
-            self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(True)
             self.main_win.options_tab.setCurrentIndex(0)
-            # self.ui_top_tabs.setCurrentIndex(0)
 
         self._isReadyRun = False
         self._isRunning_end_run_proc = False
+        self._wait_start = False
+        self._scanning = False
 
         return save_fnames
 
@@ -1677,15 +1652,15 @@ class RtpApp(RTP):
 
         finished = QtCore.pyqtSignal()
 
-        def __init__(self, onsetObj, extApp_sock=None):
+        def __init__(self, parent, onsetObj, extApp_sock=None):
             super().__init__()
-            self.scanning = False
+            self.parent = parent
             self.onsetObj = onsetObj
             self.extApp_sock = extApp_sock
             self.abort = False
 
         def run(self):
-            while not self.onsetObj._scanning and not self.abort:
+            while self.onsetObj.scan_onset == 0 and not self.abort:
                 time.sleep(0.001)
 
             if self.abort:
@@ -1693,6 +1668,9 @@ class RtpApp(RTP):
                 return
 
             onset_time = self.onsetObj.scan_onset
+            self.parent._scanning = True
+            self.parent._wait_start = False
+            self.parent.scan_onset = onset_time
 
             if self.extApp_sock is not None:
                 # Send message to self.extApp_sock
@@ -1760,10 +1738,9 @@ class RtpApp(RTP):
         # Check scan start
         if hasattr(self, 'ui_ready_btn') and \
                 'waiting' in self.ui_ready_btn.text().lower():
-            if self.rtp_objs['EXTSIG'].scanning:
+            if self._scanning:
                 self.ui_ready_btn.setText('Session is running')
                 self.ui_manStart_btn.setEnabled(False)
-                self.rtp_objs['EXTSIG'].ui_manualStart_btn.setEnabled(False)
 
         # schedule the next check
         self.chk_run_timer.start(1000)
@@ -1876,7 +1853,6 @@ class RtpApp(RTP):
             # Wait for physio start
             time.sleep(1)
 
-        self.rtp_objs['EXTSIG'].manual_start()
         self.ui_startSim_btn.setEnabled(False)
         if not self.ui_quit_btn.isEnabled():
             self.ui_quit_btn.setEnabled(True)
@@ -2187,15 +2163,23 @@ class RtpApp(RTP):
                     return
 
                 if self.extApp_sock is not None:
-                    print(self.extApp_addr)
-                    if self.extApp_addr[0] != val[0] or \
+                    if self.extApp_addr is None or \
+                            self.extApp_addr[0] != val[0] or \
                             self.extApp_addr[1] != val[1]:
                         # Address is changed. Close the current socket.
                         self.extApp_sock.close()
                         self.extApp_sock = None
 
         elif attr == 'extApp_isAlive':
-            print(self.extApp_addr)
+            if self.extApp_addr is None:
+                extApp_addr = self.ui_extApp_addr_lnEd.text()
+                self.set_param('extApp_addr',  extApp_addr)
+                if self.extApp_addr is None:
+                    msgStr = \
+                        f"!No valid address is set. ({time.ctime()})"
+                    reset_fn(msgStr)
+                    return
+
             isAlive = self.isAlive_extApp()
             address_str = "{}:{}".format(*self.extApp_addr)
             if isAlive:
@@ -2203,6 +2187,7 @@ class RtpApp(RTP):
             else:
                 msgStr = f"!Failed to connect {address_str}. ({time.ctime()})"
             reset_fn(msgStr)
+            return
 
         elif attr == 'sig_save_file':
             if val == '':
@@ -3073,7 +3058,7 @@ class RtpApp(RTP):
         self.ui_showROISig_cbx.setCheckState(0)
         self.ui_showROISig_cbx.stateChanged.connect(
                         lambda x: self.show_ROIsig_chk(x))
-        # This checkbox will be placed by RTP_UI.layout_ui
+        # This checkbox will be placed by RtpGUI.layout_ui
 
         # --- Ready and Quit buttons ------------------------------------------
         readyQuitWdt = QtWidgets.QWidget()
@@ -3096,8 +3081,7 @@ class RtpApp(RTP):
         # -- Manual start button --
         self.ui_manStart_btn = QtWidgets.QPushButton('Manual start')
         self.ui_manStart_btn.setStyleSheet("background-color: rgb(94,63,153);")
-        self.ui_manStart_btn.clicked.connect(
-            self.rtp_objs['EXTSIG'].manual_start)
+        self.ui_manStart_btn.clicked.connect(self.manual_start)
         self.ui_manStart_btn.setEnabled(False)
         ui_readyQiut_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
 
@@ -3118,8 +3102,8 @@ class RtpApp(RTP):
                       'simCom_descs', 'mri_sim', 'brain_anat_orig',
                       'roi_sig', 'plt_xi', 'num_ROIs',
                       'roi_labels', 'enable_RTP', 'proc_times0',
-                      '_isRunning_end_run_proc', 'extApp_proc',
-                      'extApp_sock', 'prtime_keys', 'run_extApp',
+                      'extApp_proc', 'extApp_sock', 'prtime_keys',
+                      'run_extApp', 'scan_onset',
                       'sim_isRunning', 'extApp_isAlive', 'ROI_resample_opts')
 
         for k in excld_opts:
@@ -3172,7 +3156,7 @@ class RtpApp(RTP):
 #     rtp_app = RtpApp()
 #     rtp_app.work_dir = work_dir
 
-#     # --- Make mask images ----------------------------------------------------
+#     # --- Make mask images --------------------------------------------------
 #     no_FastSeg = False
 #     if not no_FastSeg:
 #         rtp_app.fastSeg_batch_size = 1  # Adjust the size for GPU memory
@@ -3184,7 +3168,7 @@ class RtpApp(RTP):
 
 #     rtp_app.check_onAFNI('anat', 'func')
 
-#     # --- Setup RTP -----------------------------------------------------------
+#     # --- Setup RTP ---------------------------------------------------------
 #     # Prepare watch dir
 #     watch_dir = test_dir / 'watch_test_tmp'
 #     if not watch_dir.is_dir():
@@ -3216,7 +3200,8 @@ class RtpApp(RTP):
 #                              'ref_time': 0},
 #                   'SMOOTH': {'blur_fwhm': 6.0},
 #                   'REGRESS': {'max_poly_order': np.inf, 'mot_reg': 'mot12',
-#                               'GS_reg': True, 'WM_reg': True, 'Vent_reg': True,
+#                               'GS_reg': True, 'WM_reg': True, 'Vent_reg':
+#                                True,
 #                               'phys_reg': 'RICOR8', 'wait_num': 45}}
 
 #     # RTP setup
@@ -3224,12 +3209,12 @@ class RtpApp(RTP):
 
 #     # Mask files made by make_masks() are automatically set in RTP_setup().
 
-#     # --- Load data -----------------------------------------------------------
+#     # --- Load data ---------------------------------------------------------
 #     img = nib.load(testdata_f)
 #     fmri_data = np.asanyarray(img.dataobj)
 #     N_vols = img.shape[-1]
 
-#     # --- Feed data to the do_proc chain (skip RtpWatch for debug) -----------
+#     # --- Feed data to the do_proc chain (skip RtpWatch for debug) ---------
 #     rtp_app.ready_to_run()
 #     rtp_app.rtp_objs['EXTSIG'].manual_start()
 #     for ii in range(N_vols):
@@ -3241,7 +3226,7 @@ class RtpApp(RTP):
 
 #     rtp_app.end_run()
 
-#     # --- Simulate scan (Copy data volume-by-volume) --------------------------
+#     # --- Simulate scan (Copy data volume-by-volume) ------------------------
 #     rtp_app.ready_to_run()
 #     rtp_app.rtp_objs['EXTSIG'].manual_start()
 #     next_tr = 2.0
@@ -3260,16 +3245,16 @@ class RtpApp(RTP):
 
 # %% __main__ =================================================================
 if __name__ == '__main__':
-    from rtpspy import RTP_UI
+    from rtpspy import RtpGUI
 
     app = QtWidgets.QApplication(sys.argv)
 
     # Make RtpApp instance
     rtp_app = RtpApp()
 
-    # Make RTP_UI instance
+    # Make RtpGUI instance
     app_obj = {'RTP App': rtp_app}
-    rtp_ui = RTP_UI(rtp_app.rtp_objs, app_obj, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_dir='./log')
 
     # Keep RTP objects for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs
@@ -3279,6 +3264,7 @@ if __name__ == '__main__':
     sys.excepthook = excepthook
     try:
         rtp_ui.show()
+        rtp_ui.show_physio_chk(2)
         exit_code = app.exec_()
 
     except Exception as e:

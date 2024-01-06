@@ -9,14 +9,14 @@ Model and controller classes:
     GEPhysioRecording:
         Recording cardiogram and respiration signals from a GE scanner's
         serial port.
-    RtPhysioRecoder:
+    RtPhysioRecorder:
         Interface for recording cardiogram and respiration signals using
         GEPhysioRecording as the backend.
     NumatoGPIORecoding
         REcording TTL signal from Numato Lab 8 Channel USB GPIO (
         https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
         ).
-    RtTTLRecoder:
+    RtTTLRecorder:
         Interface for recording TTL signal using NumatoGPIORecoding
         as the backend.
 
@@ -265,7 +265,7 @@ class TTLPhysioPlot():
     def init_plot(self):
         self.plot_fig = Figure(figsize=(6, 4.2))
         self.canvas = FigureCanvasTkAgg(self.plot_fig, master=self._plt_win)
-        self._ax_ttl, self._ax_card, self._ax_resp, = \
+        self._ax_ttl, self._ax_card, self._ax_resp = \
             self.plot_fig.subplots(3, 1)
 
         self.plot_fig.subplots_adjust(
@@ -921,33 +921,33 @@ class RtSignalRecorder():
         shm.close()
 
         # Create recorder
-        self._recoder = NumatoGPIORecoding(
+        self._recorder = NumatoGPIORecoding(
             self._rbuf_names, sport, sample_freq, buf_len_sec,
             debug=debug, sim_data=sim_data)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
-        return self._recoder.get_config()
+        return self._recorder.get_config()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, conf):
-        self._recoder.set_config(conf)
+        self._recorder.set_config(conf)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_recording(self, restart=False):
-        self._recoder.start_recording(restart)
+        self._recorder.start_recording(restart)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
-        return self._recoder.is_recording()
+        return self._recorder.is_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_recording(self):
-        self._recoder.stop_recording()
+        self._recorder.stop_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_rbuf_prop(self):
-        return self._recoder.get_rbuf_prop()
+        return self._recorder.get_rbuf_prop()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_physio_data(self, onset=None, len_sec=None, fname_fmt='./{}.1D'):
@@ -1007,8 +1007,8 @@ class RtSignalRecorder():
             return None
 
         # Get data
-        with self._recoder.rbuf_lock:
-            buf_len = self._recoder.buf_len
+        with self._recorder.rbuf_lock:
+            buf_len = self._recorder.buf_len
             shm = shared_memory.SharedMemory(name='tstamp')
             timestamp = np.ndarray(buf_len, dtype=float, buffer=shm.buf).copy()
             shm.close()
@@ -1021,10 +1021,10 @@ class RtSignalRecorder():
             shm = shared_memory.SharedMemory(name='resp')
             resp = np.ndarray(buf_len, dtype=float, buffer=shm.buf).copy()
             shm.close()
-            # timestamp = self._recoder._rbuf['tstamp']._data.copy()
-            # ttl = self._recoder._rbuf['ttl']._data.copy()
-            # card = self._recoder._rbuf['card']._data.copy()
-            # resp = self._recoder._rbuf['resp']._data.copy()
+            # timestamp = self._recorder._rbuf['tstamp']._data.copy()
+            # ttl = self._recorder._rbuf['ttl']._data.copy()
+            # card = self._recorder._rbuf['card']._data.copy()
+            # resp = self._recorder._rbuf['resp']._data.copy()
 
         ttl = ttl[~np.isnan(timestamp)]
         card = card[~np.isnan(timestamp)]
@@ -1131,13 +1131,13 @@ class RtSignalRecorder():
         To return data other than str, pack_data() should be used.
         """
         if call == 'GET_RECORDING_PARMAS':
-            return pack_data((self.sample_freq, self._recoder.buf_len))
+            return pack_data((self.sample_freq, self._recorder.buf_len))
 
         elif call == 'WAIT_TTL_ON':
-            self._recoder.wait_ttl(True)
+            self._recorder.wait_ttl(True)
 
         elif call == 'CANCEL_WAIT_TTL':
-            self._recoder.wait_ttl(False)
+            self._recorder.wait_ttl(False)
 
         elif call == 'START_SCAN':
             self.is_scanning = True

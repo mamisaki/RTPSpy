@@ -272,7 +272,7 @@ class RtpWatch(RTP):
             if self.proc_start_idx < 0:
                 self.proc_start_idx = 0
 
-            fmri_img = self.dcm2nii(dcm)
+            fmri_img = self.dcm2nii(dcm, file_path)
 
             if self.nii_save_filename is None:
                 # Set save_filename
@@ -338,7 +338,7 @@ class RtpWatch(RTP):
             self.errmsg(errmsg, no_pop=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def dcm2nii(self, dcm):
+    def dcm2nii(self, dcm, file_path=None):
         """Comver dicom (Siemense XA30) to NIfTI
 
         Args:
@@ -373,7 +373,15 @@ class RtpWatch(RTP):
         img_pos = np.concatenate(
             [np.array(pos)[None, :] for pos in img_pos], axis=0)
 
-        pixel_array = dcm.pixel_array
+        while True:
+            try:
+                pixel_array = dcm.pixel_array
+                break
+            except Exception as e:
+                if file_path is not None:
+                    dcm = pydicom.dcmread(file_path)
+                else:
+                    raise e
 
         # --- Affine matrix of image to patient space (LPI) (mm) translation --
         F = np.reshape(img_ornt_pat, (2, 3)).T
