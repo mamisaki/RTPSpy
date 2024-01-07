@@ -878,16 +878,19 @@ class RtpPhysio(RTP):
         else:
             physFS = reasmple_phys_fs
 
-        res_t = np.arange(0, Nvol*TR+1.0, 1.0/physFS)
-        resp_res_f = interpolate.interp1d(tstamp, resp,
-                                          bounds_error=False)
-        Resp = resp_res_f(res_t)
-        Resp = Resp[~np.isnan(Resp)]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
 
-        card_res_f = interpolate.interp1d(tstamp, card,
-                                          bounds_error=False)
-        Card = card_res_f(res_t)
-        Card = Card[~np.isnan(Card)]
+            res_t = np.arange(0, Nvol*TR+1.0, 1.0/physFS)
+            resp_res_f = interpolate.interp1d(tstamp, resp,
+                                            bounds_error=False)
+            Resp = resp_res_f(res_t)
+            Resp = Resp[~np.isnan(Resp)]
+
+            card_res_f = interpolate.interp1d(tstamp, card,
+                                            bounds_error=False)
+            Card = card_res_f(res_t)
+            Card = Card[~np.isnan(Card)]
 
         retroTSReg = self._retrots.RetroTs(
             Resp, Card, TR, physFS, tshift, Nvol)

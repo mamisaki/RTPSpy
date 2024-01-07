@@ -114,7 +114,8 @@ class RtpRetroTS():
 
         # Find peaks
         fsi = 1.0 / self._phys_fs
-        t = np.arange(0, len(x)*fsi, fsi)
+        t = np.arange(0, (len(x)+1)*fsi, fsi)
+        t = t[:len(x)]
         img_chg = (x[:-1].imag * x[1:].imag)
         iz = np.nonzero(img_chg <= 0)[0]
         polall = -np.sign(x[:-1].imag - x[1:].imag)
@@ -144,6 +145,12 @@ class RtpRetroTS():
         npp = np.nonzero(pol < 0)[0]
         n_trace = pkp_[npp]
         tn_trace = tizp_[npp]
+
+        ntrace = min(len(p_trace), len(n_trace))
+        p_trace = p_trace[:ntrace]
+        tp_trace = tp_trace[:ntrace]
+        n_trace = n_trace[:ntrace]
+        tn_trace = tn_trace[:ntrace]
 
         # remove duplicates
         okflag = (np.diff(tp_trace) > 0.3) & (np.diff(tn_trace) != 0)
@@ -247,7 +254,7 @@ class RtpRetroTS():
                     tp_trace = np.append(tp_trace, trange[np.argmin(vals)])
 
         if len(rm_tp):
-            rmidx = np.argwhere([ttt in rm_tp for tt in tp_trace]).ravel()
+            rmidx = np.argwhere([tt in rm_tp for tt in tp_trace]).ravel()
             p_trace = np.delete(p_trace, rmidx)
             tp_trace = np.delete(tp_trace, rmidx)
 
