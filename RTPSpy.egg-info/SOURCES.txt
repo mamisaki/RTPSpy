@@ -21,9 +21,11 @@ rtpspy/rtp_app.py
 rtpspy/rtp_common.py
 rtpspy/rtp_dcm2nii.py
 rtpspy/rtp_ext_signal.py
+rtpspy/rtp_gui.py
 rtpspy/rtp_imgproc.py
 rtpspy/rtp_mrid.py
 rtpspy/rtp_physio.py
+rtpspy/rtp_physio0.py
 rtpspy/rtp_physio_dummy.py
 rtpspy/rtp_physio_gpio.py
 rtpspy/rtp_regress.py
@@ -33,7 +35,6 @@ rtpspy/rtp_serve.py
 rtpspy/rtp_sim.py
 rtpspy/rtp_smooth.py
 rtpspy/rtp_tshift.py
-rtpspy/rtp_ui.py
 rtpspy/rtp_volreg.py
 rtpspy/rtp_watch.py
 rtpspy/rtp_watch_SiemensXA30.py
