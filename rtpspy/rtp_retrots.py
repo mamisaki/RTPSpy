@@ -7,6 +7,7 @@ RTP retrots for making online RETROICOR regressors
 
 
 # %% import ===================================================================
+import warnings
 import numpy as np
 from scipy.signal import lfilter, firwin, hilbert, convolve
 
@@ -53,13 +54,16 @@ class RtpRetroTS():
         self._TR = TR
         self._slice_offset = tshift
 
-        # Find peaks
-        respiration_peak = self.peak_finder(
-            resp, self.respiration_cutoff_frequency)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
 
-        cardiac_peak = self.peak_finder(
-            card, self.respiration_cutoff_frequency,
-            detend_window=self.cardiac_detend_window)
+            # Find peaks
+            respiration_peak = self.peak_finder(
+                resp, self.respiration_cutoff_frequency)
+
+            cardiac_peak = self.peak_finder(
+                card, self.respiration_cutoff_frequency,
+                detend_window=self.cardiac_detend_window)
 
         # Phase estimate and create regressors
         resp_reg = self.phase_estimator(1, respiration_peak)
