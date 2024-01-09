@@ -22,7 +22,7 @@
             "justMyCode": false,
             "cwd": "${workspaceFolder}",
             "purpose":["debug-in-terminal"],
-            "args": ["--study_prefix", "P", "--study_ID_field", "PatientID"]
+            "args": ["--debug"]
         }
     ]
 }
