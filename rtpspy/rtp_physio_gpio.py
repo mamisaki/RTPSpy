@@ -40,7 +40,7 @@ from pathlib import Path
 import time
 import sys
 import traceback
-from multiprocessing import Lock, Pipe, Process, shared_memory
+from multiprocessing import Lock, Pipe, Process
 import re
 import tkinter as tk
 from tkinter import ttk
@@ -119,51 +119,20 @@ class RingBuffer:
     """ Shared memory array ring buffer """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, shm_name, max_size, dtype=float, initialize=np.nan):
+    def __init__(self, mmap_data):
         """_summary_
         Args:
             max_size (int): buffer size (number of elements)
         """
-        self.shm_name = shm_name
-        self.max_size = int(max_size)
-        self.dtype = dtype
+        self._data = mmap_data
+        self._max_size = len(mmap_data)
         self._cpos = 0
-
-        if not self._init_shared_memory(initialize):
-            return None
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _init_shared_memory(self, initialize):
-        # Create
-        size = self.max_size * np.dtype(self.dtype).itemsize
-        try:
-            shm = shared_memory.SharedMemory(
-                name=self.shm_name, create=True, size=size)
-        except FileExistsError:
-            shm = shared_memory.SharedMemory(name=self.shm_name)
-            shm.close()
-            shm.unlink()
-            shm = shared_memory.SharedMemory(
-                name=self.shm_name, create=True, size=size)
-
-        data = np.ndarray(self.max_size, dtype=self.dtype, buffer=shm.buf)
-        data[:] = initialize
-
-        shm.close()
-
-        # self._data = np.ones(self.max_size, dtype=self.dtype) * initialize
-
-        return True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def append(self, x):
         """ Append an element """
         try:
-            shm = shared_memory.SharedMemory(name=self.shm_name)
-            data = np.ndarray(self.max_size, dtype=float, buffer=shm.buf)
-            data[self._cpos] = x
-            shm.close()
-            # self._data[self._cpos] = x
+            self._data[self._cpos] = x
             self._cpos = (self._cpos+1) % self.max_size
 
         except Exception:
@@ -176,11 +145,7 @@ class RingBuffer:
     def get(self):
         """ return list of elements in correct order """
         try:
-            shm = shared_memory.SharedMemory(name=self.shm_name)
-            data = np.ndarray(
-                self.max_size, dtype=float, buffer=shm.buf).copy()
-            shm.close()
-            # data = self._data
+            data = self._data
             return np.concatenate([data[self._cpos:], data[:self._cpos]])
 
         except Exception:
@@ -189,16 +154,6 @@ class RingBuffer:
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
             sys.stderr.write(errstr)
             return None
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __del__(self):
-        try:
-            shm = shared_memory.SharedMemory(name=self.shm_name)
-            shm.close()
-            shm.unlink()
-            pass
-        except FileNotFoundError:
-            pass
 
 
 # %% TTLPhysioPlot ============================================================
@@ -862,7 +817,7 @@ class NumatoGPIORecoding():
     def get_rbuf_prop(self):
         rbuf_prop = {}
         for k, rbuf in self._rbuf.items():
-            rbuf_prop[k] = {'shm_name': rbuf.shm_name,
+            rbuf_prop[k] = {'mmap_f': rbuf.mmap_f,
                             'max_size': rbuf.max_size,
                             'dtype': rbuf.dtype}
 
