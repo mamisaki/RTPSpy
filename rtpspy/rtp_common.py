@@ -20,6 +20,7 @@ import pickle
 import time
 import traceback
 import socket
+import logging
 
 import nibabel as nib
 import numpy as np
@@ -41,7 +42,7 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ignore_init=0, next_proc=None, save_proc=False,
                  online_saving=False, save_delay=False, work_dir='',
-                 max_scan_length=300, main_win=None, verb=True, **kwargs):
+                 max_scan_length=300, main_win=None, **kwargs):
 
         # Set arguments
         self.ignore_init = ignore_init
@@ -52,7 +53,6 @@ class RTP(object):
         self.work_dir = work_dir
         self.max_scan_length = max_scan_length
         self.main_win = main_win
-        self.verb = verb
 
         # Initialize parameters
         self.vol_num = -1
@@ -65,20 +65,13 @@ class RTP(object):
         self.saved_data = None
         self.enabled = True
 
+        self._logger = logging.getLogger(self.__class__.__name__)
         self._proc_ready = False
 
         self._std_out = sys.stdout
         self._err_out = sys.stderr
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    @property
-    def verb(self):
-        return self._verb
-
-    @verb.setter
-    def verb(self, verb):
-        self._verb = verb
-
     @property
     def std_out(self):
         return self._std_out
@@ -183,7 +176,7 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val, echo=True):
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
 
@@ -263,9 +256,8 @@ class RTP(object):
             save_dir.mkdir()
 
         nib.save(fmri_img, savefname)
-        if self._verb:
-            msg = f"Save data as {savefname}"
-            self.logmsg(msg)
+        msg = f"Save data as {savefname}"
+        self._logger.info(msg)
 
         return savefname
 
@@ -285,11 +277,11 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         opts = dict()
-        excld_opts = ('main_win', '_std_out', '_err_out', '_verb',
+        excld_opts = ('main_win', '_std_out', '_err_out',
                       'saved_files', 'proc_time', 'next_proc',
                       'vol_num', 'enabled', 'save_proc', '_proc_ready',
                       'save_delay', 'proc_delay', 'done_proc:', 'proc_data',
-                      'saved_data', 'max_scan_length', 'done_proc', '_verb',
+                      'saved_data', 'max_scan_length', 'done_proc',
                       'saved_data_affine', 'proc_start_idx', 'saved_filename',
                       'online_saving')
 
@@ -321,12 +313,12 @@ class RTP(object):
         """
 
         # --- Start message ---
-        if self._verb:
-            if self.main_win is not None:
-                self.logmsg("<B>Saving the processed data. Please wait ...")
-                QtWidgets.QApplication.instance().processEvents()
-            else:
-                self.logmsg("Saving the processed data. Please wait ...")
+        if self.main_win is not None:
+            self._logger.info(
+                "<B>Saving the processed data. Please wait ...")
+            QtWidgets.QApplication.instance().processEvents()
+        else:
+            self._logger.info("Saving the processed data. Please wait ...")
 
         # --- Set filename ---
         if len(saved_files):
@@ -363,18 +355,18 @@ class RTP(object):
         if len(saved_files):
             for ff in saved_files:
                 if Path(ff).is_file():
-                    if self._verb:
-                        self.logmsg(f'Delete {ff}')
+                    self._logger.info(f'Delete {ff}')
                     Path(ff).unlink()
 
         self.saved_filename = savefname
-        if self._verb:
-            self.logmsg(f"Done. Processed data is saved as {savefname}")
-            if self.main_win is not None:
-                QtWidgets.QApplication.instance().processEvents()
+        self._logger.info(f"Done. Processed data is saved as {savefname}")
+        if self.main_win is not None:
+            QtWidgets.QApplication.instance().processEvents()
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def logmsg(self, msg, ret_str=False, show_ui=True):
+        self._logger
+
         tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
         msg = "{}:[{}]: {}".format(tstr, self.__class__.__name__, msg)
         if ret_str:
@@ -389,19 +381,8 @@ class RTP(object):
             self._std_out.flush()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def errmsg(self, errmsg, ret_str=False, no_pop=False):
-        tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
-        msg = "{}:[{}]: !!! {}".format(tstr, self.__class__.__name__, errmsg)
-        if ret_str:
-            return msg
-
-        self._err_out.write(msg + '\n')
-        if hasattr(self._err_out, 'flush'):
-            self._err_out.flush()
-
-        # traceback.print_exc()
-
-        if self.main_win is not None and not no_pop:
+    def err_popup(self, errmsg):
+        if self.main_win is not None:
             # 'parent' cannot be self.main_win since this could be called by
             # other thread.
             msgBox = QtWidgets.QMessageBox()

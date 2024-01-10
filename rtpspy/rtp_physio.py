@@ -18,8 +18,10 @@ import logging
 import argparse
 import warnings
 import socket
+from datetime import datetime
 
 import numpy as np
+import pandas as pd
 import serial
 from serial.tools.list_ports import comports
 from scipy import interpolate
@@ -66,7 +68,7 @@ def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
     if data == 'ping':
         return True
 
-    if not rpc_send_data(sock, data, pkl=pkl):
+    if not rpc_send_data(sock, data, pkl=pkl, logger=logger):
         errmsg = f'Failed to send {data}'
         if logger:
             logger.error(errmsg)
@@ -75,7 +77,7 @@ def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
         return
 
     if get_return:
-        data = rpc_recv_data(sock)
+        data = rpc_recv_data(sock, logger=logger)
         if data is None:
             errmsg = f'Failed to recieve response to {data}'
             if logger:
@@ -247,21 +249,23 @@ class TTLPhysioPlot(QtCore.QObject):
                     exc_type, exc_obj, exc_tb = sys.exc_info()
                     errstr = ''.join(
                         traceback.format_exception(exc_type, exc_obj, exc_tb))
-                    self.logger.error(errstr)
+                    self._logger.error(errstr)
 
                 # Plot
                 # TTL
                 ttl = np.zeros_like(card)
                 ttl_onset = plt_data['ttl_onset']
                 ttl_onset = ttl_onset[~np.isnan(ttl_onset)]
-                ttl_onset = ttl_onset[(ttl_onset >= plt_xt[0]) &
-                                      (ttl_onset <= plt_xt[-1])]
-                ttl_onset = ttl_onset - plt_xt[0]
-                ttl_onset_idx = [int(np.round(ons * self.recorder.sample_freq))
-                                 for ons in ttl_onset]
-                ttl_onset_idx = ttl_onset_idx[(ttl_onset_idx >= 0) &
-                                              (ttl_onset_idx < len(ttl))]
-                ttl[ttl_onset_idx] = 1
+                if len(ttl_onset):
+                    ttl_onset = ttl_onset[(ttl_onset >= plt_xt[0]) &
+                                          (ttl_onset <= plt_xt[-1])]
+                    ttl_onset = ttl_onset - plt_xt[0]
+                    ttl_onset_idx = np.array([
+                        int(np.round(ons * self.recorder.sample_freq))
+                        for ons in ttl_onset], dtype=int)
+                    ttl_onset_idx = ttl_onset_idx[(ttl_onset_idx >= 0) &
+                                                  (ttl_onset_idx < len(ttl))]
+                    ttl[ttl_onset_idx] = 1
                 self._ln_ttl[0].set_ydata(ttl)
 
                 # Card
@@ -270,6 +274,11 @@ class TTLPhysioPlot(QtCore.QObject):
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     ymin = max(0, np.floor(np.nanmin(card) / 50) * 50)
                     ymax = min(1024, np.ceil(np.nanmax(card) / 50) * 50)
+                    if ymax - ymin < 50:
+                        if ymin + 50 < 1024:
+                            ymax = ymin + 50
+                        else:
+                            ymin = ymax - 50
                 self._ax_card.set_ylim((ymin, ymax))
 
                 # Resp
@@ -341,7 +350,7 @@ class NumatoGPIORecoding(QtCore.QObject):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, root, rbuf_names, sport, sample_freq=100,
-                 buf_len_sec=1800, verb=True, debug=False, sim_data=None):
+                 buf_len_sec=1800, debug=False, sim_data=None):
         """ Initialize real-time physio recordign class
         Set parameter values and list of serial ports.
 
@@ -354,20 +363,17 @@ class NumatoGPIORecoding(QtCore.QObject):
             This must be one of the items listed in SUPPORT_DEVS.
         buf_len_sec : float, optional
             Length (seconds) of signal recording buffer. The default is 1800s.
-        verb : bool, optional
-            Verbose flag to print log message. The default is True.
         """
         super().__init__()
 
         self.root = root
-        self.logger = logging.getLogger('GPIORecorder')
+        self._logger = logging.getLogger('GPIORecorder')
 
         # Set parameters
         self._rbuf_names = rbuf_names
         self.sample_freq = sample_freq
         self.buf_len_sec = buf_len_sec
         self.buf_len = int(buf_len_sec * self.sample_freq)
-        self.verb = verb
 
         # Get available serial ports
         self.dict_sig_sport = {}
@@ -397,10 +403,11 @@ class NumatoGPIORecoding(QtCore.QObject):
             self._sim_card, self._sim_resp = sim_data
             self._sim_data_pos = 0
 
-        self._ttl_rec_proc = None  # TTL recording process
-        self._ttl_onsets_que = Queue()
-        self._ttl_list = []
         self._read_lock = Lock()
+        self._rec_proc = None  # TTL recording process
+        self._ttl_onsets_que = Queue()
+        self._physio_que = Queue()
+
         self._scan_onset = 0
         self._cancel = False
 
@@ -414,7 +421,7 @@ class NumatoGPIORecoding(QtCore.QObject):
     def sig_sport(self, dev):
         if dev is not None:
             if dev not in self.dict_sig_sport:
-                self.logger.error(f"{dev} is not available.")
+                self._logger.error(f"{dev} is not available.")
                 dev = None
         self._sig_sport = dev
 
@@ -454,8 +461,7 @@ class NumatoGPIORecoding(QtCore.QObject):
             self._sig_ser.write(b"gpio clear 0\r")
 
         except serial.serialutil.SerialException:
-            if self.verb:
-                self.logger.error(f"Failed open {self._sig_sport}")
+            self._logger.error(f"Failed open {self._sig_sport}")
             self._sig_ser = None
             return False
 
@@ -463,12 +469,11 @@ class NumatoGPIORecoding(QtCore.QObject):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
-            self.logger.error(f"Failed to open {self._sig_sport}: {errstr}")
+            self._logger.error(f"Failed to open {self._sig_sport}: {errstr}")
             self._sig_ser = None
             return False
 
-        if self.verb:
-            self.logger.info(f"Open signal port {self._sig_sport}")
+        self._logger.info(f"Open signal port {self._sig_sport}")
 
         return True
 
@@ -498,17 +503,37 @@ class NumatoGPIORecoding(QtCore.QObject):
                     self.sig_sport = port
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _read_ttl(self, ttl_que, read_lock):
+    def _read_signal(self, read_lock, ttl_que, physio_que, phys_fs):
         ttl_state = 0
-
+        rec_interval = 1.0 / phys_fs
+        rec_delay = 0
+        next_rec = time.time() + rec_interval
+        st_physio_read = 0
+        tstamp_physio = None
         while True:
             with read_lock:
+                # Read TTL
                 self._sig_ser.reset_output_buffer()
                 self._sig_ser.reset_input_buffer()
                 self._sig_ser.write(b"gpio read 0\r")
-                resp = self._sig_ser.read(1024)
-                tstamp = time.time()
-            ma = re.search(r'gpio read 0\n\r(\d)\n', resp.decode())
+                resp0 = self._sig_ser.read(1024)
+                tstamp_ttl = time.time()
+
+                if time.time() >= next_rec-rec_delay:
+                    st_physio_read = time.time()
+                    self._sig_ser.reset_output_buffer()
+                    self._sig_ser.reset_input_buffer()
+                    # Card
+                    self._sig_ser.write(b"adc read 1\r")
+                    resp1 = self._sig_ser.read(25)
+                    # Resp
+                    self._sig_ser.write(b"adc read 2\r")
+                    resp2 = self._sig_ser.read(25)
+                    tstamp_physio = time.time()
+                else:
+                    tstamp_physio = None
+
+            ma = re.search(r'gpio read 0\n\r(\d)\n', resp0.decode())
             if ma:
                 sig = ma.groups()[0]
                 ttl = int(sig == '1')
@@ -516,59 +541,30 @@ class NumatoGPIORecoding(QtCore.QObject):
                 ttl = 0
 
             if ttl_state == 0 and ttl == 1:
-                ttl_que.put(tstamp)
-
+                ttl_que.put(tstamp_ttl)
             ttl_state = ttl
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _read_sig_port(self):
-        if self._sig_ser is None:
-            return 0
-
-        try:
-            with self._read_lock:
-                self._sig_ser.reset_output_buffer()
-                self._sig_ser.reset_input_buffer()
+            if tstamp_physio is not None:
                 # Card
-                self._sig_ser.write(b"adc read 1\r")
-                resp1 = self._sig_ser.read(25)
+                try:
+                    card = float(resp1.decode().split('\n\r')[1])
+                except Exception:
+                    card = np.nan
+
                 # Resp
-                self._sig_ser.write(b"adc read 2\r")
-                resp2 = self._sig_ser.read(25)
-                tstamp = time.time()
-        except Exception:
-            return 0
+                try:
+                    resp = float(resp2.decode().split('\n\r')[1])
+                except Exception:
+                    resp = np.nan
 
-        if not self._ttl_onsets_que.empty():
-            while not self._ttl_onsets_que.empty():
-                ttl_onset = self._ttl_onsets_que.get()
-                if self._wait_ttl_on:
-                    self.scan_onset(ttl_onset)
-                    self._wait_ttl_on = False
-                with self.rbuf_lock:
-                    self._rbuf['ttl_onset'].append(ttl_onset)
+                physio_que.put((tstamp_physio, card, resp))
 
-        if self._debug:
-            card = self._sim_card[self._sim_data_pos]
-            resp = self._sim_resp[self._sim_data_pos]
-            self._sim_data_pos = (self._sim_data_pos + 1) % len(self._sim_card)
-        else:
-            # Card
-            try:
-                card = float(resp1.decode().split('\n\r')[1])
-            except Exception:
-                card = np.nan
+                ct = time.time()
+                rec_delay = time.time() - st_physio_read
 
-            # Resp
-            try:
-                resp = float(resp2.decode().split('\n\r')[1])
-            except Exception:
-                resp = np.nan
-
-        with self.rbuf_lock:
-            self._rbuf['card'].append(card)
-            self._rbuf['resp'].append(resp)
-            self._rbuf['tstamp'].append(tstamp)
+                while next_rec-rec_delay < ct:
+                    next_rec += rec_interval
+            time.sleep(0.001)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def scan_onset(self, onset=None):
@@ -586,33 +582,39 @@ class NumatoGPIORecoding(QtCore.QObject):
         self._wait_ttl_on = False
         self.scan_onset(0)
 
-        # Start TTL reading process
-        self._ttl_rec_proc = Process(
-            target=self._read_ttl,
-            args=(self._ttl_onsets_que, self._read_lock))
-        self._ttl_rec_proc.start()
+        # Start reading process
+        self._rec_proc = Process(
+            target=self._read_signal,
+            args=(self._read_lock, self._ttl_onsets_que, self._physio_que,
+                  self.sample_freq))
+        self._rec_proc.start()
 
-        # Start the recording loop
-        rec_interval = 1.0 / self.sample_freq
-        rec_delay = 0
-        next_rec = time.time() + rec_interval
-
+        # Que reading loop
         while not self._cancel:
-            if time.time() >= next_rec-rec_delay:
-                st = time.time()
-                self._read_sig_port()
-                ct = time.time()
-                rec_delay = time.time() - st
+            if not self._ttl_onsets_que.empty():
+                while not self._ttl_onsets_que.empty():
+                    ttl_onset = self._ttl_onsets_que.get()
+                    if self._wait_ttl_on:
+                        self.scan_onset(ttl_onset)
+                        self._wait_ttl_on = False
+                    with self.rbuf_lock:
+                        self._rbuf['ttl_onset'].append(ttl_onset)
 
-                while next_rec-rec_delay < ct:
-                    next_rec += rec_interval
+            if not self._physio_que.empty():
+                while not self._physio_que.empty():
+                    tstamp, card, resp = self._physio_que.get()
+                    with self.rbuf_lock:
+                        self._rbuf['card'].append(card)
+                        self._rbuf['resp'].append(resp)
+                        self._rbuf['tstamp'].append(tstamp)
+            time.sleep(0.005)
 
         # Close serial port
         if self._sig_ser is not None and self._sig_ser.is_open:
             self._sig_ser.close()
 
-        self._ttl_rec_proc.kill()
-        self._ttl_rec_proc = None
+        self._rec_proc.kill()
+        self._rec_proc = None
         self.end_thread()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -652,13 +654,11 @@ class RtpPhysio(RTP):
             Frequency (Hz) of raw signal data. The default is 500.
         sport : str
             Serial port name. The default is None.
-        verb : bool, optional
-            Verbose flag to print log message. The default is True.
         """
         super().__init__(**kwargs)
         del self.work_dir
 
-        self.logger = logging.getLogger('RtGPIORecorder')
+        self._logger = logging.getLogger('RtGPIORecorder')
         self.buf_len_sec = buf_len_sec
         self.sample_freq = sample_freq
         self.is_scanning = False
@@ -704,7 +704,7 @@ class RtpPhysio(RTP):
         self._recTh.started.connect(self._recorder.run)
         self._recorder.finished.connect(self._recTh.quit)
         self._recTh.start()
-        self._recTh.setPriority(QtCore.QThread.TimeCriticalPriority)
+        # self._recTh.setPriority(QtCore.QThread.TimeCriticalPriority)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
@@ -736,7 +736,7 @@ class RtpPhysio(RTP):
         self._pltTh.started.connect(self.plot.run)
         self.plot.finished.connect(self._pltTh.quit)
         self._pltTh.start()
-        self._pltTh.setPriority(QtCore.QThread.LowPriority)
+        # self._pltTh.setPriority(QtCore.QThread.LowPriority)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
@@ -766,18 +766,42 @@ class RtpPhysio(RTP):
         else:
             offset = tstamp[-1]
 
+        # TTL
+        ttl_onset = data['ttl_onset']
+        ttl_onset = ttl_onset[~np.isnan(ttl_onset)]
+        ttl_onset = ttl_onset[(ttl_onset >= onset) & (ttl_onset < offset)]
+        ttl_onset = ttl_onset[ttl_onset < offset]
+        ttl_df = pd.DataFrame(columns=('DateTime', 'TimefromScanOnset'))
+        ttl_df['DateTime'] = [datetime.fromtimestamp(ons).isoformat()
+                              for ons in ttl_onset]
+        ttl_df['TimefromScanOnset'] = ttl_onset - onset
+        ttl_fname = Path(str(fname_fmt).format('TTL'))
+        ttl_fname = ttl_fname.parent / (ttl_fname.stem + '.csv')
+        ii = 0
+        while ttl_fname.is_file():
+            ii += 1
+            ttl_fname = ttl_fname.parent / (ttl_fname.stem + f"_{ii}" +
+                                            ttl_fname.suffix)
+        ttl_df.to_csv(ttl_fname)
+
         dataMask = (tstamp >= onset) & (tstamp <= offset) & \
             np.logical_not(np.isnan(tstamp))
+        if dataMask.sum() == 0:
+            return
+
         save_card = data['card'][dataMask]
         save_resp = data['resp'][dataMask]
         tstamp = tstamp[dataMask]
 
         # Resample
-        ti = np.arange(onset, offset, 1.0/self.sample_freq)
-        f = interpolate.interp1d(tstamp, save_card, bounds_error=False)
-        save_card = f(ti)
-        f = interpolate.interp1d(tstamp, save_resp, bounds_error=False)
-        save_resp = f(ti)
+        try:
+            ti = np.arange(onset, offset, 1.0/self.sample_freq)
+            f = interpolate.interp1d(tstamp, save_card, bounds_error=False)
+            save_card = f(ti)
+            f = interpolate.interp1d(tstamp, save_resp, bounds_error=False)
+            save_resp = f(ti)
+        except Exception:
+            print(f"tstamp = {tstamp}")
 
         # Set filename
         card_fname = Path(str(fname_fmt).format(f'Card_{self.sample_freq}Hz'))
@@ -799,7 +823,7 @@ class RtpPhysio(RTP):
         np.savetxt(resp_fname, np.reshape(save_resp, [-1, 1]), '%.2f')
         np.savetxt(card_fname, np.reshape(save_card, [-1, 1]), '%.2f')
 
-        self.logger.info(f"Save physio data in {card_fname} and {resp_fname}")
+        self._logger.info(f"Save physio data in {card_fname} and {resp_fname}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):
@@ -894,9 +918,9 @@ class RtpPhysio(RTP):
 
             if int(np.nanmax(tstamp) // TR) < Nvol:
                 # ERROR: timeout
-                self.errmsg(
+                self._logger.error(
                     "Not received enough data to make RETROICOR regressors"
-                    f" for {timeout} s.", no_pop=True)
+                    f" for {timeout} s.")
                 return None
 
         dataMask = (tstamp >= -TR) & ~np.isnan(tstamp)
@@ -961,7 +985,6 @@ class RtpPhysio(RTP):
                 self.set_scan_onset_bkwd(TR)
 
             elif call[0] == 'SET_GEOMETRY':
-                print(call)
                 if self.plot is not None:
                     geometry = call[1]
                     self.plot.set_position(geometry)
@@ -992,6 +1015,8 @@ if __name__ == '__main__':
     # Parse arguments
     LOG_FILE = f'{Path(__file__).stem}.log'
     parser = argparse.ArgumentParser(description='RT physio')
+    parser.add_argument('--sample_freq', default=100,
+                        help='sampling frequency (Hz)')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
     parser.add_argument('--rpc_port', default=63212,
@@ -1018,7 +1043,7 @@ if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
     # recorder
-    if debug:
+    if False:  # debug:
         card_f = Path('/data/rt/S20240104150322/Card_500Hz_ser-12.1D')
         resp_f = Path('/data/rt/S20240104150322/Resp_500Hz_ser-12.1D')
         resp = np.loadtxt(resp_f)

@@ -35,12 +35,11 @@ class RtpImgProc(RTP):
     ROI_resample_opts = ['nearestNeighbor', 'linear', 'bSpline']
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, main_win=None, verb=True):
+    def __init__(self, main_win=None):
         super().__init__()  # call __init__() in RTP class
 
         # --- Initialize parameters -------------------------------------------
         self.main_win = main_win
-        self.verb = verb
 
         self.fastSeg_batch_size = 1
 
@@ -134,11 +133,13 @@ class RtpImgProc(RTP):
             if progress_bar is not None:
                 progress_bar.add_desc(ostr)
             else:
-                if self.verb:
-                    print(ostr)
+                print(ostr)
 
         except Exception:
-            self.errmsg(f"Failed execution:\n{cmd}")
+            errmsg = f"Failed execution:\n{cmd}"
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
+
             if hasattr(self, 'ui_procAnat_btn'):
                 self.ui_procAnat_btn.setEnabled(True)
             # if progress_bar is not None and progress_bar.isVisible():
@@ -174,8 +175,7 @@ class RtpImgProc(RTP):
                 if len(out0) and out0[-1] == '\n':
                     out += '\n'
 
-                if self.verb:
-                    print(out, end='')
+                print(out, end='')
 
             except subprocess.TimeoutExpired:
                 pass
@@ -184,9 +184,8 @@ class RtpImgProc(RTP):
                 break
 
         try:
-            if self.verb:
-                out = proc.stdout.read().decode()
-                print('\n'.join(out.splitlines()) + '\n')
+            out = proc.stdout.read().decode()
+            print('\n'.join(out.splitlines()) + '\n')
         except subprocess.TimeoutExpired:
             pass
 
@@ -251,9 +250,12 @@ class RtpImgProc(RTP):
         # Check error
         if ret != 0:
             if ret == -1:
-                self.logmsg(f"Cancel {msgTxt}")
+                self._logger.info(f"Cancel {msgTxt}")
             else:
-                self.errmsg(f"Failed in {msgTxt}")
+                errmsg = f"Failed in {msgTxt}"
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
+
             if hasattr(self, 'ui_procAnat_btn'):
                 self.ui_procAnat_btn.setEnabled(True)
 
@@ -299,8 +301,7 @@ class RtpImgProc(RTP):
                 'Brain extraction and WM/Vent segmentation')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         # Check if the result files exist.
         brain_anat_orig = work_dir / (out_prefix + '_Brain.nii.gz')
@@ -317,7 +318,7 @@ class RtpImgProc(RTP):
             in_f, prefix = fastSeg.prep_files(anat_orig,
                                               work_dir / out_prefix)
             subj_dir = prefix
-            
+
             # Spawn the process
             st = time.time()
             proc, fsSeg_mgz = fastSeg.run_seg_only(
@@ -335,10 +336,10 @@ class RtpImgProc(RTP):
                 return None
 
             # make_seg_images
-            show_proc_progress = lambda proc : self._show_proc_progress(
+            show_proc_progress = lambda proc: self._show_proc_progress(
                 proc, progress_bar, msgTxt='FastSeg image segnemtation',
                 total_ETA=total_ETA)
-            
+
             out_fs = fastSeg.make_seg_images(
                 in_f, fsSeg_mgz, prefix,
                 segs=['Brain', 'WM', 'Vent', 'aseg'],
@@ -346,7 +347,7 @@ class RtpImgProc(RTP):
 
             if out_fs is None:
                 return None
-            
+
             # Delete woring files
             if subj_dir.is_dir():
                 shutil.rmtree(subj_dir)
@@ -367,10 +368,9 @@ class RtpImgProc(RTP):
                     f"                    {wm_anat_orig}\n"
                     f"                    {vent_anat_orig}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing files: {brain_anat_orig}\n" +
-                          f"                    {wm_anat_orig}\n"
-                          f"                    {vent_anat_orig}\n")
+                print(f"Use existing files: {brain_anat_orig}\n" +
+                      f"                    {wm_anat_orig}\n"
+                      f"                    {vent_anat_orig}\n")
 
         return brain_anat_orig, wm_anat_orig, vent_anat_orig, aseg_anat_orig
 
@@ -413,8 +413,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Brain extraction')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         # Check if the result files exist.
         brain_anat_orig = work_dir / (out_prefix + '_Brain.nii.gz')
@@ -458,8 +457,7 @@ class RtpImgProc(RTP):
                 progress_bar.add_desc(
                     f"Use existing file: {brain_anat_orig}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing files: {brain_anat_orig}\n")
+                print(f"Use existing files: {brain_anat_orig}\n")
 
         assert brain_anat_orig.is_file(), "Failed in skullStrip."
 
@@ -503,8 +501,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Align anat to func')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         brain_anat_orig = Path(brain_anat_orig)
         suffs = brain_anat_orig.suffixes
@@ -561,8 +558,7 @@ class RtpImgProc(RTP):
                 progress_bar.set_value(bar_val0+bar_inc)
                 progress_bar.add_desc(f"Use existing file: {alAnat}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing file: {alAnat}\n")
+                print(f"Use existing file: {alAnat}\n")
 
         return alAnat
 
@@ -612,8 +608,10 @@ class RtpImgProc(RTP):
                                     stderr=subprocess.STDOUT, cwd=work_dir)
             return proc
         except Exception as e:
-            self.errmsg(str(e)+'\n')
-            self.errmsg("'{}' failed.".format(cmd))
+            errmsg = str(e)+'\n'
+            errmsg += f"'{cmd}' failed."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -628,8 +626,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt(f"Align {segname} to func")
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         prefix = seg_anat_f.name.replace(''.join(seg_anat_f.suffixes[-2:]), '')
         prefix = prefix.replace('+orig', '').replace('+tlrc', '')
@@ -695,8 +692,7 @@ class RtpImgProc(RTP):
                 progress_bar.add_desc(
                     f"Use existing file: {seg_al_f}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing file: {seg_al_f}\n")
+                print(f"Use existing file: {seg_al_f}\n")
 
         return seg_al_f
 
@@ -749,8 +745,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Make RTP mask')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         RTP_mask = work_dir / "RTP_mask.nii.gz"
         if not RTP_mask.is_file() or overwrite:
@@ -819,8 +814,7 @@ class RtpImgProc(RTP):
                 progress_bar.set_value(bar_val0 + bar_inc)
                 progress_bar.add_desc(f"Use existing file: {RTP_mask}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing file: {RTP_mask}\n")
+                print(f"Use existing file: {RTP_mask}\n")
 
         # --- Make GSR_mask ---------------------------------------------------
         # Print job description
@@ -830,8 +824,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Make GSR mask')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         GSR_mask = work_dir / 'GSR_mask.nii.gz'
         if not GSR_mask.is_file() or overwrite:
@@ -871,8 +864,7 @@ class RtpImgProc(RTP):
                 progress_bar.set_value(bar_val0 + bar_inc)
                 progress_bar.add_desc(f"Use existing file: {GSR_mask}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing file: {GSR_mask}\n")
+                print(f"Use existing file: {GSR_mask}\n")
 
         for rm_f in rm_fs:
             if rm_f.is_file():
@@ -891,8 +883,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('ANTs registraion')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         # --- Warp template to alAnat -----------------------------------------
         aff_f = work_dir / 'template2orig_0GenericAffine.mat'
@@ -943,8 +934,10 @@ class RtpImgProc(RTP):
                     'Failed at ANTs registration.\n'
 
             except Exception as e:
-                self.errmsg(str(e)+'\n')
-                self.errmsg("'{}' failed.".format(cmd))
+                errmsg = str(e)+'\n'
+                errmsg += "'{}' failed.".format(cmd)
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 return -1
 
             # Wait for the process to finish with showing the progress.
@@ -969,9 +962,8 @@ class RtpImgProc(RTP):
                     f"Use existing files: {aff_f}\n" +
                     f"                    {wrp_f}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing files: {aff_f}\n" +
-                          f"                    {wrp_f}\n")
+                print(f"Use existing files: {aff_f}\n" +
+                      f"                    {wrp_f}\n")
 
         warp_params = [str(wrp_f), str(aff_f)]
         return warp_params
@@ -1023,8 +1015,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Apply Warp')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         warped_f = work_dir / \
             Path(move_f).name.replace('.nii', '_inOrig.nii')
@@ -1059,8 +1050,10 @@ class RtpImgProc(RTP):
                     shlex.split(cmd), stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=work_dir)
             except Exception as e:
-                self.errmsg(str(e)+'\n')
-                self.errmsg("'{}' failed.".format(cmd))
+                errmsg = str(e)+'\n'
+                errmsg += "'{}' failed.".format(cmd)
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 return None
 
             assert proc.returncode is None or proc.returncode == 0, \
@@ -1092,8 +1085,7 @@ class RtpImgProc(RTP):
                 progress_bar.add_desc(
                     f"Use existing file: {warped_f}\n\n")
             else:
-                if self.verb:
-                    print(f"Use existing file: {warped_f}\n")
+                print(f"Use existing file: {warped_f}\n")
 
         # Clean rm.* files
         for rmf in work_dir.glob('rm*'):

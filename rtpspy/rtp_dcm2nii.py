@@ -408,7 +408,7 @@ class RtpDcm2Nii:
 
         # Set physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
-        if 'FMRI' in imageType:
+        if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
             if call_rt_physio(self.rtp_physio_address, 'ping'):
                 call_rt_physio(self.rtp_physio_address, 'START_SCAN')
                 call_rt_physio(self.rtp_physio_address,
@@ -428,7 +428,7 @@ class RtpDcm2Nii:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._save_physio and self._NVol > 2 and \
+                if self._save_physio and \
                         call_rt_physio(self.rtp_physio_address, 'ping'):
                     call_rt_physio(self.rtp_physio_address, 'END_SCAN')
                     # Save physio data
@@ -467,6 +467,7 @@ class RtpDcm2Nii:
                 self._TR = None
                 self._last_proc_f = None
                 self._last_dicom_header = None
+                self._NVol = 0
 
             except Exception:
                 exc_type, exc_obj, exc_tb = sys.exc_info()

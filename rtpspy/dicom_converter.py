@@ -52,26 +52,32 @@ class DicomConverter():
             if not dicom_dst.is_dir():
                 os.makedirs(dicom_dst)
 
-            # Copy files to tmp and dicom_dst
-            tmp_dicom_dir = Path('/tmp') / dicom_dir.name
-            cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
-            subprocess.check_call(shlex.split(cmd))
+                # Copy files to tmp and dicom_dst
+                tmp_dicom_dir = Path('/tmp') / dicom_dir.name
 
-            cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
-            subprocess.check_call(shlex.split(cmd))
+                try:
+                    cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
+                    subprocess.check_call(shlex.split(cmd))
 
-            # Clean the source files
-            shutil.rmtree(dicom_dir)
+                    cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
+                    subprocess.check_call(shlex.split(cmd))
+                except Exception:
+                    pass
 
-            # Get the list of DICOM files
-            dcm_info = self._list_dicom_files(tmp_dicom_dir, out_dir)
+                if dicom_dir.is_dir():
+                    # Clean the source files
+                    shutil.rmtree(dicom_dir)
 
-            # Process files
-            self.convert_dicom(
-                dcm_info, tmp_dicom_dir, out_dir, make_brik=make_brik,
-                overwrite=overwrite)
+                if tmp_dicom_dir.is_dir():
+                    # Get the list of DICOM files
+                    dcm_info = self._list_dicom_files(tmp_dicom_dir, out_dir)
 
-            shutil.rmtree(tmp_dicom_dir)
+                    # Process files
+                    self.convert_dicom(
+                        dcm_info, tmp_dicom_dir, out_dir, make_brik=make_brik,
+                        overwrite=overwrite)
+
+                    shutil.rmtree(tmp_dicom_dir)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -123,7 +129,7 @@ class DicomConverter():
             # Append file info
             addrow = pd.Series()
             addrow['SOPInstanceUID'] = str(dcm.SOPInstanceUID)
-            addrow['Patient'] = str(dcm.PatientName).split('^')[0]
+            addrow['Patient'] = '_'.join(str(dcm.PatientName).split('^'))
             addrow['SeriesNumber'] = int(dcm.SeriesNumber)
             addrow['SeriesDescription'] = dcm.SeriesDescription
             addrow['AcquisitionDateTime'] = float(dcm.AcquisitionDateTime)
@@ -210,7 +216,11 @@ class DicomConverter():
 
                 if len(src_fs):
                     cmd = f"dcm2niix -m 1 -f {out_fname} -o {out_dir}"
-                    cmd += f" -w 1 -z y {tmpdir}"
+                    if overwrite:
+                        cmd += " -w 1"
+                    else:
+                        cmd += " -w 2"
+                    cmd += f" -z y {tmpdir}"
                     try:
                         proc = subprocess.Popen(
                             shlex.split(cmd), stdout=subprocess.PIPE,

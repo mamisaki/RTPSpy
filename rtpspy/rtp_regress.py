@@ -231,7 +231,9 @@ class RtpRegress(RTP):
             if torch.cuda.is_available():
                 self.device = 'cuda'
             else:
-                self.errmsg("CUDA device is not available.")
+                errmsg = "CUDA device is not available."
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 self.device = 'cpu'
         else:
             self.device = 'cpu'
@@ -241,20 +243,28 @@ class RtpRegress(RTP):
         self._proc_ready = True
 
         if self.TR is None:
-            self.errmsg('TR is not set.')
+            errmsg = 'TR is not set.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             self._proc_ready = False
 
         if self.mot_reg != 'None' and self.volreg is None:
-            self.errmsg('RtpVolreg object is not set.')
+            errmsg = 'RtpVolreg object is not set.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             self._proc_ready = False
 
         if self.phys_reg != 'None':
             if self.rtp_physio is None:
-                self.errmsg('RtpPhysio object is not set.')
+                errmsg = 'RtpPhysio object is not set.'
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 self._proc_ready = False
 
         if self.desMtx0 is None and self.max_scan_length is None:
-            self.errmsg('Either design matrix or max scanlength must be set.')
+            errmsg = 'Either design matrix or max scanlength must be set.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             self._proc_ready = False
 
         if self.next_proc:
@@ -299,26 +309,27 @@ class RtpRegress(RTP):
             if self.maskV is None:
                 # Make mask with the first received volume
                 self.set_mask(dataV)
-                if self._verb:
-                    msg = f"Mask is set with a volume index {vol_idx}."
-                    self.logmsg(msg)
+                msg = f"Mask is set with a volume index {vol_idx}."
+                self._logger.info(msg)
 
             # Read global signal mask
             if self.GS_reg and self.GS_maskdata is None:
                 if Path(self.GS_mask).is_file():
                     GSimg = nib.load(self.GS_mask)
                     if not np.all(dataV.shape == GSimg.shape):
-                        errstr = f"GS mask shape {GSimg.shape} !="
-                        errstr += " function image shape"
-                        errstr += f" {dataV.shape}"
-                        self.errmsg(errstr, no_pop=True)
+                        errmsg = f"GS mask shape {GSimg.shape} !="
+                        errmsg += " function image shape"
+                        errmsg += f" {dataV.shape}"
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
                         return
                     else:
                         self.GS_maskdata = (GSimg.get_fdata() != 0)[self.maskV]
                 else:
-                    errstr = f"Not found GS_mask file {self.GS_mask}"
-                    self.errmsg(errstr, no_pop=True)
-                    self.errmsg("GS_reg is reset to False.", no_pop=True)
+                    errmsg = f"Not found GS_mask file {self.GS_mask}"
+                    self._logger.error(errmsg)
+                    self._logger.error("GS_reg is reset to False.")
+                    self.err_popup(errmsg)
                     return
 
             # Read WM mask
@@ -326,16 +337,18 @@ class RtpRegress(RTP):
                 if Path(self.WM_mask).is_file():
                     WMimg = nib.load(self.WM_mask)
                     if not np.all(dataV.shape == WMimg.shape):
-                        errstr = f"WM mask shape {WMimg.shape} !="
-                        errstr += " function image shape"
-                        errstr += f" {dataV.shape}"
-                        self.errmsg(errstr, no_pop=True)
+                        errmsg = f"WM mask shape {WMimg.shape} !="
+                        errmsg += " function image shape"
+                        errmsg += f" {dataV.shape}"
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
                         return
                     else:
                         self.WM_maskdata = (WMimg.get_fdata() != 0)[self.maskV]
                 else:
-                    errstr = f"Not found WM_mask file {self.WM_mask}"
-                    self.errmsg(errstr, no_pop=True)
+                    errmsg = f"Not found WM_mask file {self.WM_mask}"
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     return
 
             # Read ventricle mask
@@ -343,17 +356,19 @@ class RtpRegress(RTP):
                 if Path(self.Vent_mask).is_file():
                     Ventimg = nib.load(self.Vent_mask)
                     if not np.all(dataV.shape == Ventimg.shape):
-                        errstr = f"Vet mask shape {Ventimg.shape} !="
-                        errstr += " function image shape"
-                        errstr += f" {dataV.shape}"
-                        self.errmsg(errstr, no_pop=True)
+                        errmsg = f"Vet mask shape {Ventimg.shape} !="
+                        errmsg += " function image shape"
+                        errmsg += f" {dataV.shape}"
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
                         return
                     else:
                         self.Vent_maskdata = \
                             (Ventimg.get_fdata() != 0)[self.maskV]
                 else:
-                    errstr = f"Not found Vent_mask file {self.Vent_mask}"
-                    self.errmsg(errstr, no_pop=True)
+                    errmsg = f"Not found Vent_mask file {self.Vent_mask}"
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     return
 
             # Initialize design matrix
@@ -382,16 +397,19 @@ class RtpRegress(RTP):
                 try:
                     self.YMtx = self.YMtx.to(self.device)
                 except Exception as e:
-                    self.errmsg(str(e), no_pop=True)
+                    self._logger.error(str(e))
                     if self.device == 'cuda':
-                        self.errmsg("Failed to keep GPU memory for Y.",
-                                    no_pop=True)
+                        errmsg = "Failed to keep GPU memory for Y."
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
                         self.onGPU = False  # self.device is changed to 'cpu'
                         self.desMtx = self.desMtx.to(self.device)
                         self.YMtx = self.YMtx.to(self.device)
                     else:
-                        self.errmsg("Failed to keep memory for Y.")
-                        raise e
+                        errmsg = "Failed to keep memory for Y."
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
+                    raise e
 
             # --- Update data -------------------------------------------------
             # Y matrix
@@ -451,10 +469,9 @@ class RtpRegress(RTP):
 
             # --- If the number of samples is not enough, retrun --------------
             if self.vol_num+1 < self.wait_num:
-                if self._verb:
-                    wait_idx = self.proc_start_idx+self.wait_num-1
-                    msg = f"Wait until volume #{wait_idx}"
-                    self.logmsg(msg)
+                wait_idx = self.proc_start_idx+self.wait_num-1
+                msg = f"Wait until volume #{wait_idx}"
+                self._logger.info(msg)
                 return
 
             # --- Update retroicor regressors ---------------------------------
@@ -462,8 +479,8 @@ class RtpRegress(RTP):
                 retrots = self.rtp_physio.get_retrots(
                     self.TR, vol_idx+1, self.tshift, timeout=self.TR)
                 if retrots is None:
-                    self.errmsg("RETROTS regressors cannot be made.",
-                                no_pop=True)
+                    errmsg = "RETROTS regressors cannot be made."
+                    self._logger.error(errmsg)
                     return
 
                 retrots = retrots[self.proc_start_idx:, :]
@@ -522,12 +539,11 @@ class RtpRegress(RTP):
                 # Process (and save) the previous volumes retrospectively.
                 Resids = Yp[:, self.Y_mean_mask] - Yh
 
-                if self._verb:
-                    vi0 = vol_idx - (Resids.shape[0]-1)
-                    vilast = vol_idx - 1
-                    msg = f"Regression is done for {vi0}-{vilast}"
-                    msg += ", retrospectively."
-                    self.logmsg(msg)
+                vi0 = vol_idx - (Resids.shape[0]-1)
+                vilast = vol_idx - 1
+                msg = f"Regression is done for {vi0}-{vilast}"
+                msg += ", retrospectively."
+                self._logger.info(msg)
 
                 # Save filename template
                 save_name_temp = Path(fmri_img.get_filename()).name
@@ -584,13 +600,12 @@ class RtpRegress(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, Regression is done for {f}'
-                if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f'#{vol_idx}, Regression is done for {f}'
+            if pre_proc_time is not None:
+                msg += f' (took {proc_delay:.4f}s)'
+            msg += '.'
+            self._logger.info(msg)
 
             # Set filename
             fmri_img.set_filename('regRes.' +
@@ -621,15 +636,14 @@ class RtpRegress(RTP):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
                      f':{exc_tb.tb_lineno}'
-            self.errmsg(errmsg, no_pop=True)
+            self._logger.error(errmsg)
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
 
-        if self.verb:
-            self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         if not isinstance(self.mask_file, string_types) and \
                 not isinstance(self.mask_file, Path):
@@ -650,13 +664,14 @@ class RtpRegress(RTP):
     def set_mask(self, maskdata, sub_i=0, method='zero_out'):
         if isinstance(maskdata, string_types) or isinstance(maskdata, Path):
             if not Path(maskdata).is_file():
-                self.errmsg(f"Not found mask file: {maskdata}")
+                errmsg = f"Not found mask file: {maskdata}"
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 self.mask_file = 0
                 return
 
-            if self._verb:
-                msg = f"Mask = {maskdata}"
-                self.logmsg(msg)
+            msg = f"Mask = {maskdata}"
+            self._logger.info(msg)
             maskdata = np.squeeze(nib.load(maskdata).get_fdata())
 
             if maskdata.ndim > 3:
@@ -669,7 +684,9 @@ class RtpRegress(RTP):
     def setup_regressor_template(self, desMtx_read=None, max_scan_length=0,
                                  col_names_read=[]):
         if desMtx_read is None and max_scan_length == 0:
-            self.errmsg('Either desMtx or max_scan_length must be given.')
+            errmsg = 'Either desMtx or max_scan_length must be given.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         col_names = col_names_read.copy()
@@ -986,9 +1003,8 @@ class RtpRegress(RTP):
             wait_num = max(self.wait_num, min_wait_num)
 
         elif wait_num < min_wait_num:
-            if self._verb:
-                self.logmsg(f"Wait {min_wait_num} volumes"
-                            " (number of regressors + 1).")
+            self._logger.info(f"Wait {min_wait_num} volumes"
+                              " (number of regressors + 1).")
             wait_num = min_wait_num
 
         if wait_num != self.wait_num:
@@ -1430,19 +1446,16 @@ class RtpRegress(RTP):
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
 
-        elif attr == '_verb':
-            if hasattr(self, 'ui_verb_chb'):
-                self.ui_verb_chb.setChecked(val)
-
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                errmsg = f"{attr} is unrecognized parameter."
+                self._logger.error(errmsg)
                 return
 
         # -- Set value --
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print(f"{self.__class__.__name__}." + attr, '=',
                   getattr(self, attr))
 
@@ -1709,17 +1722,9 @@ class RtpRegress(RTP):
                 lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
-        # verb
-        self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
-        self.ui_verb_chb.setChecked(self.verb)
-        self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'verb', state > 0))
-        self.ui_objs.append(self.ui_verb_chb)
-
         chb_hLayout = QtWidgets.QHBoxLayout()
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
-        chb_hLayout.addWidget(self.ui_verb_chb)
         ui_rows.append((self.ui_retroProc_chb, chb_hLayout))
 
         return ui_rows
@@ -1789,7 +1794,7 @@ if __name__ == '__main__':
     # RTP_RETOTS and RTP_PHYSIO
     sample_freq = 40
     rtp_retrots = RtpRetroTS()
-   
+
     # RtpRegress
     rtp_regress = RtpRegress()
 

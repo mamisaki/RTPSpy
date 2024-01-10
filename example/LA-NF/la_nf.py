@@ -230,7 +230,7 @@ class LANF(RtpApp):
                     val_str += f"{vol_idx},{mean_sig:.6f}"
                     msg = f"NF {val_str};"
 
-                    self.send_extApp(msg.encode(), no_pop_err=True)
+                    self.send_extApp(msg.encode(), no_err_pop=True)
                     if self._verb:
                         self.logmsg(f"Sent '{msg}' to an external app")
 

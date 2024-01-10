@@ -78,7 +78,8 @@ class RtpTshift(RTP):
     def ready_proc(self):
         if self.slice_timing is None or self.TR is None:
             errmsg = "Slice timing is not set. "
-            self.errmsg(errmsg)
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             self._proc_ready = False
             return
 
@@ -105,8 +106,8 @@ class RtpTshift(RTP):
 
             # --- Initialize --------------------------------------------------
             if fmri_img.shape[self.slice_dim] != len(self.slice_timing):
-                self.errmsg('Slice timing array mismathces to data.',
-                            no_pop=True)
+                errmsg = 'Slice timing array mismathces to data.'
+                self._logger.error(errmsg)
                 return
 
             # Set the interpolation weights.
@@ -150,13 +151,12 @@ class RtpTshift(RTP):
                 self.pre_fmri_img.set_data_dtype = retro_shft_dataV.dtype
 
                 # log message
-                if self._verb:
-                    fname = Path(self.pre_fmri_img.get_filename()).name
-                    fname = fname.replace('.nii.gz', '')
-                    msg = f"#{vol_idx-1}, "
-                    msg += "Retrospective slice-timing correction"
-                    msg += f" is done for {fname}."
-                    self.logmsg(msg)
+                fname = Path(self.pre_fmri_img.get_filename()).name
+                fname = fname.replace('.nii.gz', '')
+                msg = f"#{vol_idx-1}, "
+                msg += "Retrospective slice-timing correction"
+                msg += f" is done for {fname}."
+                self._logger.info(msg)
 
                 # Set save_name
                 self.pre_fmri_img.set_filename(
@@ -212,13 +212,12 @@ class RtpTshift(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, Slice-timing correction is done for {f}'
-                if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f'#{vol_idx}, Slice-timing correction is done for {f}'
+            if pre_proc_time is not None:
+                msg += f' (took {proc_delay:.4f}s)'
+            msg += '.'
+            self._logger.info(msg)
 
             # Set filename
             fmri_img.set_filename('ts.' + Path(fmri_img.get_filename()).name)
@@ -248,15 +247,14 @@ class RtpTshift(RTP):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
                      f':{exc_tb.tb_lineno}'
-            self.errmsg(errmsg, no_pop=True)
+            self._logger.error(errmsg)
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
 
-        if self.verb:
-            self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         self.pre_data = []
 
@@ -341,26 +339,27 @@ class RtpTshift(RTP):
         notset_params = []
         if TR is not None:
             self.set_param('TR', TR)
-            self.logmsg(f'TR = {self.TR}')
+            self._logger.info(f'TR = {self.TR}')
         else:
             notset_params.append('TR')
 
         if len(slice_timing):
             self.set_param('slice_timing', slice_timing)
-            self.logmsg(f'slice_timing = {self.slice_timing}')
+            self._logger.info(f'slice_timing = {self.slice_timing}')
         else:
             notset_params.append('slice_timing')
 
         if slice_dim is not None:
             self.set_param('slice_dim', slice_dim)
-            self.logmsg(f'slice_dim = {self.slice_dim}')
+            self._logger.info(f'slice_dim = {self.slice_dim}')
         else:
             notset_params.append('slice_dim')
 
         if len(notset_params):
-            msg = ', '.join(notset_params)
-            msg += ' cannot be read.'
-            self.errmsg(msg)
+            errmsg = ', '.join(notset_params)
+            errmsg += ' cannot be read.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
 
         # set interpolation weight
         self._pre_culc_weight(vol_shape)
@@ -397,11 +396,15 @@ class RtpTshift(RTP):
         """
 
         if self.slice_timing is None or self.TR is None:
-            self.errmsg("slice timing is not set.")
+            errmsg = "slice timing is not set."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         if self.method not in ['linear', 'cubic']:
-            self.errmsg("{} is not supported.".format(self.method))
+            errmsg = f"{self.method} is not supported."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         # Set reference time
@@ -578,19 +581,16 @@ class RtpTshift(RTP):
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
 
-        elif attr == '_verb':
-            if hasattr(self, 'ui_verb_chb'):
-                self.ui_verb_chb.setChecked(val)
-
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                errmsg = f"{attr} is unrecognized parameter."
+                self._logger.error(errmsg)
                 return
 
         # -- Set value --
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
 
@@ -690,17 +690,9 @@ class RtpTshift(RTP):
                 lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
-        # verb
-        self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
-        self.ui_verb_chb.setChecked(self.verb)
-        self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'verb', state > 0))
-        self.ui_objs.append(self.ui_verb_chb)
-
         chb_hLayout = QtWidgets.QHBoxLayout()
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
-        chb_hLayout.addWidget(self.ui_verb_chb)
         ui_rows.append((None, chb_hLayout))
 
         return ui_rows
@@ -742,7 +734,6 @@ if __name__ == '__main__':
     # Create RtpTshift instance
     rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
-    rtp_tshift.verb = True
     rtp_tshift.ref_time = 0
 
     # Set slice timing from a sample data
@@ -752,7 +743,6 @@ if __name__ == '__main__':
     rtp_tshift.work_dir = work_dir
     rtp_tshift.save_proc = True
     rtp_tshift.save_delay = True
-    rtp_tshift.verb = True
 
     # Run tshift
     rtp_tshift.end_reset()
