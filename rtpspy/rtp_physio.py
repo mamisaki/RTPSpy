@@ -12,7 +12,8 @@ from pathlib import Path
 import time
 import sys
 import traceback
-from multiprocessing import Process, Lock, Queue
+from multiprocessing import Process, Lock, Queue, Pipe
+from threading import Thread
 import re
 import logging
 import argparse
@@ -93,16 +94,14 @@ class RingBuffer:
     """ Ring buffer """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, shm_name, max_size, dtype=float, initialize=np.nan):
+    def __init__(self, mmap_data):
         """_summary_
         Args:
             max_size (int): buffer size (number of elements)
         """
-        self.shm_name = shm_name
-        self.max_size = int(max_size)
-        self.dtype = dtype
+        self._max_size = len(mmap_data)
         self._cpos = 0
-        self._data = np.ones(self.max_size, dtype=self.dtype) * initialize
+        self._data = mmap_data
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def append(self, x):
@@ -333,7 +332,7 @@ class TTLPhysioPlot(QtCore.QObject):
 
 
 # %% NumatoGPIORecoding class ========================================
-class NumatoGPIORecoding(QtCore.QObject):
+class NumatoGPIORecoding():
     """
     Receiving signal in USB GPIO device, Numato Lab 8 Channel USB GPIO (
     https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
@@ -346,7 +345,6 @@ class NumatoGPIORecoding(QtCore.QObject):
     """
     SUPPORT_DEVICES = ['CDC RS-232 Emulation Demo',
                        'Numato Lab 8 Channel USB GPIO']
-    finished = QtCore.pyqtSignal()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, root, rbuf_names, sport, sample_freq=100,
@@ -364,8 +362,6 @@ class NumatoGPIORecoding(QtCore.QObject):
         buf_len_sec : float, optional
             Length (seconds) of signal recording buffer. The default is 1800s.
         """
-        super().__init__()
-
         self.root = root
         self._logger = logging.getLogger('GPIORecorder')
 
@@ -389,21 +385,21 @@ class NumatoGPIORecoding(QtCore.QObject):
                 self.sig_sport = None
         self._sig_ser = None
 
-        # Initialize data buffers
         self.rbuf_lock = Lock()
-        self.rec_proc = None  # recording process
         self._rbuf = {}
         with self.rbuf_lock:
             for buf in self._rbuf_names:
-                self._rbuf[buf] = RingBuffer(self._rbuf_names[buf],
-                                             self.buf_len)
+                mmap_f = Path('/dev/shm') / buf
+                mmap_data = np.memmap(mmap_f, dtype=float, mode='w+', shape=(self.buf_len,))
+                mmap_data[:] = np.nan
+                mmap_data.flush()
+                self._rbuf[buf] = RingBuffer(mmap_data)
 
         self._debug = debug
         if debug:
             self._sim_card, self._sim_resp = sim_data
             self._sim_data_pos = 0
 
-        self._read_lock = Lock()
         self._rec_proc = None  # TTL recording process
         self._ttl_onsets_que = Queue()
         self._physio_que = Queue()
@@ -503,7 +499,7 @@ class NumatoGPIORecoding(QtCore.QObject):
                     self.sig_sport = port
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _read_signal(self, read_lock, ttl_que, physio_que, phys_fs):
+    def _read_signal(self, ttl_que, physio_que, phys_fs):
         ttl_state = 0
         rec_interval = 1.0 / phys_fs
         rec_delay = 0
@@ -511,27 +507,26 @@ class NumatoGPIORecoding(QtCore.QObject):
         st_physio_read = 0
         tstamp_physio = None
         while True:
-            with read_lock:
-                # Read TTL
+            # Read TTL
+            self._sig_ser.reset_output_buffer()
+            self._sig_ser.reset_input_buffer()
+            self._sig_ser.write(b"gpio read 0\r")
+            resp0 = self._sig_ser.read(1024)
+            tstamp_ttl = time.time()
+
+            if time.time() >= next_rec-rec_delay:
+                st_physio_read = time.time()
                 self._sig_ser.reset_output_buffer()
                 self._sig_ser.reset_input_buffer()
-                self._sig_ser.write(b"gpio read 0\r")
-                resp0 = self._sig_ser.read(1024)
-                tstamp_ttl = time.time()
-
-                if time.time() >= next_rec-rec_delay:
-                    st_physio_read = time.time()
-                    self._sig_ser.reset_output_buffer()
-                    self._sig_ser.reset_input_buffer()
-                    # Card
-                    self._sig_ser.write(b"adc read 1\r")
-                    resp1 = self._sig_ser.read(25)
-                    # Resp
-                    self._sig_ser.write(b"adc read 2\r")
-                    resp2 = self._sig_ser.read(25)
-                    tstamp_physio = time.time()
-                else:
-                    tstamp_physio = None
+                # Card
+                self._sig_ser.write(b"adc read 1\r")
+                resp1 = self._sig_ser.read(25)
+                # Resp
+                self._sig_ser.write(b"adc read 2\r")
+                resp2 = self._sig_ser.read(25)
+                tstamp_physio = time.time()
+            else:
+                tstamp_physio = None
 
             ma = re.search(r'gpio read 0\n\r(\d)\n', resp0.decode())
             if ma:
@@ -583,11 +578,11 @@ class NumatoGPIORecoding(QtCore.QObject):
         self.scan_onset(0)
 
         # Start reading process
-        self._rec_proc = Process(
+        _read_proc = Process(
             target=self._read_signal,
-            args=(self._read_lock, self._ttl_onsets_que, self._physio_que,
+            args=(self._ttl_onsets_que, self._physio_que,
                   self.sample_freq))
-        self._rec_proc.start()
+        _read_proc.start()
 
         # Que reading loop
         while not self._cancel:
@@ -613,9 +608,8 @@ class NumatoGPIORecoding(QtCore.QObject):
         if self._sig_ser is not None and self._sig_ser.is_open:
             self._sig_ser.close()
 
-        self._rec_proc.kill()
-        self._rec_proc = None
-        self.end_thread()
+        _read_proc.kill()
+        _read_proc = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop(self):
@@ -628,10 +622,6 @@ class NumatoGPIORecoding(QtCore.QObject):
             self.scan_onset(0)
         else:
             self._wait_ttl_on = False
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def end_thread(self):
-        self.finished.emit()
 
 
 # %% ==========================================================================
@@ -668,17 +658,20 @@ class RtpPhysio(RTP):
         self.socekt_srv = RPCSocketServer(rpc_port, self.RPC_handler,
                                           socket_name='RtpPhysioSocketServer')
 
+        # Initialize data array
         self._rbuf_names = {'ttl_onset': 'ttl_onset',
                             'card': 'card',
                             'resp': 'resp',
                             'tstamp': 'tstamp'}
 
-        self._retrots = RtpRetroTS()
-
         # Create recorder
         self._recorder = NumatoGPIORecoding(
             self, self._rbuf_names, sport, sample_freq, buf_len_sec,
             debug=debug, sim_data=sim_data)
+
+        self._rec_th = None  # recording thread
+        self._plot_proc = None  # plotting process
+        self._retrots = RtpRetroTS()
 
         # Start recording
         self.start_recording()
@@ -699,28 +692,20 @@ class RtpPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_recording(self, restart=False):
-        self._recTh = QtCore.QThread()
-        self._recorder.moveToThread(self._recTh)
-        self._recTh.started.connect(self._recorder.run)
-        self._recorder.finished.connect(self._recTh.quit)
-        self._recTh.start()
-        # self._recTh.setPriority(QtCore.QThread.TimeCriticalPriority)
+        self._rec_th = Thread(target=self._recorder.run)
+        self._rec_th.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
-        return hasattr(self, '_recTh') and self._recTh.isRunning()
+        return self._rec_th is not None and self._rec_proc.is_alive()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_recording(self):
         self.close_plot()
-
         if self.is_recording():
             self._recorder.stop()
-            if not self._recTh.wait(1):
-                self._recorder.finished.emit()
-                self._recTh.wait()
-
-            del self._recTh
+            self._rec_th.join()
+            self._rec_th = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(self, main_win=None, win_shape=(450, 450), plot_len_sec=10,
@@ -731,26 +716,23 @@ class RtpPhysio(RTP):
                 plot_len_sec=plot_len_sec, disable_close=disable_close)
 
         self.plot.show()
-        self._pltTh = QtCore.QThread()
-        self.plot.moveToThread(self._pltTh)
-        self._pltTh.started.connect(self.plot.run)
-        self.plot.finished.connect(self._pltTh.quit)
-        self._pltTh.start()
-        # self._pltTh.setPriority(QtCore.QThread.LowPriority)
+        self._plot_pipe, cmd_pipe = Pipe()
+        self._plot_proc = Process(target=self.plot.run, args=(cmd_pipe,))
+        self._plot_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
-        if not hasattr(self, '_pltTh') or \
-                not self._pltTh.isRunning():
+        if self._plot_proc is None or not self._plot_proc.is_alive():
             return
 
-        self.plot._cancel = True
-        self._pltTh.quit()
-        self._pltTh.wait()
+        self._plot_pipe.send('CLOSE')
+        self._plot_proc.join(3)
+        self._plot_proc.kill()
 
         del self.plot
         self.plot = None
-        del self._pltTh
+        del self._plot_pipe
+        self._plot_proc = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_physio_data(self, onset=None, len_sec=None, fname_fmt='./{}.1D'):
