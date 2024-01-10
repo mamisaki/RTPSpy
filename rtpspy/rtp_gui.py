@@ -14,15 +14,16 @@ from functools import partial
 import time
 from collections import OrderedDict
 import logging
+import sys
 
 import torch
 from PyQt5 import QtCore, QtWidgets, QtGui
 
 try:
-    from .rtp_common import LogDev, save_parameters, load_parameters
+    from .rtp_common import save_parameters, load_parameters
 
 except Exception:
-    from rtpspy.rtp_common import LogDev, save_parameters, load_parameters
+    from rtpspy.rtp_common import save_parameters, load_parameters
 
 GPU_available = torch.cuda.is_available()
 
@@ -31,7 +32,7 @@ GPU_available = torch.cuda.is_available()
 class RtpGUI(QtWidgets.QMainWindow):
     """ RtpGUI class """
 
-    def __init__(self, rtp_objs, rtp_apps, log_dir='./log',
+    def __init__(self, rtp_objs, rtp_apps, log_file=None,
                  winTitle='RTPSpy', onGPU=GPU_available):
         """
         Parameters
@@ -40,8 +41,8 @@ class RtpGUI(QtWidgets.QMainWindow):
             RTP objects given by RtpApp.rtp_objs.
         rtp_apps : TYPE, optional
             RtpApp or derived class object.
-        log_dir : str or Path, optional
-            Log directory. The default is './log'.
+        log_file : str or Path, optional
+            Log file. The default is None
         winTitle : str, optional
             WIndow title. The default is 'RTPSpy'.
         onGPU : bool, optional
@@ -77,10 +78,13 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.move(0, 0)
 
         # Set log
-        self.set_log_dev(log_dir)
+        self._log_fd = None
+        self._log_update_timer = QtCore.QTimer()
+        if log_file:
+            self.set_log(log_file)
 
         msg = "=== Start application ===\n"
-        self.print_log(msg)
+        self._logger.info(msg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_menu(self):
@@ -462,22 +466,66 @@ class RtpGUI(QtWidgets.QMainWindow):
         return 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_log_dev(self, log_dir):
-        log_dir = Path(log_dir).absolute()
-        if not log_dir.is_dir():
-            log_dir.mkdir()
+    def set_log(self, log_file):
+        # Open a log file to display in the window
+        self._log_f = Path(log_file).absolute()
 
-        logf = log_dir / f"log_rtpspy_{time.strftime('%Y-%m-%dT%H%M%S')}.txt"
+        # Wait for the log file is ready
+        st = time.time()
+        while not Path(self._log_f).is_file() and time.time() - st < 5:
+            time.sleep(0.5)
 
-        # fork log output to logf for all objects
-        log_dev = LogDev(fname=logf, ui_obj=self)
-        for obj in self.rtp_objs.values():
-            obj._std_out = log_dev
-            obj._err_out = log_dev
+        # Open log file
+        if self._log_f.is_file():
+            log_fd = open(self._log_f, 'r')
 
-        for obj in self.rtp_apps.values():
-            obj._std_out = log_dev
-            obj._err_out = log_dev
+            if log_fd is None:
+                sys.stderr.write(f"Failed to open {self._log_f}")
+            else:
+                self._log_fd = log_fd
+
+        # Set log update timer
+        self._log_update_timer.setInterval(333)
+        self._log_update_timer.timeout.connect(self.update_log_display)
+        self._log_update_timer.start()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def update_log_display(self):
+        if self._log_fd is None:
+            return
+
+        new_entries = self._log_fd.read()
+        if new_entries:
+            self.logOutput_txtEd.moveCursor(QtGui.QTextCursor.End)
+            log_lines = new_entries.split('\n')
+            for ii, log_line in enumerate(log_lines):
+                if ii != len(log_lines) - 1:
+                    add_line = log_line + '\n'
+                else:
+                    add_line = log_line
+
+                # Font Color
+                if '!!!' in add_line or 'ERROR' in add_line:
+                    # Red color
+                    self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
+                    add_line = add_line.replace('!!!', '')
+                else:
+                    self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
+
+                # Font weight
+                if '<B>' in add_line:
+                    # Bold face
+                    self.logOutput_txtEd.setFontWeight(QtGui.QFont.Bold)
+                    add_line = add_line.replace('<B>', '')
+                else:
+                    self.logOutput_txtEd.setFontWeight(QtGui.QFont.Normal)
+
+                # insert
+                self.logOutput_txtEd.insertPlainText(add_line)
+
+                # Move scroll bar
+                sb = self.logOutput_txtEd.verticalScrollBar()
+                sb.setValue(sb.maximum())
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_clicked_setOption(self, proc):
@@ -595,33 +643,6 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.listParam_txtBrws.setText(param_list)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def print_log(self, msg):
-        self.logOutput_txtEd.moveCursor(QtGui.QTextCursor.End)
-
-        # Font Color
-        if '!!!' in msg:
-            # Red color
-            self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
-            msg = msg.replace('!!!', '')
-        else:
-            self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
-
-        # Font weight
-        if '<B>' in msg:
-            # Bold face
-            self.logOutput_txtEd.setFontWeight(QtGui.QFont.Bold)
-            msg = msg.replace('<B>', '')
-        else:
-            self.logOutput_txtEd.setFontWeight(QtGui.QFont.Normal)
-
-        # insert
-        self.logOutput_txtEd.insertPlainText(msg)
-
-        # Move scroll bar
-        sb = self.logOutput_txtEd.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
         # Stop physio
         if 'PHYSIO' in self.rtp_objs and \
@@ -632,13 +653,11 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Move logfile to work_dir
         cpfnames = {}
         for rtp in list(self.rtp_objs.values()) + list(self.rtp_apps.values()):
-            if isinstance(rtp._std_out, LogDev) and \
-                    hasattr(rtp, 'work_dir') and \
+            if hasattr(rtp, '_log_f') and hasattr(rtp, 'work_dir') and \
                     os.path.realpath(rtp.work_dir) != os.getcwd():
-                logf = rtp._std_out.fname
+                logf = self._log_f
                 if logf not in cpfnames:
-                    cpfnames[logf] = os.path.join(rtp.work_dir,
-                                                  os.path.basename(logf))
+                    cpfnames[logf] = Path(rtp.work_dir) / logf.name
 
         for src_fname, dst_fname in cpfnames.items():
             if not Path(src_fname).is_file():

@@ -52,32 +52,33 @@ class DicomConverter():
             if not dicom_dst.is_dir():
                 os.makedirs(dicom_dst)
 
-                # Copy files to tmp and dicom_dst
-                tmp_dicom_dir = Path('/tmp') / dicom_dir.name
+            # Copy files to tmp and dicom_dst
+            tmp_dicom_dir = Path('/tmp') / dicom_dir.name
 
-                try:
-                    cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
-                    subprocess.check_call(shlex.split(cmd))
+            try:
+                cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
+                subprocess.check_call(shlex.split(cmd))
 
-                    cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
-                    subprocess.check_call(shlex.split(cmd))
-                except Exception:
-                    pass
+                cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
+                subprocess.check_call(shlex.split(cmd))
 
-                if dicom_dir.is_dir():
-                    # Clean the source files
-                    shutil.rmtree(dicom_dir)
+            except Exception:
+                return
 
-                if tmp_dicom_dir.is_dir():
-                    # Get the list of DICOM files
-                    dcm_info = self._list_dicom_files(tmp_dicom_dir, out_dir)
+            if dicom_dir.is_dir():
+                # Clean the source files
+                shutil.rmtree(dicom_dir)
 
-                    # Process files
-                    self.convert_dicom(
-                        dcm_info, tmp_dicom_dir, out_dir, make_brik=make_brik,
-                        overwrite=overwrite)
+            if tmp_dicom_dir.is_dir():
+                # Get the list of DICOM files
+                dcm_info = self._list_dicom_files(tmp_dicom_dir, out_dir)
 
-                    shutil.rmtree(tmp_dicom_dir)
+                # Process files
+                self.convert_dicom(
+                    dcm_info, tmp_dicom_dir, out_dir, make_brik=make_brik,
+                    overwrite=overwrite)
+
+                shutil.rmtree(tmp_dicom_dir)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()

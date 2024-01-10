@@ -11,7 +11,6 @@ from pathlib import Path
 import os
 import sys
 import re
-import datetime
 from datetime import timedelta
 import subprocess
 import shlex
@@ -277,16 +276,17 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         opts = dict()
-        excld_opts = ('main_win', '_std_out', '_err_out',
+        excld_opts = ('main_win',
                       'saved_files', 'proc_time', 'next_proc',
-                      'vol_num', 'enabled', 'save_proc', '_proc_ready',
+                      'vol_num', 'enabled', 'save_proc',
                       'save_delay', 'proc_delay', 'done_proc:', 'proc_data',
                       'saved_data', 'max_scan_length', 'done_proc',
                       'saved_data_affine', 'proc_start_idx', 'saved_filename',
                       'online_saving')
 
         for var_name, val in self.__dict__.items():
-            if var_name in excld_opts or 'ui_' in var_name or \
+            if var_name in excld_opts or var_name[0] == '_' or \
+                    'ui_' in var_name or \
                     isinstance(val, RTP) or \
                     isinstance(val, serial.Serial) or \
                     isinstance(val, QtCore.QThread):
@@ -363,22 +363,22 @@ class RTP(object):
         if self.main_win is not None:
             QtWidgets.QApplication.instance().processEvents()
 
-    # # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def logmsg(self, msg, ret_str=False, show_ui=True):
-        self._logger
+    # # # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # def logmsg(self, msg, ret_str=False, show_ui=True):
+    #     self._logger
 
-        tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
-        msg = "{}:[{}]: {}".format(tstr, self.__class__.__name__, msg)
-        if ret_str:
-            return msg
+    #     tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
+    #     msg = "{}:[{}]: {}".format(tstr, self.__class__.__name__, msg)
+    #     if ret_str:
+    #         return msg
 
-        if isinstance(self._std_out, LogDev):
-            self._std_out.write(msg + '\n', show_ui=show_ui)
-        else:
-            self._std_out.write(msg + '\n')
+    #     if isinstance(self._std_out, LogDev):
+    #         self._std_out.write(msg + '\n', show_ui=show_ui)
+    #     else:
+    #         self._std_out.write(msg + '\n')
 
-        if hasattr(self._std_out, 'flush'):
-            self._std_out.flush()
+    #     if hasattr(self._std_out, 'flush'):
+    #         self._std_out.flush()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_popup(self, errmsg):
@@ -440,8 +440,10 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
                     try:
                         obj.set_param(var_name, val)
                     except TypeError:
-                        print(obj)
-                        print(var_name, val)
+                        errmsg = "Error setting "
+                        errmsg += f"{obj.__class__.__name__}.{var_name}"
+                        errmsg += f" = {str(val)}"
+                        sys.stderr.write(errmsg)
 
     except Exception:
         exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -452,42 +454,42 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
 
 
 # %% LogDev ===================================================================
-class LogDev(QtCore.QObject):
-    write_log = QtCore.pyqtSignal(str)
+# class LogDev(QtCore.QObject):
+#     write_log = QtCore.pyqtSignal(str)
 
-    def __init__(self, fname=None, ui_obj=None):
-        super().__init__()
+#     def __init__(self, fname=None, ui_obj=None):
+#         super().__init__()
 
-        self.fname = fname
-        if fname is not None:
-            if fname == sys.stdout:
-                self.fd = fname
-            else:
-                self.fd = open(fname, 'a')
-        else:
-            self.fd = None
+#         self.fname = fname
+#         if fname is not None:
+#             if fname == sys.stdout:
+#                 self.fd = fname
+#             else:
+#                 self.fd = open(fname, 'a')
+#         else:
+#             self.fd = None
 
-        self.ui_obj = ui_obj
-        if self.ui_obj is not None:
-            self.write_log.connect(self.ui_obj.print_log)
+#         self.ui_obj = ui_obj
+#         if self.ui_obj is not None:
+#             self.write_log.connect(self.ui_obj.print_log)
 
-    def write(self, txt, show_ui=True):
-        if self.ui_obj is not None and show_ui:
-            # GUI handling across threads is not allowed. So logging from
-            # other threads (e.g., rtp thread by watchdog) must be called via
-            # signal.
-            self.write_log.emit(txt)
+#     def write(self, txt, show_ui=True):
+#         if self.ui_obj is not None and show_ui:
+#             # GUI handling across threads is not allowed. So logging from
+#             # other threads (e.g., rtp thread by watchdog) must be called via
+#             # signal.
+#             self.write_log.emit(txt)
 
-        if self.fd is not None:
-            self.fd.write(txt)
+#         if self.fd is not None:
+#             self.fd.write(txt)
 
-    def flush(self):
-        if self.fd is not None:
-            self.fd.flush()
+#     def flush(self):
+#         if self.fd is not None:
+#             self.fd.flush()
 
-    def __del__(self):
-        if self.fd is not None and self.fd != sys.stdout:
-            self.fd.close()
+#     def __del__(self):
+#         if self.fd is not None and self.fd != sys.stdout:
+#             self.fd.close()
 
 
 # %% DlgProgressBar ===========================================================
