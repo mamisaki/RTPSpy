@@ -133,6 +133,7 @@ class RingBuffer:
         """ Append an element """
         try:
             self._data[self._cpos] = x
+            self._data.flush()
             self._cpos = (self._cpos+1) % self.max_size
 
         except Exception:
