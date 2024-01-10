@@ -16,7 +16,6 @@ import traceback
 from datetime import datetime
 import re
 from threading import Lock
-from multiprocessing import Process
 import time
 import os
 
@@ -448,12 +447,15 @@ class RtpDcm2Nii:
 
                 # Run DICOM convert process
                 dicom_dir = self._last_proc_f.parent
-                dcm_conv_proc = Process(
-                    target=self.dcm_converter.rt_convert_dicom,
-                    args=(dicom_dir, self._study_dir),
-                    kwargs={'make_brik': self.make_brik}
+                # dcm_conv_proc = Process(
+                #     target=self.dcm_converter.rt_convert_dicom,
+                #     args=(dicom_dir, self._study_dir),
+                #     kwargs={'make_brik': self.make_brik}
+                # )
+                # dcm_conv_proc.start()
+                self.dcm_converter.rt_convert_dicom(
+                    dicom_dir, self._study_dir, make_brik=self.make_brik
                 )
-                dcm_conv_proc.start()
 
                 last_ser = self._last_dicom_header.SeriesNumber
                 last_ser_de = self._last_dicom_header.SeriesDescription

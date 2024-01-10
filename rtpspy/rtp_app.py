@@ -22,6 +22,7 @@ import traceback
 import signal
 import shutil
 import json
+import logging
 
 import numpy as np
 import nibabel as nib
@@ -341,13 +342,14 @@ class RtpApp(RTP):
         ses = out_dir.name.replace('_', '')
 
         cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
-        cmd += f" -z y -w 0 -o {out_dir} {dcm_dir}"
+        cmd += f" -i y -z y -w 0 -o {out_dir} {dcm_dir}"
         try:
             ostr = subprocess.check_output(shlex.split(cmd))
         except Exception as e:
             errmsg = f"Error at dcm2niix_afni: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
+            ostr = errmsg.encode()
 
         QtWidgets.QMessageBox.information(
             self.main_win, 'dcm2niix', ostr.decode(),
@@ -3279,7 +3281,26 @@ class RtpApp(RTP):
 # %% __main__ =================================================================
 if __name__ == '__main__':
     from rtpspy import RtpGUI
+    DEBUG = False
 
+    # --- Set logging ---------------------------------------------------------
+    dstr = datetime.now().strftime("%Y%m%dT%H%M%S")
+    log_file = Path(f'log/RrpApp_{dstr}.log')
+
+    if not log_file.parent.is_dir():
+        log_file.parent.mkdir()
+
+    if DEBUG:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level, filename=log_file, filemode='a',
+        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S')
+
+    # --- Start app -----------------------------------------------------------
     app = QtWidgets.QApplication(sys.argv)
 
     # Make RtpApp instance
@@ -3287,7 +3308,7 @@ if __name__ == '__main__':
 
     # Make RtpGUI instance
     app_obj = {'RTP App': rtp_app}
-    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_file=log_file)
 
     # Keep RTP objects for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs
