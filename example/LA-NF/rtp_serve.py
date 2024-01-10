@@ -10,7 +10,6 @@ RTP_SERVE: Server class for the communication with RTPSpy application
 import socket
 import threading
 import socketserver
-from datetime import datetime
 import queue
 import subprocess
 import re
@@ -19,6 +18,7 @@ import sys
 import time
 import traceback
 import shlex
+import logging
 
 import pandas as pd
 
@@ -35,10 +35,11 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
         Keep running until a client closes the connection.
         """
 
+        self._logger = logging.getLogger('RTP_SERVE')
+
         # --- Initialize ------------------------------------------------------
         addr_str = self.client_address[0]
-        if self.server.verb:
-            self._log(addr_str.encode('utf-8'), prefix='Open:')
+        self._logger.debug(f"Open:{addr_str.encode('utf-8')}")
 
         self.server.connected = True
         self.server.client_address_str = addr_str
@@ -81,9 +82,8 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                 except socket.timeout:
                     break
 
-            if self.server.verb:
-                if len(recvs):
-                    self._log(recvs, prefix='Recv:')
+            if len(recvs):
+                self._logger.debug('Recv:' + recvs)
 
             # Process the received data list
             NF_data = []
@@ -139,58 +139,32 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                 send_data = self.server.send_queue.get()
 
                 try:
-                    if self.server.verb:
-                        self._log(send_data, prefix='Send:')
+                    self._logger.debug('Send:' + send_data)
                     self.request.send(send_data)
 
                 except socket.timeout:
-                    if self.server.verb:
-                        self._log(send_data, prefix='Failed_Send:')
+                    self._logger.error('Failed_Send:' + send_data)
 
         # --- End request handling loop ---------------------------------------
         self.server.client_address_str = ''
         self.server.connected = False
         time.sleep(1)  # Wait before closing a connection
 
-        if self.server.verb:
-            self._log(addr_str.encode('utf-8'), prefix='Close:')
-            self._log(
-                f"client_address_str={self.server.client_address_str}")
+        self._logger.debug('Close:' + addr_str.encode('utf-8'))
+        self._logger.debug(
+            f"client_address_str={self.server.client_address_str}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def proc_recv_data(self, data):
         sys.stdout.flush()
-        if type(data) == str:
+        if type(data) is str:
             if 'IsAlive?' in data:
                 # Return 'Yes. to 'IsAlive?' inquery.
                 self.request.send('Yes.'.encode('utf-8'))
-                if self.server.verb:
-                    self._log('Yes.', prefix='Send:')
+                self._logger.debug('Send:Yes.')
                 return
 
         self.server.recv_queue.put(data)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _log(self, datas, prefix=''):
-        # Log data
-        if type(datas) != list:
-            datas = [datas]
-
-        logstrs = []
-        for data in datas:
-            if type(data) == str:
-                logstrs.append(data)
-            else:
-                try:
-                    logstrs.append(data.decode('utf-8', 'strict'))
-                except Exception:
-                    logstrs.append('encoded binary data')
-
-        logstr = prefix + ';'.join(logstrs)
-        dt = datetime.isoformat(datetime.now())
-        print(f"RTP_SERVE,{dt},{logstr}")
-        with open('RTP_SERVE_debug.log', 'a') as fd:
-            print(f"RTP_SERVE,{dt},{logstr}", file=fd)
 
 
 # %% RTP_SERVE ==============================================================
@@ -203,7 +177,7 @@ class RTP_SERVE():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, allow_remote_access=False, request_host=None,
-                 handler_class=RTPMsgHandler, data_sep=';', verb=False):
+                 handler_class=RTPMsgHandler, data_sep=';'):
         """
         Parameters
         ----------
@@ -218,10 +192,9 @@ class RTP_SERVE():
             Delimiter to separate receved data. When multiple data are
             received at once, they were divided with this delimiter.
             The default is ';'.
-        verb : bool, optional
-            Flag to print log. The default is False.
-
         """
+        self._logger = logging.getLogger('RTP_SERVE')
+
         if allow_remote_access:
             host = '0.0.0.0'
             host_addr = self._get_ip_address()
@@ -242,7 +215,6 @@ class RTP_SERVE():
         self.server.recv_queue = queue.Queue()
         self.server.NF_signals = []
         self.server.NF_signal_lock = threading.Lock()
-        self.server.verb = verb
         self.server.kill = False
 
         self._NF_signal = pd.DataFrame(columns=('Time', 'TR', 'Signal'))
@@ -361,7 +333,7 @@ class RTP_SERVE():
 
 
 # %% boot_RTP_SERVE_app =====================================================
-def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
+def boot_RTP_SERVE_app(cmd, remote=False, timeout=5):
     """
     Boot an external application with RTP_SERVE
 
@@ -376,8 +348,6 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
         Time out waiting for the application boot and receving the
         address:port. from an external application with RTP_SERVE.
         The default is 5.
-    verb : bool, optional
-        Print logs. The default is False.
 
     Returns
     -------
@@ -405,8 +375,7 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
 
     if pr.poll() is not None:
         errmg = f"Failed: {cmd}"
-        if verb:
-            sys.stderr.write(f"{errmg}\n")
+        sys.stderr.write(f"{errmg}\n")
         return None, errmg
     else:
         sock.settimeout(timeout)
@@ -417,8 +386,7 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
             sock.close()
         except socket.timeout:
             errmsg = "No response to a request."
-            if verb:
-                sys.stderr.write(f"{errmg}\n")
+            sys.stderr.write(f"{errmg}\n")
             sock.close()
             return None, errmsg
 
@@ -460,7 +428,6 @@ if __name__ == '__main__':
 
     # --- Initialize ----------------------------------------------------------
     rtp_srv = RTP_SERVE()
-    rtp_srv.verb = True
     srv_address = rtp_srv.server.server_address
     print("Open server at ", srv_address)
 

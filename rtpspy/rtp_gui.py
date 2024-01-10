@@ -9,13 +9,11 @@ RTPSpy graphical user interface
 # %% import ===================================================================
 from pathlib import Path
 import os
-import sys
 import shutil
 from functools import partial
 import time
 from collections import OrderedDict
-import traceback
-import datetime
+import logging
 
 import torch
 from PyQt5 import QtCore, QtWidgets, QtGui
@@ -51,6 +49,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         """
         QtWidgets.QMainWindow.__init__(self)
+        self._logger = logging.getLogger('RtpGUI')
 
         self.rtp_objs = rtp_objs
         self.rtp_apps = rtp_apps
@@ -383,17 +382,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         vSplitterRoot.addWidget(self.logOutput_txtEd)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def errmsg(self, errmsg, ret_str=False, no_pop=False):
-        tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
-        msg = "{}:[{}]: !!! {}".format(tstr, self.__class__.__name__, errmsg)
-        if ret_str:
-            return msg
-
-        sys.stderr.write(msg + '\n')
-        sys.stderr.flush()
-
-        traceback.print_exc()
-
+    def err_popup(self, errmsg):
         msgBox = QtWidgets.QMessageBox()
         msgBox.setIcon(QtWidgets.QMessageBox.Critical)
         msgBox.setText(errmsg)
@@ -457,7 +446,9 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return -1
         else:
             if not Path(wdir).is_dir():
-                self.errmsg(f"{wdir} is not a directory.")
+                errmsg = f"{wdir} is not a directory."
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 return -1
 
         for obj in self.rtp_objs.values():

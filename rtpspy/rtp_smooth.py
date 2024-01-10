@@ -99,9 +99,8 @@ class RtpSmooth(RTP):
             # --- Initialize --------------------------------------------------
             # Unless the mask is set, set it by a received volume
             if self.mask_byte is None or not hasattr(self, 'maskV'):
-                if self._verb:
-                    msg = f"Mask is set by a received volume, index {vol_idx}"
-                    self.logmsg(msg)
+                msg = f"Mask is set by a received volume, index {vol_idx}"
+                self._logger.info(msg)
 
                 self.set_mask(fmri_img.get_fdata())
 
@@ -122,13 +121,12 @@ class RtpSmooth(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, Smoothing is done for {f}'
-                if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f'#{vol_idx}, Smoothing is done for {f}'
+            if pre_proc_time is not None:
+                msg += f' (took {proc_delay:.4f}s)'
+            msg += '.'
+            self._logger.info(msg)
 
             # Set save_name
             fmri_img.set_filename('sm.' + Path(fmri_img.get_filename()).name)
@@ -158,17 +156,16 @@ class RtpSmooth(RTP):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
                      f':{exc_tb.tb_lineno}'
-            self.errmsg(errmsg, no_pop=True)
+            self._logger.error(errmsg)
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
 
-        if self.verb:
-            self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
-        if type(self.mask_file) == int and self.mask_file == 0:
+        if type(self.mask_file) is int and self.mask_file == 0:
             self.mask_byte = None
 
         return super(RtpSmooth, self).end_reset()
@@ -195,7 +192,9 @@ class RtpSmooth(RTP):
                 maskdata = re.sub(r"\'*\[(\d+)\]\'*$", '', str(maskdata))
 
             if not Path(maskdata).is_file():
-                self.errmsg(f"Not found mask file: {maskdata}")
+                errmsg = f"Not found mask file: {maskdata}"
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 self.mask_file = 0
                 return
 
@@ -205,11 +204,10 @@ class RtpSmooth(RTP):
             if maskdata.ndim > 3:
                 maskdata = maskdata[:, :, :, sub_i]
 
-            if self._verb:
-                msg = f"Mask = {self.mask_file }"
-                if ma:
-                    msg += f"[{sub_i}]"
-                self.logmsg(msg)
+            msg = f"Mask = {self.mask_file }"
+            if ma:
+                msg += f"[{sub_i}]"
+            self._logger.info(msg)
 
         if method == 'zero_out':
             self.maskV = maskdata != 0
@@ -249,7 +247,9 @@ class RtpSmooth(RTP):
             # NIfTI
             dx, dy, dz = fmri_img.header.get_zooms()[:3]
         else:
-            self.errmsg("No voxel size information in fmri_img header")
+            errmsg = "No voxel size information in fmri_img header"
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
 
         # Copy function image data and get pointer
         fim_arr = fmri_img.get_fdata().astype(np.float32)
@@ -302,7 +302,7 @@ class RtpSmooth(RTP):
                     self.ui_mask_cmbBx.setCurrentText('external file')
                     self.ui_mask_lnEd.setText(str(val))
 
-            elif type(val) == int and val == 0:
+            elif type(val) is int and val == 0:
                 if hasattr(self, 'ui_mask_lnEd'):
                     self.ui_mask_lnEd.setText(
                         'zero-out initial received volume')
@@ -344,7 +344,7 @@ class RtpSmooth(RTP):
                     self.ui_mask_lnEd.setText(str(mask_fname))
                 val = mask_fname
 
-            elif type(val) == str:
+            elif type(val) is str:
                 ma = re.search(r"\[(\d+)\]", val)
                 if ma:
                     num = int(ma.groups()[0])
@@ -368,19 +368,17 @@ class RtpSmooth(RTP):
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
 
-        elif attr == '_verb':
-            if hasattr(self, 'ui_verb_chb'):
-                self.ui_verb_chb.setChecked(val)
-
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                errmsg = f"{attr} is unrecognized parameter."
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 return
 
         # -- Set value --
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print(f"{self.__class__.__name__}." + attr, '=',
                   getattr(self, attr))
 
@@ -434,7 +432,7 @@ class RtpSmooth(RTP):
 
         self.ui_objs.extend([var_lb, self.ui_mask_cmbBx, self.ui_mask_lnEd])
 
-        if type(self.mask_file) == int and self.mask_file == 0:
+        if type(self.mask_file) is int and self.mask_file == 0:
             self.ui_mask_cmbBx.setCurrentIndex(1)
             self.ui_mask_lnEd.setText('zero-out initial received volume')
         else:
@@ -449,17 +447,9 @@ class RtpSmooth(RTP):
                 lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
-        # verb
-        self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
-        self.ui_verb_chb.setChecked(self.verb)
-        self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'verb', state > 0))
-        self.ui_objs.append(self.ui_verb_chb)
-
         chb_hLayout = QtWidgets.QHBoxLayout()
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
-        chb_hLayout.addWidget(self.ui_verb_chb)
         ui_rows.append((None, chb_hLayout))
 
         return ui_rows

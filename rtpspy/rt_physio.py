@@ -116,7 +116,7 @@ class NumatoGPIORecoding():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ttl_shm_name, card_shm_name, resp_shm_name,
                  tstamp_shm_name, sport, sample_freq=500,
-                 buf_len_sec=1800, verb=True):
+                 buf_len_sec=1800):
         """ Initialize real-time physio recordign class
         Set parameter values and list of serial ports.
 
@@ -129,8 +129,6 @@ class NumatoGPIORecoding():
             This must be one of the items listed in SUPPORT_DEVS.
         buf_len_sec : float, optional
             Length (seconds) of signal recording buffer. The default is 1800s.
-        verb : bool, optional
-            Verbose flag to print log message. The default is True.
         """
         self.logger = logging.getLogger('GPIORecorder')
 
@@ -141,7 +139,6 @@ class NumatoGPIORecoding():
         self.tstamp_shm_name = tstamp_shm_name
         self.sample_freq = sample_freq
         self.buf_len = int(buf_len_sec * self.sample_freq)
-        self.verb = verb
 
         # Get available serial ports
         self.dict_sig_sport = {}
@@ -211,8 +208,7 @@ class NumatoGPIORecoding():
             self._sig_ser.write(b"gpio clear 0\r")
 
         except serial.serialutil.SerialException:
-            if self.verb:
-                self.logger.error(f"Failed open {self._sig_sport}")
+            self.logger.error(f"Failed open {self._sig_sport}")
             self._sig_ser = None
             return False
 
@@ -224,8 +220,7 @@ class NumatoGPIORecoding():
             self._sig_ser = None
             return False
 
-        if self.verb:
-            self.logger.info(f"Open signal port {self._sig_sport}")
+        self.logger.info(f"Open signal port {self._sig_sport}")
 
         return True
 
@@ -447,9 +442,8 @@ class NumatoGPIORecoding():
             self.resp_save_data = list(resp[ons_idx:])
             self.saving = True
 
-        if self.verb:
-            self.logger.info("Start saving physio data at " +
-                             f"{time.ctime(tstamp[ons_idx])}")
+        self.logger.info("Start saving physio data at " +
+                         f"{time.ctime(tstamp[ons_idx])}")
 
         return
 
@@ -495,9 +489,8 @@ class NumatoGPIORecoding():
                     print(f'ECG file: {card_fname.name}', file=fd)
                     print(f'Resp file: {resp_fname.name}', file=fd)
 
-        if self.verb:
-            self.logger.info("Close saving physio data. " +
-                             f"Saved in {resp_fname} and {card_fname}")
+        self.logger.info("Close saving physio data. " +
+                         f"Saved in {resp_fname} and {card_fname}")
 
 
 # %% ==========================================================================
@@ -507,7 +500,7 @@ class RtSignalRecorder():
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, cmd_pipe=None, buf_len_sec=1800, sport=None,
-                 sample_freq=500, verb=True):
+                 sample_freq=500):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -521,8 +514,6 @@ class RtSignalRecorder():
             Frequency (Hz) of raw signal data. The default is 500.
         sport : str
             Serial port name. The default is None.
-        verb : bool, optional
-            Verbose flag to print log message. The default is True.
         """
         self.logger = logging.getLogger('RtGPIORecorder')
         self.cmd_pipe = cmd_pipe
@@ -548,10 +539,9 @@ class RtSignalRecorder():
         # Create recorder
         self.recorder = NumatoGPIORecoding(
             self.ttl_shm_name, self.card_shm_name, self.resp_shm_name,
-            self.tstamp_shm_name, sport, sample_freq, buf_len_sec, verb=verb)
+            self.tstamp_shm_name, sport, sample_freq, buf_len_sec)
 
         self.saving = False
-        self.verb = verb
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):

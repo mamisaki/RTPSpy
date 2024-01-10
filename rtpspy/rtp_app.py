@@ -214,7 +214,10 @@ class RtpApp(RTP):
         self._proc_ready = True
 
         if not Path(self.ROI_orig).is_file():
-            self.errmsg(f'Not found ROI mask on orig space {self.ROI_orig}.')
+            errmsg = f'Not found ROI mask on orig space {self.ROI_orig}.'
+            self._logger.error(errmsg)
+            self.err_popup(
+                f'Not found ROI mask on orig space {self.ROI_orig}.')
             self._proc_ready = False
         self.ROI_mask = None
 
@@ -269,16 +272,15 @@ class RtpApp(RTP):
                 try:
                     msg = f"NF {val_str};"
                     self.send_extApp(msg.encode())
-                    if self._verb:
-                        self.logmsg(f"Sent '{msg}' to an external app")
+                    self._logger.info(f"Sent '{msg}' to an external app")
 
                 except Exception as e:
-                    self.errmsg(str(e), no_pop=True)
+                    self._logger.error(str(e))
             else:
                 # Online saving in a file
                 with open(self.sig_save_file, 'a') as save_fd:
                     print(val_str, file=save_fd)
-                self.logmsg(f"Write data '{val_str}'")
+                self._logger.info(f"Write data '{val_str}'")
 
             # --- Post procress -----------------------------------------------
             # Record process time
@@ -289,13 +291,12 @@ class RtpApp(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, ROI signal extraction is done for {f}'
-                if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f'#{vol_idx}, ROI signal extraction is done for {f}'
+            if pre_proc_time is not None:
+                msg += f' (took {proc_delay:.4f}s)'
+            msg += '.'
+            self._logger.info(msg)
 
             # Update signal plot
             self.plt_xi.append(vol_idx)
@@ -306,14 +307,12 @@ class RtpApp(RTP):
             errmsg = '{}, {}:{}'.format(
                     exc_type, exc_tb.tb_frame.f_code.co_filename,
                     exc_tb.tb_lineno)
-            self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
+            self._logger.error(str(e) + '\n' + errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
-
-        if self.verb:
-            self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         # Reset ROI_mask
         self.ROI_mask = None
@@ -339,11 +338,16 @@ class RtpApp(RTP):
         out_dir = Path(self.work_dir).absolute()
         if out_dir == '':
             out_dir = './'
-        cmd = f"dcm2niix -f sub-%n_ser-%s_desc-%d -o {out_dir} {dcm_dir}"
+        ses = out_dir.name.replace('_', '')
+
+        cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
+        cmd += f" -z y -w 0 -o {out_dir} {dcm_dir}"
         try:
             ostr = subprocess.check_output(shlex.split(cmd))
         except Exception as e:
-            self.errmsg(f"Error at dcm2niix_afni: {e}")
+            errmsg = f"Error at dcm2niix_afni: {e}"
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
 
         QtWidgets.QMessageBox.information(
             self.main_win, 'dcm2niix', ostr.decode(),
@@ -383,7 +387,9 @@ class RtpApp(RTP):
         """
         # Check work_dir
         if type(self.work_dir) is str and self.work_dir == '':
-            self.errmsg("Working directory is not set.")
+            errmsg = "Working directory is not set."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         # --- Initialize ------------------------------------------------------
@@ -429,7 +435,8 @@ class RtpApp(RTP):
                         (no_FastSeg and
                          attr in ('WM_template', 'Vent_template')):
                     errmsg = f"\n{attr} is not set.\n"
-                    self.errmsg(errmsg)
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     return -1
                 else:
                     continue
@@ -448,7 +455,8 @@ class RtpApp(RTP):
                     continue
                 else:
                     errmsg = f"\nNot found {attr}:{getattr(self, attr)}.\n"
-                    self.errmsg(errmsg)
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     return -1
 
             self.set_param(attr, Path(getattr(self, attr)))
@@ -491,7 +499,7 @@ class RtpApp(RTP):
             del self.proc_times['SkullStrip']
 
         # Make image processor object
-        improc = RtpImgProc(main_win=self.main_win, verb=self._verb)
+        improc = RtpImgProc(main_win=self.main_win)
         improc.proc_times = self.proc_times
 
         # Set total_ETA for the progress report.
@@ -545,7 +553,9 @@ class RtpApp(RTP):
                 elif suff == '.nii':
                     dst_f = self.work_dir / f'{src_f_stem}.nii.gz'
                 else:
-                    self.errmsg(f"File type {suff} cannot be recognized.")
+                    errmsg = f"File type {suff} cannot be recognized."
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     if hasattr(self, 'ui_CreateMasks_btn'):
                         self.ui_CreateMasks_btn.setEnabled(True)
                     return
@@ -836,16 +846,20 @@ class RtpApp(RTP):
 
                     if proc == 'WATCH':
                         if not Path(pobj.watch_dir).is_dir():
-                            self.errmsg("'Watching directory' must be set.")
+                            errmsg = "'Watching directory' must be set."
+                            self._logger.error(errmsg)
+                            self.err_popup(errmsg)
                             if not ignore_error:
                                 if show_progress:
                                     progress_bar.close()
                                     return -1
 
                         if not Path(self.func_orig).is_file():
-                            self.errmsg(
-                                "Not found 'Base function image'"
-                                f" {self.func_orig}.")
+                            errmsg = \
+                                "Not found 'Base function image'" + \
+                                f" {self.func_orig}."
+                            self._logger.error(errmsg)
+                            self.err_popup(errmsg)
                             if show_progress and progress_bar.isVisible():
                                 progress_bar.close()
                                 return -1
@@ -864,9 +878,11 @@ class RtpApp(RTP):
                     elif proc == 'TSHIFT':
                         if not Path(self.func_param_ref).is_file():
                             if not ignore_error:
-                                self.errmsg(
-                                    "Not found 'fMRI parameter reference'" +
-                                    f" {self.func_param_ref}.")
+                                errmsg = \
+                                    "Not found 'fMRI parameter reference'" + \
+                                    f" {self.func_param_ref}."
+                                self._logger.error(errmsg)
+                                self.err_popup(errmsg)
                                 if show_progress and progress_bar.isVisible():
                                     progress_bar.close()
                                     return -1
@@ -954,7 +970,7 @@ class RtpApp(RTP):
                                 np.max([self.max_watch_wait, pobj.wait_num/2])
 
                 if show_progress and not progress_bar.isVisible():
-                    self.logmsg("Cancel experiment setup")
+                    self._logger.info("Cancel experiment setup")
                     return -1
 
         # --- End -------------------------------------------------------------
@@ -1059,8 +1075,7 @@ class RtpApp(RTP):
                 rtp = rtp.next_proc
 
             log_str = log_str.rstrip()
-            if self._verb:
-                self.logmsg(log_str, show_ui=False)
+            self._logger.info(log_str)
 
         # --- Ready application -----------------------------------------------
         if self.run_extApp:
@@ -1068,7 +1083,9 @@ class RtpApp(RTP):
             if not self.isAlive_extApp():
                 self.boot_extApp()
                 if not self.isAlive_extApp():
-                    self.errmsg('Cannot get response from extApp.')
+                    errmsg = 'Cannot get response from extApp.'
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     return
 
         else:
@@ -1143,7 +1160,7 @@ class RtpApp(RTP):
         self.chk_run_timer.stop()
 
         if quit_btn:
-            self.logmsg('Quit button is pressed.')
+            self._logger.info('Quit button is pressed.')
 
         if self.main_win is not None:
             # Disable buttons
@@ -1193,8 +1210,7 @@ class RtpApp(RTP):
                 if self.send_extApp('END;'.encode()):
                     recv = self.recv_extApp(timeout=3)
                     if recv is not None:
-                        if self._verb:
-                            self.logmsg(f"Recv {recv.decode()}")
+                        self._logger.info(f"Recv {recv.decode()}")
 
             # Save parameter list
             if self.enable_RTP > 0:
@@ -1259,7 +1275,7 @@ class RtpApp(RTP):
             errmsg = '{}, {}:{}'.format(
                     exc_type, exc_tb.tb_frame.f_code.co_filename,
                     exc_tb.tb_lineno)
-            self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
+            self._logger.error(str(e) + '\n' + errmsg)
 
         if self.isAlive_extApp():
             # Send END
@@ -1715,7 +1731,7 @@ class RtpApp(RTP):
             msg = self.recv_extApp(timeout=0.001)
             if msg is not None and 'END_SESSION' in msg.decode():
                 if self.ui_quit_btn.isEnabled():
-                    self.logmsg('Recv END_SESSION. End session.')
+                    self._logger.info('Recv END_SESSION. End session.')
                     if not self._isRunning_end_run_proc:
                         self.end_run()
                     return
@@ -1729,7 +1745,7 @@ class RtpApp(RTP):
                 len(self.rtp_objs['WATCH'].proc_time):
             delay = time.time() - self.rtp_objs['WATCH'].proc_time[-1]
             if delay > self.max_watch_wait:
-                self.logmsg(
+                self._logger.info(
                     f'No new file was seen for {delay:.3f} s. End session.')
                 if not self._isRunning_end_run_proc:
                     self.end_run()
@@ -1761,7 +1777,9 @@ class RtpApp(RTP):
         elif self.simfMRIDataDir != '' and Path(self.simfMRIDataDir).is_dir():
             mri_src = self.simfMRIDataDir
         else:
-            self.errmsg("fMRI data is not found.")
+            errmsg = "fMRI data is not found."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         dst_dir = self.rtp_objs['WATCH'].watch_dir
@@ -1797,7 +1815,9 @@ class RtpApp(RTP):
         if self.simPhysPort == 'None':
             # Disable regPhysio on rtp_regress
             if self.rtp_objs['REGRESS'].phys_reg != 'None':
-                self.errmsg("Disable physio regression in rtp_regress")
+                errmsg = "Disable physio regression in rtp_regress"
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
                 self.rtp_objs['REGRESS'].set_param('phys_reg', 'None')
             run_physio = False
         else:
@@ -1894,7 +1914,7 @@ class RtpApp(RTP):
 
         # --- Kill a running process ---
         if self.extApp_sock is not None:
-            self.send_extApp('QUIT;'.encode('utf-8'), no_pop_err=True)
+            self.send_extApp('QUIT;'.encode('utf-8'), no_err_pop=True)
 
             try:
                 self.extApp_sock.close()
@@ -1936,7 +1956,9 @@ class RtpApp(RTP):
         # Check app boot failure.
         if extApp_addr is None:
             errmsg = extApp_proc
-            self.errmsg("Failed to run the external application.\n" + errmsg)
+            errmsg = "Failed to run the external application.\n" + errmsg
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             if progress_bar is not None:
                 progress_bar.close()
             return -1
@@ -1957,7 +1979,9 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def connect_extApp(self, no_err_pop=False):
         if self.extApp_addr is None:
-            self.errmsg('No address is set for the external application.')
+            errmsg = 'No address is set for the external application.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return False
 
         if self.extApp_sock is not None:
@@ -1974,8 +1998,11 @@ class RtpApp(RTP):
             self.extApp_sock.connect(self.extApp_addr)
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
         except ConnectionRefusedError:
-            self.errmsg(f"Failed connecting {self.extApp_addr}",
-                        no_pop=no_err_pop)
+            errmsg = f"Failed connecting {self.extApp_addr}"
+            self._logger.error(errmsg)
+            if not no_err_pop:
+                self.err_popup(errmsg)
+
             return -1
 
         return 0
@@ -2023,7 +2050,7 @@ class RtpApp(RTP):
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def send_extApp(self, data, pkl=False, no_pop_err=False):
+    def send_extApp(self, data, pkl=False, no_err_pop=False):
         """
         Send data to an external RTP_SERVE application.
 
@@ -2047,7 +2074,10 @@ class RtpApp(RTP):
 
         except BrokenPipeError:
             self.extApp_sock = None
-            self.errmsg('No connection to external app.', no_pop=no_pop_err)
+            errmsg = 'No connection to external app.'
+            self._logger.error(errmsg)
+            if not no_err_pop:
+                self.err_popup(errmsg)
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -2087,7 +2117,7 @@ class RtpApp(RTP):
 
         except BrokenPipeError:
             self.extApp_sock = None
-            self.errmsg('No connection to external app.', no_pop=True)
+            self._logger.error('No connection to external app.')
             received = None
 
         except Exception:
@@ -2154,7 +2184,9 @@ class RtpApp(RTP):
 
                 except Exception:
                     if self.extApp_addr is not None:
-                        self.errmsg(f"{val} is not a valid host:port string")
+                        errmsg = f"{val} is not a valid host:port string"
+                        self._logger.error(errmsg)
+                        self.err_popup(errmsg)
                         if reset_fn is not None:
                             self.ui_extApp_addr_lnEd.blockSignals(True)
                             addr_str = "{}:{}".format(*self.extApp_addr)
@@ -2205,7 +2237,9 @@ class RtpApp(RTP):
                 try:
                     val = Path(val)
                 except Exception:
-                    self.errmsg(f"{val} is not a valid filename.")
+                    errmsg = f"{val} is not a valid filename."
+                    self._logger.error(errmsg)
+                    self.err_popup(errmsg)
                     if reset_fn is not None:
                         reset_fn(self.sig_save_file)
                     return
@@ -2357,12 +2391,11 @@ class RtpApp(RTP):
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
                 if unk_warining:
-                    self.errmsg(f"{attr} is unrecognized parameter.",
-                                no_pop=True)
+                    self._logger.error(f"{attr} is unrecognized parameter.")
             return
 
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
 
@@ -3120,7 +3153,7 @@ class RtpApp(RTP):
 
             # Kill running App
             if self.extApp_sock is not None:
-                if self.send_extApp('QUIT;'.encode(), no_pop_err=True):
+                if self.send_extApp('QUIT;'.encode(), no_err_pop=True):
                     while self.extApp_proc.poll() is None:
                         time.sleep(0.1)
 

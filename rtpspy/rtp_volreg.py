@@ -93,7 +93,8 @@ class RtpVolreg(RTP):
         self._proc_ready = self.ref_vol is not None
         if not self._proc_ready:
             errmsg = "Refence volume or volume index has not been set."
-            self.errmsg(errmsg)
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
 
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
@@ -138,10 +139,9 @@ class RtpVolreg(RTP):
                     # Append zero vector
                     mot = np.zeros((1, 6), dtype=np.float32)
                     self.motion = np.concatenate([self.motion, mot], axis=0)
-                    if self._verb:
-                        msg = f"Alignment reference is set to volume {ref_vi}"
-                        msg += " of current sequence."
-                        self.logmsg(msg)
+                    msg = f"Alignment reference is set to volume {ref_vi}"
+                    msg += " of current sequence."
+                    self._logger.info(msg)
                     return
 
             # --- Run the procress --------------------------------------------
@@ -165,13 +165,12 @@ class RtpVolreg(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, Volume registration is done for {f}'
-                if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f'#{vol_idx}, Volume registration is done for {f}'
+            if pre_proc_time is not None:
+                msg += f' (took {proc_delay:.4f}s)'
+            msg += '.'
+            self._logger.info(msg)
 
             # Set save_name
             fmri_img.set_filename('vr.' + Path(fmri_img.get_filename()).name)
@@ -206,15 +205,14 @@ class RtpVolreg(RTP):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
                      f':{exc_tb.tb_lineno}'
-            self.errmsg(errmsg, no_pop=True)
+            self._logger.error(errmsg)
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
 
-        if self.verb:
-            self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         # Reset running variables
         self.motion = np.ndarray([0, 6], dtype=np.float32)
@@ -280,11 +278,10 @@ class RtpVolreg(RTP):
             self.ref_vol = ref_vol
             self.align_setup()  # Prepare alignment volume
 
-            if self._verb:
-                msg = f"Alignment reference = {ref_vol0}"
-                if ma is None:
-                    msg += f"[{ref_vi}]"
-                self.logmsg(msg)
+            msg = f"Alignment reference = {ref_vol0}"
+            if ma is None:
+                msg += f"[{ref_vi}]"
+            self._logger.info(msg)
 
         else:
             # ref_vol is a number. Get reference from ref_vol-th volume in
@@ -328,7 +325,8 @@ class RtpVolreg(RTP):
         elif hasattr(self.ref_vol.header, 'get_zooms'):
             self.dx, self.dy, self.dz = self.ref_vol.header.get_zooms()[:3]
         else:
-            self.errmsg("No voxel size information in ref_vol header")
+            errmsg = "No voxel size information in ref_vol header"
+            self._logger.error(errmsg)
 
         # rotate orientation
         self.ax1 = 2  # z-axis, roll
@@ -702,14 +700,11 @@ class RtpVolreg(RTP):
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
 
-        elif attr == '_verb':
-            if hasattr(self, 'ui_verb_chb'):
-                self.ui_verb_chb.setChecked(val)
-
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                errmsg = f"{attr} is unrecognized parameter."
+                self._logger.error(errmsg)
                 return
 
         # -- Set value --
@@ -795,17 +790,9 @@ class RtpVolreg(RTP):
                 lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
-        # verb
-        self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
-        self.ui_verb_chb.setChecked(self.verb)
-        self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'verb', state > 0))
-        self.ui_objs.append(self.ui_verb_chb)
-
         chb_hLayout = QtWidgets.QHBoxLayout()
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
-        chb_hLayout.addWidget(self.ui_verb_chb)
         ui_rows.append((None, chb_hLayout))
 
         return ui_rows

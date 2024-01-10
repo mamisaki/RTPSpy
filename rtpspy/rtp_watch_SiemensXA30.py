@@ -116,7 +116,7 @@ class RtpWatch(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
-        self.logmsg(f"Reset {self.__class__.__name__} module.")
+        self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         # Wait for process in watch thread finish.
         self.stop_watching()
@@ -127,7 +127,9 @@ class RtpWatch(RTP):
         """ Start watchdog observer monitoring the watch_dir directory.
         """
         if self.watch_dir is None or not self.watch_dir.is_dir():
-            self.errmsg(f'No directory: {self.watch_dir}')
+            errmsg = f'No directory: {self.watch_dir}'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
             return
 
         # Start observer
@@ -143,7 +145,7 @@ class RtpWatch(RTP):
         self._observer.schedule(self._event_handler, self.watch_dir,
                                 recursive=True)
         self._observer.start()
-        self.logmsg(
+        self._logger.info(
             "Start observer monitoring " +
             f"{self.watch_dir}/**{self.watch_file_pattern}")
 
@@ -178,7 +180,7 @@ class RtpWatch(RTP):
                 self._observer.stop()
                 self._observer.join()
             del self._observer
-        self.logmsg("Stop watchdog observer.")
+        self._logger.info("Stop watchdog observer.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
@@ -230,8 +232,8 @@ class RtpWatch(RTP):
                     time.sleep(0.01)
 
             if dcm is None:
-                self.errmsg(f"Failed to read {file_path} as DICOM",
-                            no_pop=True)
+                errmsg = f"Failed to read {file_path} as DICOM"
+                self._logger.error(errmsg)
                 return
 
             imageType = '\\'.join(dcm.ImageType)
@@ -306,7 +308,7 @@ class RtpWatch(RTP):
             msg = f'#{self.vol_num}, Read {f}'
             msg += f' (took {proc_delay:.4f}s,'
             msg += f' interval {t_interval:.4f}s).'
-            self.logmsg(msg)
+            self._logger.info(msg)
 
             if self.next_proc:
                 # Keep the current processed data
@@ -336,7 +338,7 @@ class RtpWatch(RTP):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = ''.join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
-            self.errmsg(errmsg, no_pop=True)
+            self._logger.error(errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dcm2nii(self, dcm, file_path=None):
@@ -528,19 +530,16 @@ class RtpWatch(RTP):
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
 
-        elif attr == 'verb':
-            if hasattr(self, 'ui_verb_chb'):
-                self.ui_verb_chb.setChecked(val)
-
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                self.errmsg(f"{attr} is unrecognized parameter.", no_pop=True)
+                errmsg = f"{attr} is unrecognized parameter."
+                self._logger.error(errmsg)
                 return
 
         # -- Set value --
         setattr(self, attr, val)
-        if echo and self._verb:
+        if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
 
@@ -630,17 +629,9 @@ class RtpWatch(RTP):
                 lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
-        # verb
-        self.ui_verb_chb = QtWidgets.QCheckBox("Verbose logging")
-        self.ui_verb_chb.setChecked(self.verb)
-        self.ui_verb_chb.stateChanged.connect(
-                lambda state: setattr(self, 'verb', state > 0))
-        self.ui_objs.append(self.ui_verb_chb)
-
         chb_hLayout = QtWidgets.QHBoxLayout()
         chb_hLayout.addStretch()
         chb_hLayout.addWidget(self.ui_saveProc_chb)
-        chb_hLayout.addWidget(self.ui_verb_chb)
         ui_rows.append((None, chb_hLayout))
 
         return ui_rows
