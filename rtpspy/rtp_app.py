@@ -344,16 +344,20 @@ class RtpApp(RTP):
         cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
         cmd += f" -i y -z y -w 0 -o {out_dir} {dcm_dir}"
         try:
-            ostr = subprocess.check_output(shlex.split(cmd))
+            proc = subprocess.Popen(
+                shlex.split(cmd), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+            stdout, stderr = proc.communicate()
+            ostr = '\n'.join([stdout.decode(), stderr.decode()])
+            QtWidgets.QMessageBox.information(
+                self.main_win, 'dcm2niix', ostr,
+                QtWidgets.QMessageBox.Ok)
         except Exception as e:
+            print(ostr)
             errmsg = f"Error at dcm2niix_afni: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             ostr = errmsg.encode()
-
-        QtWidgets.QMessageBox.information(
-            self.main_win, 'dcm2niix', ostr.decode(),
-            QtWidgets.QMessageBox.Ok)
 
         return
 
