@@ -344,16 +344,32 @@ class RtpApp(RTP):
         cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
         cmd += f" -i y -z y -w 0 -o {out_dir} {dcm_dir}"
         try:
+            # progress dialog
+            msgBox = QtWidgets.QMessageBox(self.main_win)
+            msgBox.setWindowTitle('dcm2niix')
+            msgBox.setText('COnverting DICOM to NIfTI ...')
+            msgBox.setStandardButtons(QtWidgets.QMessageBox.NoButton)
+            msgBox.show()
+            time.sleep(0.1)
+            msgBox.repaint()
+            QtWidgets.QApplication.processEvents()
+
             proc = subprocess.Popen(
                 shlex.split(cmd), stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE)
+
+            msgBox.accept()
+
             stdout, stderr = proc.communicate()
             ostr = '\n'.join([stdout.decode(), stderr.decode()])
             QtWidgets.QMessageBox.information(
                 self.main_win, 'dcm2niix', ostr,
                 QtWidgets.QMessageBox.Ok)
         except Exception as e:
-            print(ostr)
+            try:
+                msgBox.accept()
+            except Exception:
+                pass
             errmsg = f"Error at dcm2niix_afni: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
