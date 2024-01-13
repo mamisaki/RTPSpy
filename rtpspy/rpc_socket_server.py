@@ -178,15 +178,21 @@ class RPCSocketServer:
     When the handler function returns a value, pass it back to the client.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, port, RPC_handler=print, socket_name='RPCSocketServer'):
+    def __init__(self, port, RPC_handler=print, socket_name='RPCSocketServer',
+                 allow_remote_access=False):
         self._socket_name = socket_name
         self._logger = logging.getLogger(self._socket_name)
+
+        if allow_remote_access:
+            host = '0.0.0.0'
+        else:
+            host = 'localhost'
 
         # Boot server
         socketserver.TCPServer.allow_reuse_address = True
         try:
             self._server = socketserver.TCPServer(
-                ('0.0.0.0', port), RPCSocketServer._recvDataHandler)
+                (host, port), RPCSocketServer._recvDataHandler)
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
