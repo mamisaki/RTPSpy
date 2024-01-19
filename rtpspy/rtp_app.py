@@ -539,6 +539,10 @@ class RtpApp(RTP):
 
         st0 = time.time()  # start time
         OK = True
+        RTP_dir = self.work_dir / 'RTP'
+        if not RTP_dir.is_dir():
+            RTP_dir.mkdir()
+
         try:
             # --- 0. Copy func_orig to work_dir as vr_base_* ------------------
             if Path(func_orig).parent != self.work_dir or \
@@ -571,9 +575,9 @@ class RtpApp(RTP):
                 if suff in ('.HEAD', '.BRIK'):
                     if not src_f_stem.endswith('+orig'):
                         src_f_stem += '+orig'
-                    dst_f = self.work_dir / f'{src_f_stem}.HEAD'
+                    dst_f = RTP_dir / f'{src_f_stem}.HEAD'
                 elif suff == '.nii':
-                    dst_f = self.work_dir / f'{src_f_stem}.nii.gz'
+                    dst_f = RTP_dir / f'{src_f_stem}.nii.gz'
                 else:
                     errmsg = f"File type {suff} cannot be recognized."
                     self._logger.error(errmsg)
@@ -588,7 +592,7 @@ class RtpApp(RTP):
                     msgTxt="Copy base function image",
                     desc='+' * 70 + '\n' + '+++ Copy base function image\n' +
                     f"Save base function image as {dst_f.name}" +
-                    f" in {self.work_dir}.\n")
+                    f" in {RTP_dir}.\n")
 
                 # If json file exists copy it too
                 src_f = src_f.replace("'", "")
@@ -658,7 +662,7 @@ class RtpApp(RTP):
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
                 seg_files = improc.run_fast_seg(
-                    self.work_dir, self.anat_orig, total_ETA,
+                    RTP_dir, self.anat_orig, total_ETA,
                     progress_bar=progress_bar, overwrite=overwrite)
                 assert seg_files is not None
 
@@ -671,7 +675,7 @@ class RtpApp(RTP):
                 # --- 1. 3dSkullStrip -----------------------------------------
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
-                    self.work_dir, self.anat_orig, total_ETA,
+                    RTP_dir, self.anat_orig, total_ETA,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert brain_anat_orig is not None, "skullStrip failed.\n"
@@ -681,7 +685,7 @@ class RtpApp(RTP):
 
             # --- 2. Align anatomy to function --------------------------------
             alAnat = improc.align_anat2epi(
-                self.work_dir, self.brain_anat_orig, self.func_orig, total_ETA,
+                RTP_dir, self.brain_anat_orig, self.func_orig, total_ETA,
                 progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert alAnat is not None, "align_anat2epi failed.\n"
@@ -690,12 +694,12 @@ class RtpApp(RTP):
             self.set_param('alAnat', alAnat)
 
             alAnat_f_stem = self.alAnat.stem.replace('+orig', '')
-            aff1D_f = self.work_dir / (alAnat_f_stem + '_mat.aff12.1D')
+            aff1D_f = RTP_dir / (alAnat_f_stem + '_mat.aff12.1D')
             assert aff1D_f.is_file()
 
             # --- 3. Make RTP and GSR masks -----------------------------------
             mask_files = improc.make_RTP_GSR_masks(
-                self.work_dir, self.func_orig, total_ETA, ref_vi=0,
+                RTP_dir, self.func_orig, total_ETA, ref_vi=0,
                 alAnat=self.alAnat, progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert mask_files is not None
@@ -707,7 +711,7 @@ class RtpApp(RTP):
             if Path(self.template).is_file():
                 if Path(self.ROI_template).is_file() or no_FastSeg:
                     warp_params = improc.warp_template(
-                        self.work_dir, self.alAnat, self.template,
+                        RTP_dir, self.alAnat, self.template,
                         total_ETA, progress_bar=progress_bar, ask_cmd=ask_cmd,
                         overwrite=overwrite)
             else:
@@ -717,7 +721,7 @@ class RtpApp(RTP):
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
-                    self.work_dir, self.func_orig, self.ROI_template,
+                    RTP_dir, self.func_orig, self.ROI_template,
                     total_ETA, warp_params, interpolator=self.ROI_resample,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
@@ -732,7 +736,7 @@ class RtpApp(RTP):
                         roi_f = self.Vent_template
 
                     warped_f = improc.ants_warp_resample(
-                        self.work_dir, self.alAnat, roi_f, total_ETA,
+                        RTP_dir, self.alAnat, roi_f, total_ETA,
                         warp_params, interpolator='nearestNeighbor',
                         progress_bar=progress_bar, ask_cmd=ask_cmd,
                         overwrite=overwrite)
@@ -762,7 +766,7 @@ class RtpApp(RTP):
                     aff1D_f = None
 
                 seg_al_f = improc.resample_segmasks(
-                    self.work_dir, seg_anat_f, segname, erode, self.func_orig,
+                    RTP_dir, seg_anat_f, segname, erode, self.func_orig,
                     total_ETA, aff1D_f, progress_bar=progress_bar,
                     ask_cmd=ask_cmd, overwrite=overwrite)
                 assert seg_al_f is not None
@@ -1317,7 +1321,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def check_onAFNI(self, base, ovl):
-        work_dir = self.work_dir
+        work_dir = Path(self.work_dir) / 'RTP'
 
         # Set underlay and overlay image file
         if base == 'anat':

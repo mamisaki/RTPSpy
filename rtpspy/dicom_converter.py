@@ -183,7 +183,7 @@ class DicomConverter():
             serDesc = ser_df.SeriesDescription.iloc[0]
 
             # Set nii filename
-            out_fname = f"sub-{sub}_ses-{ses}_ser-{int(ser)}"
+            out_fname = f"sub-{sub}_ses-{ses}_ser-{int(ser):02d}"
             if not pd.isnull(serDesc) and len(serDesc):
                 out_fname += f"_desc-{serDesc}"
             out_fname = self._make_path_safe(out_fname)

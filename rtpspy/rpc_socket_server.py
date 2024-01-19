@@ -311,8 +311,9 @@ class RPCSocketServer:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def shutdown(self):
-        self._server.shutdown()
-        self._server.server_close()
+        if hasattr(self, '_server'):
+            self._server.shutdown()
+            self._server.server_close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
