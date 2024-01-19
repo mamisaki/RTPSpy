@@ -25,6 +25,7 @@ import pandas as pd
 import serial
 from serial.tools.list_ports import comports
 from scipy import interpolate
+from scipy.signal import lfilter, firwin
 import matplotlib as mpl
 
 from PyQt5 import QtCore, QtWidgets
@@ -171,8 +172,8 @@ class TTLPhysioPlot(QtCore.QObject):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_plot(self):
         # Set axis
-        self._ax_ttl, self._ax_card, self._ax_resp = \
-            self.plt_win.canvas.figure.subplots(3, 1)
+        self._ax_ttl, self._ax_card, self._ax_card_filtered, self._ax_resp = \
+            self.plt_win.canvas.figure.subplots(4, 1)
         self.plt_win.canvas.figure.subplots_adjust(
             left=0.05, bottom=0.1, right=0.91, top=0.98, hspace=0.35)
 
@@ -202,6 +203,14 @@ class TTLPhysioPlot(QtCore.QObject):
         self._ax_card.set_xlim(sig_xi[0], sig_xi[-1])
         self._ax_card.yaxis.set_ticks_position("right")
 
+        # Set filtered card axis
+        self._ax_card_filtered.clear()
+        self._ax_card_filtered.set_ylabel('Cardiogram(flitered)')
+        self._ln_card_flitered = self._ax_card_filtered.plot(
+            sig_xi, np.zeros(buf_size), 'k-')
+        self._ax_card_filtered.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_card_filtered.yaxis.set_ticks_position("right")
+
         # Set Resp axis
         self._ax_resp.clear()
         self._ax_resp.set_ylabel('Respiration')
@@ -221,9 +230,8 @@ class TTLPhysioPlot(QtCore.QObject):
             try:
                 # Get signals
                 plt_data = self.recorder.get_plot_signals(self.plot_len_sec)
-
                 if plt_data is None:
-                    return
+                    continue
 
                 card = plt_data['card']
                 resp = plt_data['resp']
@@ -271,12 +279,20 @@ class TTLPhysioPlot(QtCore.QObject):
                     ttl[ttl_onset_idx] = 1
                 self._ln_ttl[0].set_ydata(ttl)
 
+                # Adjust crad/resp ylim for the latest adjust_period seconds
+                adjust_period = 3 * self.recorder.sample_freq
+
                 # Card
                 self._ln_card[0].set_ydata(card)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
-                    ymin = max(0, np.floor(np.nanmin(card) / 50) * 50)
-                    ymax = min(1024, np.ceil(np.nanmax(card) / 50) * 50)
+                    # Adjust ylim
+                    ymin = max(0,
+                               np.floor(
+                                   np.nanmin(card[-adjust_period:]) / 25) * 25)
+                    ymax = min(1024,
+                               np.ceil(
+                                   np.nanmax(card[-adjust_period:]) / 25) * 25)
                     if ymax - ymin < 50:
                         if ymin + 50 < 1024:
                             ymax = ymin + 50
@@ -284,12 +300,43 @@ class TTLPhysioPlot(QtCore.QObject):
                             ymin = ymax - 50
                 self._ax_card.set_ylim((ymin, ymax))
 
+                # Card filtered
+                b = firwin(numtaps=41, cutoff=3, window="hamming",
+                           pass_zero='lowpass', fs=self.recorder.sample_freq)
+                card_filtered = lfilter(b, 1, card, axis=0)
+                card_filtered = np.flipud(card_filtered)
+                card_filtered = lfilter(b, 1, card_filtered)
+                card_filtered = np.flipud(card_filtered)
+                self._ln_card_flitered[0].set_ydata(card_filtered)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    # Adjust ylim
+                    ymin = max(
+                        0, np.floor(
+                            np.nanmin(
+                                card_filtered[-adjust_period:]) / 25) * 25)
+                    ymax = min(
+                        1024, np.ceil(
+                            np.nanmax(
+                                card_filtered[-adjust_period:]) / 25) * 25)
+                    if ymax - ymin < 50:
+                        if ymin + 50 < 1024:
+                            ymax = ymin + 50
+                        else:
+                            ymin = ymax - 50
+                self._ax_card_filtered.set_ylim((ymin, ymax))
+
                 # Resp
                 self._ln_resp[0].set_ydata(resp)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
-                    ymin = max(0, np.floor(np.nanmin(resp) / 50) * 50)
-                    ymax = min(1024, np.ceil(np.nanmax(resp) / 50) * 50)
+                    # Adjust ylim
+                    ymin = max(0,
+                               np.floor(
+                                   np.nanmin(resp) / 25) * 25)
+                    ymax = min(1024,
+                               np.ceil(
+                                   np.nanmax(resp) / 25) * 25)
                 self._ax_resp.set_ylim((ymin, ymax))
 
                 if self.recorder.is_scanning:
@@ -402,8 +449,9 @@ class NumatoGPIORecoding(QtCore.QObject):
                                              self.buf_len)
 
         self._debug = debug
-        if debug:
+        if self._debug:
             self._sim_card, self._sim_resp = sim_data
+            self._sim_data_len = min(len(self._sim_card), len(self._sim_resp))
             self._sim_data_pos = 0
 
         self._rec_proc = None  # TTL recording process
@@ -546,17 +594,23 @@ class NumatoGPIORecoding(QtCore.QObject):
             ttl_state = ttl
 
             if tstamp_physio is not None:
-                # Card
-                try:
-                    card = float(resp1.decode().split('\n\r')[1])
-                except Exception:
-                    continue
+                if not self._debug:
+                    # Card
+                    try:
+                        card = float(resp1.decode().split('\n\r')[1])
+                    except Exception:
+                        continue
 
-                # Resp
-                try:
-                    resp = float(resp2.decode().split('\n\r')[1])
-                except Exception:
-                    continue
+                    # Resp
+                    try:
+                        resp = float(resp2.decode().split('\n\r')[1])
+                    except Exception:
+                        continue
+                else:
+                    card = self._sim_card[self._sim_data_pos]
+                    resp = self._sim_resp[self._sim_data_pos]
+                    self._sim_data_pos = (self._sim_data_pos + 1) % \
+                        self._sim_data_len
 
                 physio_que.put((tstamp_physio, card, resp))
 
@@ -784,7 +838,8 @@ class RtpPhysio(RTP):
                                             ttl_fname.suffix)
         ttl_df.to_csv(ttl_fname)
 
-        dataMask = (tstamp >= onset) & (tstamp <= offset) & \
+        # As the data is resampled, 1 s outside the scan period is included.
+        dataMask = (tstamp >= onset-1) & (tstamp <= offset+1) & \
             np.logical_not(np.isnan(tstamp))
         if dataMask.sum() == 0:
             return
@@ -1060,9 +1115,9 @@ if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
     # recorder
-    if False:  # debug:
-        card_f = Path('/data/rt/S20240104150322/Card_500Hz_ser-12.1D')
-        resp_f = Path('/data/rt/S20240104150322/Resp_500Hz_ser-12.1D')
+    if debug:
+        card_f = Path('/data/rt/P000200/Card_100Hz_ser-12.1D')
+        resp_f = Path('/data/rt/P000200/Resp_100Hz_ser-12.1D')
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(card_f)
         rtp_physio = RtpPhysio(
