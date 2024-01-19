@@ -307,6 +307,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 card_filtered = np.flipud(card_filtered)
                 card_filtered = lfilter(b, 1, card_filtered)
                 card_filtered = np.flipud(card_filtered)
+                card_filtered[:21] = np.nan
                 self._ln_card_flitered[0].set_ydata(card_filtered)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)

@@ -436,7 +436,7 @@ class RtpDcm2Nii:
                     else:
                         series_duration = None
                     fname_fmt = str(self._study_dir) + '/' + '{}_ser-' + \
-                        f"{self._series_nr}.1D"
+                        f"{int(self._series_nr):02d}.1D"
 
                     args = ('SAVE_PHYSIO_DATA', None, series_duration,
                             fname_fmt)
@@ -492,7 +492,7 @@ class RtpDcm2Nii:
             if self._study_dir is None or self._series_nr is None:
                 return 'None'.encode('utf-8')
 
-            retstr = f"{str(self._study_dir)}/ser-{self._series_nr}"
+            retstr = f"{str(self._study_dir)}/ser-{int(self._series_nr):02d}"
             return retstr.encode('utf-8')
 
         elif call == 'QUIT':
