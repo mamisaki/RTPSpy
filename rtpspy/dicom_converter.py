@@ -130,7 +130,12 @@ class DicomConverter():
             # Append file info
             addrow = pd.Series()
             addrow['SOPInstanceUID'] = str(dcm.SOPInstanceUID)
-            addrow['Patient'] = '_'.join(str(dcm.PatientName).split('^'))
+
+            patinet = str(dcm.PatientName).split('^')
+            if re.match(r'\w\w\d\d\d', patinet[0]):  # LIBR ID
+                addrow['Patient'] = patinet[0]
+            else:
+                addrow['Patient'] = '_'.join(patinet)
             addrow['SeriesNumber'] = int(dcm.SeriesNumber)
             addrow['SeriesDescription'] = dcm.SeriesDescription
             addrow['AcquisitionDateTime'] = float(dcm.AcquisitionDateTime)
