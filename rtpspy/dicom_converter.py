@@ -14,6 +14,7 @@ import traceback
 import shutil
 import re
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -54,20 +55,25 @@ class DicomConverter():
 
             # Copy files to tmp and dicom_dst
             tmp_dicom_dir = Path('/tmp') / dicom_dir.name
-
+            cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
             try:
-                cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
                 subprocess.check_call(shlex.split(cmd))
-
-                cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
-                subprocess.check_call(shlex.split(cmd))
-
             except Exception:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                errstr = ''.join(
+                    traceback.format_exception(exc_type, exc_obj, exc_tb))
+                sys.stderr.write(errstr)
                 return
 
-            if dicom_dir.is_dir():
-                # Clean the source files
-                shutil.rmtree(dicom_dir)
+            cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
+            try:
+                subprocess.check_call(shlex.split(cmd))
+            except Exception:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                errstr = ''.join(
+                    traceback.format_exception(exc_type, exc_obj, exc_tb))
+                sys.stderr.write(errstr)
+                return
 
             if tmp_dicom_dir.is_dir():
                 # Get the list of DICOM files
@@ -77,8 +83,13 @@ class DicomConverter():
                 self.convert_dicom(
                     dcm_info, tmp_dicom_dir, out_dir, make_brik=make_brik,
                     overwrite=overwrite)
-
+                # Remove tmp dir
                 shutil.rmtree(tmp_dicom_dir)
+
+            # Clean the source files
+            if dicom_dir.is_dir():
+                time.sleep(3)
+                shutil.rmtree(dicom_dir)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -130,7 +141,6 @@ class DicomConverter():
             # Append file info
             addrow = pd.Series()
             addrow['SOPInstanceUID'] = str(dcm.SOPInstanceUID)
-
             patinet = str(dcm.PatientName).split('^')
             if re.match(r'\w\w\d\d\d', patinet[0]):  # LIBR ID
                 addrow['Patient'] = patinet[0]
