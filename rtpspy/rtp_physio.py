@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Real-time physiological signal recording class.
-
 @author: mmisaki@libr.net
+
+Model class : NumatoGPIORecoding
+View class : TTLPhysioPlot
+Controler class: RtpPhysio
 """
 
 
@@ -136,254 +139,7 @@ class RingBuffer:
             return None
 
 
-# %% ==========================================================================
-class TTLPhysioPlot(QtCore.QObject):
-    finished = QtCore.pyqtSignal()
-
-    def __init__(self, recorder, main_win=None, win_shape=(600, 600),
-                 plot_len_sec=10, disable_close=False):
-        super().__init__()
-
-        self.recorder = recorder
-        self.main_win = main_win
-        self.plot_len_sec = plot_len_sec
-        self.disable_close = disable_close
-
-        self._cancel = False
-
-        # Initialize figure
-        plt_winname = 'Physio signals'
-        self.plt_win = MatplotlibWindow()
-        self.plt_win.setWindowTitle(plt_winname)
-
-        # set position
-        if main_win is not None:
-            main_geom = main_win.geometry()
-            x = main_geom.x() + main_geom.width() + 10
-            y = main_geom.y() - 26
-        else:
-            x, y = (0, 0)
-        self.plt_win.setGeometry(x, y, win_shape[0], win_shape[1])
-        self.init_plot()
-
-        # show window
-        self.plt_win.show()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def init_plot(self):
-        # Set axis
-        self._ax_ttl, self._ax_card, self._ax_card_filtered, self._ax_resp = \
-            self.plt_win.canvas.figure.subplots(4, 1)
-        self.plt_win.canvas.figure.subplots_adjust(
-            left=0.05, bottom=0.1, right=0.91, top=0.98, hspace=0.35)
-
-        self.reset_plot()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def reset_plot(self):
-        signal_freq = self.recorder.sample_freq
-        buf_size = int(np.round(self.plot_len_sec * signal_freq))
-        sig_xi = np.arange(buf_size) * 1.0/signal_freq
-
-        # Set TTL axis
-        self._ax_ttl.clear()
-        self._ax_ttl.set_ylabel('TTL')
-        self._ln_ttl = self._ax_ttl.plot(
-            sig_xi, np.zeros(buf_size), 'k-')
-        self._ax_ttl.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_ttl.set_ylim((-0.1, 1.1))
-        self._ax_ttl.set_yticks((0, 1))
-        self._ax_ttl.yaxis.set_ticks_position("right")
-
-        # Set card axis
-        self._ax_card.clear()
-        self._ax_card.set_ylabel('Cardiogram')
-        self._ln_card = self._ax_card.plot(
-            sig_xi, np.zeros(buf_size), 'k-')
-        self._ax_card.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_card.yaxis.set_ticks_position("right")
-
-        # Set filtered card axis
-        self._ax_card_filtered.clear()
-        self._ax_card_filtered.set_ylabel('Cardiogram(flitered)')
-        self._ln_card_flitered = self._ax_card_filtered.plot(
-            sig_xi, np.zeros(buf_size), 'k-')
-        self._ax_card_filtered.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_card_filtered.yaxis.set_ticks_position("right")
-
-        # Set Resp axis
-        self._ax_resp.clear()
-        self._ax_resp.set_ylabel('Respiration')
-        self._ln_resp = self._ax_resp.plot(
-            sig_xi, np.zeros(buf_size), 'k-')
-        self._ax_resp.set_xlim(sig_xi[0], sig_xi[-1])
-        self._ax_resp.yaxis.set_ticks_position("right")
-        self._ax_resp.set_xlabel('second')
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show(self):
-        self.plt_win.show()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run(self):
-        while self.plt_win.isVisible() and not self._cancel:
-            try:
-                # Get signals
-                plt_data = self.recorder.get_plot_signals(self.plot_len_sec)
-                if plt_data is None:
-                    continue
-
-                card = plt_data['card']
-                resp = plt_data['resp']
-                tstamp = plt_data['tstamp']
-
-                card[tstamp == 0] = 0
-                resp[tstamp == 0] = 0
-
-                zero_t = time.time() - self._ln_ttl[0].get_xdata()[-1]
-                plt_xt = zero_t + self._ln_ttl[0].get_xdata()
-
-                # Resample
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore",
-                                              category=RuntimeWarning)
-
-                        f = interpolate.interp1d(tstamp, card,
-                                                 bounds_error=False)
-                        card = f(plt_xt)
-                        f = interpolate.interp1d(tstamp, resp,
-                                                 bounds_error=False)
-                        resp = f(plt_xt)
-
-                except Exception:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errstr = ''.join(
-                        traceback.format_exception(exc_type, exc_obj, exc_tb))
-                    self._logger.error(errstr)
-
-                # Plot
-                # TTL
-                ttl = np.zeros_like(card)
-                ttl_onset = plt_data['ttl_onset']
-                ttl_onset = ttl_onset[~np.isnan(ttl_onset)]
-                if len(ttl_onset):
-                    ttl_onset = ttl_onset[(ttl_onset >= plt_xt[0]) &
-                                          (ttl_onset <= plt_xt[-1])]
-                    ttl_onset = ttl_onset - plt_xt[0]
-                    ttl_onset_idx = np.array([
-                        int(np.round(ons * self.recorder.sample_freq))
-                        for ons in ttl_onset], dtype=int)
-                    ttl_onset_idx = ttl_onset_idx[(ttl_onset_idx >= 0) &
-                                                  (ttl_onset_idx < len(ttl))]
-                    ttl[ttl_onset_idx] = 1
-                self._ln_ttl[0].set_ydata(ttl)
-
-                # Adjust crad/resp ylim for the latest adjust_period seconds
-                adjust_period = 3 * self.recorder.sample_freq
-
-                # Card
-                self._ln_card[0].set_ydata(card)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    # Adjust ylim
-                    ymin = max(0,
-                               np.floor(
-                                   np.nanmin(card[-adjust_period:]) / 25) * 25)
-                    ymax = min(1024,
-                               np.ceil(
-                                   np.nanmax(card[-adjust_period:]) / 25) * 25)
-                    if ymax - ymin < 50:
-                        if ymin + 50 < 1024:
-                            ymax = ymin + 50
-                        else:
-                            ymin = ymax - 50
-                self._ax_card.set_ylim((ymin, ymax))
-
-                # Card filtered
-                b = firwin(numtaps=41, cutoff=3, window="hamming",
-                           pass_zero='lowpass', fs=self.recorder.sample_freq)
-                card_filtered = lfilter(b, 1, card, axis=0)
-                card_filtered = np.flipud(card_filtered)
-                card_filtered = lfilter(b, 1, card_filtered)
-                card_filtered = np.flipud(card_filtered)
-                card_filtered[:21] = np.nan
-                self._ln_card_flitered[0].set_ydata(card_filtered)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    # Adjust ylim
-                    ymin = max(
-                        0, np.floor(
-                            np.nanmin(
-                                card_filtered[-adjust_period:]) / 25) * 25)
-                    ymax = min(
-                        1024, np.ceil(
-                            np.nanmax(
-                                card_filtered[-adjust_period:]) / 25) * 25)
-                    if ymax - ymin < 50:
-                        if ymin + 50 < 1024:
-                            ymax = ymin + 50
-                        else:
-                            ymin = ymax - 50
-                self._ax_card_filtered.set_ylim((ymin, ymax))
-
-                # Resp
-                self._ln_resp[0].set_ydata(resp)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    # Adjust ylim
-                    ymin = max(0,
-                               np.floor(
-                                   np.nanmin(resp) / 25) * 25)
-                    ymax = min(1024,
-                               np.ceil(
-                                   np.nanmax(resp) / 25) * 25)
-                self._ax_resp.set_ylim((ymin, ymax))
-
-                if self.recorder.is_scanning:
-                    self._ln_card[0].set_color('r')
-                    self._ln_resp[0].set_color('b')
-                else:
-                    self._ln_card[0].set_color('k')
-                    self._ln_resp[0].set_color('k')
-
-                self.plt_win.canvas.draw()
-                time.sleep(1/60)
-
-            except Exception as e:
-                exc_type, exc_obj, exc_tb = sys.exc_info()
-                errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
-                errmsg += ' ' + str(e)
-                print("!!!Error:{}".format(errmsg))
-
-        self.end_thread()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def end_thread(self):
-        if self.plt_win.isVisible():
-            self.plt_win.close()
-
-        self.finished.emit()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_position(self, size=None, pos=None):
-        if size is not None:
-            self.plt_win.resize(size)
-
-        if pos is not None:
-            self.plt_win.move(pos)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def closeEvent(self, event):
-        if self.disable_close:
-            event.ignore()
-        else:
-            event.accept()
-
-
-# %% NumatoGPIORecoding class ========================================
+# %% NumatoGPIORecoding class =================================================
 class NumatoGPIORecoding(QtCore.QObject):
     """
     Receiving signal in USB GPIO device, Numato Lab 8 Channel USB GPIO (
@@ -555,6 +311,9 @@ class NumatoGPIORecoding(QtCore.QObject):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _read_signal(self, ttl_que, physio_que, phys_fs):
+        if not self.open_sig_port():
+            return
+
         ttl_state = 0
         rec_interval = 1.0 / phys_fs
         rec_delay = 0
@@ -620,6 +379,7 @@ class NumatoGPIORecoding(QtCore.QObject):
 
                 while next_rec-rec_delay < ct:
                     next_rec += rec_interval
+
             time.sleep(0.001)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -687,6 +447,257 @@ class NumatoGPIORecoding(QtCore.QObject):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_thread(self):
         self.finished.emit()
+
+
+# %% TTLPhysioPlot ============================================================
+class TTLPhysioPlot(QtCore.QObject):
+    """ View class for dispaying TTL and physio recording signals
+    """
+    finished = QtCore.pyqtSignal()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __init__(self, recorder, main_win=None, win_shape=(600, 600),
+                 plot_len_sec=10, disable_close=False):
+        super().__init__()
+
+        self.recorder = recorder
+        self.main_win = main_win
+        self.plot_len_sec = plot_len_sec
+        self.disable_close = disable_close
+
+        self._cancel = False
+
+        # Initialize figure
+        plt_winname = 'Physio signals'
+        self.plt_win = MatplotlibWindow()
+        self.plt_win.setWindowTitle(plt_winname)
+
+        # set position
+        if main_win is not None:
+            main_geom = main_win.geometry()
+            x = main_geom.x() + main_geom.width() + 10
+            y = main_geom.y() - 26
+        else:
+            x, y = (0, 0)
+        self.plt_win.setGeometry(x, y, win_shape[0], win_shape[1])
+        self.init_plot()
+
+        # show window
+        self.plt_win.show()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def init_plot(self):
+        # Set axis
+        self._ax_ttl, self._ax_card, self._ax_card_filtered, self._ax_resp = \
+            self.plt_win.canvas.figure.subplots(4, 1)
+        self.plt_win.canvas.figure.subplots_adjust(
+            left=0.05, bottom=0.1, right=0.91, top=0.98, hspace=0.35)
+
+        self.reset_plot()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def reset_plot(self):
+        signal_freq = self.recorder.sample_freq
+        buf_size = int(np.round(self.plot_len_sec * signal_freq))
+        sig_xi = np.arange(buf_size) * 1.0/signal_freq
+
+        # Set TTL axis
+        self._ax_ttl.clear()
+        self._ax_ttl.set_ylabel('TTL')
+        self._ln_ttl = self._ax_ttl.plot(
+            sig_xi, np.zeros(buf_size), 'k-')
+        self._ax_ttl.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_ttl.set_ylim((-0.1, 1.1))
+        self._ax_ttl.set_yticks((0, 1))
+        self._ax_ttl.yaxis.set_ticks_position("right")
+
+        # Set card axis
+        self._ax_card.clear()
+        self._ax_card.set_ylabel('Cardiogram')
+        self._ln_card = self._ax_card.plot(
+            sig_xi, np.zeros(buf_size), 'k-')
+        self._ax_card.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_card.yaxis.set_ticks_position("right")
+
+        # Set filtered card axis
+        self._ax_card_filtered.clear()
+        self._ax_card_filtered.set_ylabel('Cardiogram(flitered)')
+        self._ln_card_flitered = self._ax_card_filtered.plot(
+            sig_xi, np.zeros(buf_size), 'k-')
+        self._ax_card_filtered.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_card_filtered.yaxis.set_ticks_position("right")
+
+        # Set Resp axis
+        self._ax_resp.clear()
+        self._ax_resp.set_ylabel('Respiration')
+        self._ln_resp = self._ax_resp.plot(
+            sig_xi, np.zeros(buf_size), 'k-')
+        self._ax_resp.set_xlim(sig_xi[0], sig_xi[-1])
+        self._ax_resp.yaxis.set_ticks_position("right")
+        self._ax_resp.set_xlabel('second')
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def show(self):
+        self.plt_win.show()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def run(self):
+        while self.plt_win.isVisible() and not self._cancel:
+            try:
+                # Get signals
+                plt_data = self.recorder.get_plot_signals(self.plot_len_sec)
+                if plt_data is None:
+                    continue
+
+                card = plt_data['card']
+                resp = plt_data['resp']
+                tstamp = plt_data['tstamp']
+
+                card[tstamp == 0] = 0
+                resp[tstamp == 0] = 0
+
+                zero_t = time.time() - self._ln_ttl[0].get_xdata()[-1]
+                plt_xt = zero_t + self._ln_ttl[0].get_xdata()
+
+                # --- Resample in regular interval ---
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore",
+                                              category=RuntimeWarning)
+
+                        f = interpolate.interp1d(tstamp, card,
+                                                 bounds_error=False)
+                        card = f(plt_xt)
+                        f = interpolate.interp1d(tstamp, resp,
+                                                 bounds_error=False)
+                        resp = f(plt_xt)
+
+                except Exception:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    errstr = ''.join(
+                        traceback.format_exception(exc_type, exc_obj, exc_tb))
+                    self._logger.error(errstr)
+
+                # --- Plot ---
+                # TTL
+                ttl = np.zeros_like(card)
+                ttl_onset = plt_data['ttl_onset']
+                ttl_onset = ttl_onset[~np.isnan(ttl_onset)]
+                if len(ttl_onset):
+                    ttl_onset = ttl_onset[(ttl_onset >= plt_xt[0]) &
+                                          (ttl_onset <= plt_xt[-1])]
+                    ttl_onset = ttl_onset - plt_xt[0]
+                    ttl_onset_idx = np.array([
+                        int(np.round(ons * self.recorder.sample_freq))
+                        for ons in ttl_onset], dtype=int)
+                    ttl_onset_idx = ttl_onset_idx[(ttl_onset_idx >= 0) &
+                                                  (ttl_onset_idx < len(ttl))]
+                    ttl[ttl_onset_idx] = 1
+                self._ln_ttl[0].set_ydata(ttl)
+
+                # Adjust crad/resp ylim for the latest adjust_period seconds
+                adjust_period = 3 * self.recorder.sample_freq
+
+                # Card
+                self._ln_card[0].set_ydata(card)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    # Adjust ylim
+                    ymin = max(0,
+                               np.floor(
+                                   np.nanmin(card[-adjust_period:]) / 25) * 25)
+                    ymax = min(1024,
+                               np.ceil(
+                                   np.nanmax(card[-adjust_period:]) / 25) * 25)
+                    if ymax - ymin < 50:
+                        if ymin + 50 < 1024:
+                            ymax = ymin + 50
+                        else:
+                            ymin = ymax - 50
+                self._ax_card.set_ylim((ymin, ymax))
+
+                # Card filtered
+                b = firwin(numtaps=41, cutoff=3, window="hamming",
+                           pass_zero='lowpass', fs=self.recorder.sample_freq)
+                card_filtered = lfilter(b, 1, card, axis=0)
+                card_filtered = np.flipud(card_filtered)
+                card_filtered = lfilter(b, 1, card_filtered)
+                card_filtered = np.flipud(card_filtered)
+                card_filtered[:21] = np.nan
+                self._ln_card_flitered[0].set_ydata(card_filtered)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    # Adjust ylim
+                    ymin = max(
+                        0, np.floor(
+                            np.nanmin(
+                                card_filtered[-adjust_period:]) / 25) * 25)
+                    ymax = min(
+                        1024, np.ceil(
+                            np.nanmax(
+                                card_filtered[-adjust_period:]) / 25) * 25)
+                    if ymax - ymin < 50:
+                        if ymin + 50 < 1024:
+                            ymax = ymin + 50
+                        else:
+                            ymin = ymax - 50
+                self._ax_card_filtered.set_ylim((ymin, ymax))
+
+                # Resp
+                self._ln_resp[0].set_ydata(resp)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    # Adjust ylim
+                    ymin = max(0, np.floor(np.nanmin(resp) / 25) * 25)
+                    ymax = min(1024, np.ceil(np.nanmax(resp) / 25) * 25)
+                    if ymax - ymin < 50:
+                        if ymin + 50 < 1024:
+                            ymax = ymin + 50
+                        else:
+                            ymin = ymax - 50
+                self._ax_resp.set_ylim((ymin, ymax))
+
+                if self.recorder.is_scanning:
+                    self._ln_card[0].set_color('r')
+                    self._ln_resp[0].set_color('b')
+                else:
+                    self._ln_card[0].set_color('k')
+                    self._ln_resp[0].set_color('k')
+
+                self.plt_win.canvas.draw()
+                time.sleep(1/60)
+
+            except Exception as e:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                errmsg = '{}, {}:{}'.format(
+                    exc_type, exc_tb.tb_frame.f_code.co_filename,
+                    exc_tb.tb_lineno)
+                errmsg += ' ' + str(e)
+                print("!!!Error:{}".format(errmsg))
+
+        self.end_thread()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def end_thread(self):
+        if self.plt_win.isVisible():
+            self.plt_win.close()
+
+        self.finished.emit()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_position(self, size=None, pos=None):
+        if size is not None:
+            self.plt_win.resize(size)
+
+        if pos is not None:
+            self.plt_win.move(pos)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def closeEvent(self, event):
+        if self.disable_close:
+            event.ignore()
+        else:
+            event.accept()
 
 
 # %% ==========================================================================
@@ -811,6 +822,8 @@ class RtpPhysio(RTP):
     def save_physio_data(self, onset=None, len_sec=None, fname_fmt='./{}.1D'):
         # Get data
         data = self.dump()
+        if data is None:
+            return
         tstamp = data['tstamp']
 
         if onset is None:
@@ -952,7 +965,7 @@ class RtpPhysio(RTP):
         else:
             ttl_interval = np.diff(ttl_onset)
             if TR is not None:
-                interval_thresh = TR*1.5
+                interval_thresh = TR * 1.5
             else:
                 interval_thresh = np.nanmin(ttl_interval) * 1.5
 
@@ -970,11 +983,11 @@ class RtpPhysio(RTP):
                     timeout=2):
         onset = self._recorder.scan_onset()
         if onset == 0:
-            return None
+            return
 
         data = self.dump()
         if data is None:
-            return None
+            return
 
         tstamp = data['tstamp'] - onset
 
