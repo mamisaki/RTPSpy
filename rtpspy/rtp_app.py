@@ -347,7 +347,7 @@ class RtpApp(RTP):
             # progress dialog
             msgBox = QtWidgets.QMessageBox(self.main_win)
             msgBox.setWindowTitle('dcm2niix')
-            msgBox.setText('COnverting DICOM to NIfTI ...')
+            msgBox.setText('Converting DICOM to NIfTI ...')
             msgBox.setStandardButtons(QtWidgets.QMessageBox.NoButton)
             msgBox.show()
             time.sleep(0.1)
@@ -370,7 +370,7 @@ class RtpApp(RTP):
                 msgBox.accept()
             except Exception:
                 pass
-            errmsg = f"Error at dcm2niix_afni: {e}"
+            errmsg = f"Error at dcm2niix: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             ostr = errmsg.encode()
@@ -1126,7 +1126,7 @@ class RtpApp(RTP):
 
             # Stand by scan onset monitor
             self._wait_start = True
-            self.rtp_objs['PHYSIO']._recorder.wait_ttl(True)
+            self.rtp_objs['PHYSIO'].wait_ttl_on = True
             self._scanning = False
             self._wait_start = True
 

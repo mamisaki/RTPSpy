@@ -219,7 +219,7 @@ class RPCSocketServer:
 
             # --- Initialize ---
             client_addr, port = self.client_address
-            self._logger.info(f"Connected from {client_addr}:{port}")
+            self._logger.debug(f"Connected from {client_addr}:{port}")
             self.request.settimeout(1)
 
             # --- Request handling loop ---
@@ -284,7 +284,7 @@ class RPCSocketServer:
                             if prefix.startswith('Z'):
                                 pkldata = zlib.decompress(pkldata)
                             data = pickle.loads(pkldata)
-                            self._logger.info(
+                            self._logger.debug(
                                 f'Received {dsize} byte data' +
                                 f' by {self.server.server_address}')
                         except Exception:
