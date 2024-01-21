@@ -32,8 +32,8 @@ if '__file__' not in locals():
     __file__ = 'this.py'
 
 
-# %% class RtpDcm2Nii ===================================================
-class RtpDcm2Nii:
+# %% class RtpDicomMonitor ====================================================
+class RtpDicomMonitor:
     """A server process that converts DICOM to NIfTI in real time or on demand.
     Procedures:
     - Monitor a directory (self.dcm_dir) to which DICOM files are exported in
@@ -91,7 +91,7 @@ class RtpDcm2Nii:
             Flag to use a PollingObserver if the dcm_dir is not on a local
             file system. The default is False.
         """
-        self._logger = logging.getLogger('RtpDcm2NiiServer')
+        self._logger = logging.getLogger('RtpDicomMonitor')
 
         # Initialize parameters
         self.watch_dir = watch_dir
@@ -135,7 +135,7 @@ class RtpDcm2Nii:
         """main loop"""
         self._logger.info(
             '\n' + '#' * 80 + '\n' +
-            f'#==== Start RtpDcm2NiiServer {time.ctime()} ====='
+            f'#==== Start RtpDicomMonitor {time.ctime()} ====='
             )
 
         # Start watchdog
@@ -199,7 +199,7 @@ class RtpDcm2Nii:
             self._observer = Observer()
 
         self._event_handler = \
-            RtpDcm2Nii._FileHandler(
+            RtpDicomMonitor._FileHandler(
                 self.watch_file_pattern, callback=callback)
 
         self._observer.schedule(self._event_handler, self.watch_dir,
@@ -510,7 +510,7 @@ class RtpDcm2Nii:
                 self._RPCserver_thread.join()
 
             try:
-                self._logger.info('\n==== Close RtpDcm2NiiServer ====' +
+                self._logger.info('\n==== Close RtpDicomMonitor ====' +
                                   '\n#' + '=' * 80 + '\n#\n#')
             except Exception:
                 pass
@@ -529,12 +529,12 @@ if __name__ == '__main__':
     RT_COPY_DST_DIR = Path('/RTMRI/RTExport_rt')
 
     dstr = datetime.now().strftime("%Y%m%d")
-    LOG_FILE = Path(f'log/RtpDcm2NiiServer_{dstr}.log')
+    LOG_FILE = Path(f'log/RtpDicomMonitor_{dstr}.log')
     if not LOG_FILE.parent.is_dir():
         os.makedirs(LOG_FILE.parent)
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description='RTPSpy dcm2nii server')
+    parser = argparse.ArgumentParser(description='RTPSpy DICOM monnitor')
     parser.add_argument('--watch_dir', default=RTMRI_DIR,
                         help='Watch directory, where MRI data is exported in' +
                         'real time')
@@ -579,7 +579,7 @@ if __name__ == '__main__':
         datefmt='%Y-%m-%dT%H:%M:%S')
 
     # Create the server
-    dcm2nii_serv = RtpDcm2Nii(
+    rtp_dicom_monitor = RtpDicomMonitor(
         watch_dir, work_root, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, study_ID_field=study_ID_field,
         series_timeout=series_timeout,
@@ -588,13 +588,13 @@ if __name__ == '__main__':
         rtp_physio_address=rtp_physio_address)
 
     # Start RPC socket server
-    socekt_srv = RPCSocketServer(rpc_port, dcm2nii_serv.RPC_handler,
-                                 socket_name='RtpDcm2NiiSocketServer')
+    socekt_srv = RPCSocketServer(rpc_port, rtp_dicom_monitor.RPC_handler,
+                                 socket_name='RtpDicomMonitorSocketServer')
 
     # Run mainloop
     try:
-        dcm2nii_serv.run()
+        rtp_dicom_monitor.run()
     except Exception:
         pass
 
-    del dcm2nii_serv
+    del rtp_dicom_monitor

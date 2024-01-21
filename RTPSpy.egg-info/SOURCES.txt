@@ -20,7 +20,7 @@ rtpspy/rt_physio.py
 rtpspy/rt_physio0.py
 rtpspy/rtp_app.py
 rtpspy/rtp_common.py
-rtpspy/rtp_dcm2nii.py
+rtpspy/rtp_dicom_monitor.py
 rtpspy/rtp_gui.py
 rtpspy/rtp_imgproc.py
 rtpspy/rtp_mrid.py
