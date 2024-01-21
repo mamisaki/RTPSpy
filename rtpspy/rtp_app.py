@@ -1125,7 +1125,7 @@ class RtpApp(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            self._wait_start = True
+            self.rtp_objs['PHYSIO'].scan_onset = 0
             self.rtp_objs['PHYSIO'].wait_ttl_on = True
             self._scanning = False
             self._wait_start = True
