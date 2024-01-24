@@ -25,7 +25,7 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
-from rtpspy.rtp_physio_gpio import call_rt_physio
+from rtpspy.rtp_physio import call_rt_physio
 from rpc_socket_server import RPCSocketServer
 
 if '__file__' not in locals():

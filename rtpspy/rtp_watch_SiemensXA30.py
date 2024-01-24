@@ -74,7 +74,7 @@ class RtpWatch(RTP):
         polling_observer : bool, optional
             Flag to use a PollingObserver if the dcm_dir is not on a local
             file system. The default is False.
-        polling_timeout :; float, optional
+        polling_timeout : float, optional
             Timeout (second) for polling watch_dir.
         """
         super().__init__(**kwargs)  # call __init__() in RTP base class
@@ -88,7 +88,7 @@ class RtpWatch(RTP):
         self.polling_timeout = polling_timeout
         self.clean_ready = False
         self._dcmread_timeout = 1
-    
+
         self._last_proc_f = ''  # Last processed filename
         self._done_proc = -1  # Number of the processed volume
         self._proc_ready = False
@@ -536,6 +536,11 @@ class RtpWatch(RTP):
             if hasattr(self, 'ui_cleanReady_chb'):
                 self.ui_cleanReady_chb.setChecked(val)
 
+        elif attr == 'rtp_physio_address':
+            if type(val) is str:
+                host, port = val.split(':')
+                val = (host, int(port))
+
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
@@ -628,7 +633,8 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_pollingTimeout_dSpBx])
 
         # clean_ready
-        self.ui_cleanReady_chb = QtWidgets.QCheckBox("Clean watch dir at ready")
+        self.ui_cleanReady_chb = QtWidgets.QCheckBox(
+            "Clean watch dir at ready")
         self.ui_cleanReady_chb.setChecked(self.clean_ready)
         self.ui_cleanReady_chb.stateChanged.connect(
                 lambda state: setattr(self, 'clean_ready', state > 0))
