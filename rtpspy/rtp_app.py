@@ -186,13 +186,14 @@ class RtpApp(RTP):
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
-        rtp_objs['WATCH'] = RtpWatch()
+        rtp_objs['PHYSIO'] = RtpPhysio()
+        rtp_objs['WATCH'] = RtpWatch(scan_onset_obj=rtp_objs['PHYSIO'])
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
-        rtp_objs['PHYSIO'] = RtpPhysio()
         rtp_objs['REGRESS'] = RtpRegress(
             volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['PHYSIO'])
+
         self.rtp_objs = rtp_objs
 
         # --- Set the default RTP parameters ----------------------------------
@@ -1703,6 +1704,7 @@ class RtpApp(RTP):
 
         def run(self):
             while self.onsetObj.scan_onset == 0 and not self.abort:
+                # print(self.onsetObj.scan_onset)
                 time.sleep(0.001)
 
             if self.abort:

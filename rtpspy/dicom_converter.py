@@ -65,15 +65,16 @@ class DicomConverter():
                 sys.stderr.write(errstr)
                 return
 
-            cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
-            try:
-                subprocess.check_call(shlex.split(cmd))
-            except Exception:
-                exc_type, exc_obj, exc_tb = sys.exc_info()
-                errstr = ''.join(
-                    traceback.format_exception(exc_type, exc_obj, exc_tb))
-                sys.stderr.write(errstr)
-                return
+            if dicom_dir.is_dir():
+                cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
+                try:
+                    subprocess.check_call(shlex.split(cmd))
+                except Exception:
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    errstr = ''.join(
+                        traceback.format_exception(exc_type, exc_obj, exc_tb))
+                    sys.stderr.write(errstr)
+                    return
 
             if tmp_dicom_dir.is_dir():
                 # Get the list of DICOM files
@@ -211,8 +212,11 @@ class DicomConverter():
                 if len(nii.shape) < 4:
                     if len(ser_df) != 1 and len(ser_df) != nii.shape[-1]:
                         nii_f.unlink()
-                elif nii.shape[-1] != len(ser_df):
+                elif nii.shape[-1] < len(ser_df):
                     nii_f.unlink()
+
+            if nii_f.is_file() and not overwrite:
+                self._logger.error(f'Nii file {nii_f} exists.')
 
             # -- Convert DICOM to NIfTI -----------------------------------
             if not nii_f.is_file() or overwrite:
