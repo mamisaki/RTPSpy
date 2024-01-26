@@ -1195,7 +1195,7 @@ if __name__ == '__main__':
 
     # Parse arguments
     LOG_FILE = f'{Path(__file__).stem}.log'
-    parser = argparse.ArgumentParser(description='RT physio')
+    parser = argparse.ArgumentParser(description='RTP physio')
     parser.add_argument('--sample_freq', default=100,
                         help='sampling frequency (Hz)')
     parser.add_argument('--log_file', default=LOG_FILE,
