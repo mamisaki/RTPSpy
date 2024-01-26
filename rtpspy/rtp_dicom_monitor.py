@@ -100,7 +100,6 @@ class RtpDicomMonitor:
         self.study_prefix = study_prefix
         self.study_ID_field = study_ID_field
         self.series_timeout = series_timeout
-        self.rpc_port = rpc_port
         self.make_brik = make_brik
         self.polling_observer = polling_observer
         host, port = rtp_physio_address.split(':')
@@ -129,6 +128,11 @@ class RtpDicomMonitor:
         self._cancel = False
         self._end_complete = False
         self._save_physio = False
+
+        # Start RPC socket server
+        self.socekt_srv = RPCSocketServer(
+            rpc_port, self.RPC_handler,
+            socket_name='RtpDicomMonitorSocketServer')
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
@@ -515,6 +519,7 @@ class RtpDicomMonitor:
             except Exception:
                 pass
 
+            self.socekt_srv.shutdown()
             self._end_complete = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -526,7 +531,6 @@ class RtpDicomMonitor:
 if __name__ == '__main__':
     RTMRI_DIR = Path('/RTMRI/RTExport')
     WORK_DIR = Path('/data/rt')
-    RT_COPY_DST_DIR = Path('/RTMRI/RTExport_rt')
 
     dstr = datetime.now().strftime("%Y%m%d")
     LOG_FILE = Path(f'log/RtpDicomMonitor_{dstr}.log')
@@ -534,7 +538,7 @@ if __name__ == '__main__':
         os.makedirs(LOG_FILE.parent)
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description='RTPSpy DICOM monnitor')
+    parser = argparse.ArgumentParser(description='RTPSpy DICOM monitor')
     parser.add_argument('--watch_dir', default=RTMRI_DIR,
                         help='Watch directory, where MRI data is exported in' +
                         'real time')
@@ -555,7 +559,7 @@ if __name__ == '__main__':
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
     parser.add_argument('--rtp_physio_address', default='localhost:63212',
-                        help='rtp_physio socket server port')
+                        help='rtp_physio socket server address')
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
@@ -586,10 +590,6 @@ if __name__ == '__main__':
         rpc_port=rpc_port, make_brik=make_brik,
         polling_observer=polling_observer,
         rtp_physio_address=rtp_physio_address)
-
-    # Start RPC socket server
-    socekt_srv = RPCSocketServer(rpc_port, rtp_dicom_monitor.RPC_handler,
-                                 socket_name='RtpDicomMonitorSocketServer')
 
     # Run mainloop
     try:

@@ -378,8 +378,11 @@ class RtpWatch(RTP):
         img_pos = np.concatenate(
             [np.array(pos)[None, :] for pos in img_pos], axis=0)
 
-        while True:
+        pix_data_len = int((dcm.Rows * dcm.Columns * dcm.BitsAllocated *
+                            dcm.SamplesPerPixel * dcm.NumberOfFrames) / 8)
+        while True:  # Wait for PixelData to be ready
             try:
+                assert len(dcm.PixelData) == pix_data_len
                 pixel_array = dcm.pixel_array
                 break
             except Exception as e:
