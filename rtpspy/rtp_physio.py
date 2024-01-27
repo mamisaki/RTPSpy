@@ -478,7 +478,20 @@ class TTLPhysioPlot(QtCore.QObject):
                 resp[tstamp == 0] = 0
 
                 zero_t = time.time() - self._ln_ttl[0].get_xdata()[-1]
-                plt_xt = zero_t + self._ln_ttl[0].get_xdata()
+                tstamp = tstamp - zero_t
+                plt_xt = self._ln_ttl[0].get_xdata()
+
+                # Extend xt (time points) for interpolation
+                xt_interval = np.mean(np.diff(plt_xt))
+                l_xt_extend = np.arange(
+                    -100*xt_interval, 0, xt_interval) + plt_xt[0]
+                r_xt_extend = np.arange(
+                    plt_xt[-1]+xt_interval, tstamp[-1]+xt_interval,
+                    xt_interval)
+                xt_interval_ex = np.concatenate([
+                    l_xt_extend, plt_xt, r_xt_extend
+                ])
+                xt_ex_mask = [t in plt_xt for t in xt_interval_ex]
 
                 # --- Resample in regular interval ----------------------------
                 try:
@@ -487,10 +500,13 @@ class TTLPhysioPlot(QtCore.QObject):
                                               category=RuntimeWarning)
                         f = interpolate.interp1d(tstamp, card,
                                                  bounds_error=False)
-                        card = f(plt_xt)
+                        card_ex = f(xt_interval_ex)
+                        card = card_ex[xt_ex_mask]
+
                         f = interpolate.interp1d(tstamp, resp,
                                                  bounds_error=False)
-                        resp = f(plt_xt)
+                        resp_ex = f(xt_interval_ex)
+                        resp = resp_ex[xt_ex_mask]
 
                 except Exception:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -575,11 +591,11 @@ class TTLPhysioPlot(QtCore.QObject):
                 # Card filtered
                 b = firwin(numtaps=41, cutoff=3, window="hamming",
                            pass_zero='lowpass', fs=self.recorder.sample_freq)
-                card_filtered = lfilter(b, 1, card, axis=0)
-                card_filtered = np.flipud(card_filtered)
-                card_filtered = lfilter(b, 1, card_filtered)
-                card_filtered = np.flipud(card_filtered)
-                card_filtered[:21] = np.nan
+                card_ex_filtered = lfilter(b, 1, card_ex, axis=0)
+                card_ex_filtered = np.flipud(card_ex_filtered)
+                card_ex_filtered = lfilter(b, 1, card_ex_filtered)
+                card_ex_filtered = np.flipud(card_ex_filtered)
+                card_filtered = card_ex_filtered[xt_ex_mask]
                 self._ln_card_flitered[0].set_ydata(card_filtered)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -663,7 +679,7 @@ class RtpPhysio(RTP):
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, buf_len_sec=1800, sport=None,
-                 sample_freq=100, rpc_port=63212,
+                 sample_freq=100, rpc_port=63212, save_ttl=True,
                  debug=False, sim_data=None, **kwargs):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
@@ -685,6 +701,7 @@ class RtpPhysio(RTP):
         self.sample_freq = sample_freq
         self.wait_ttl_on = False
         self.plot = None
+        self.save_ttl = save_ttl
 
         # --- Initialize data array shared with plotting process ---
         mmap_f = Path('/dev/shm') / 'scan_onset'
@@ -919,47 +936,53 @@ class RtpPhysio(RTP):
         else:
             offset = tstamp[-1]
 
-        # --- TTL ---
-        ttl_onset = data['ttl_onset']
-        ttl_onset = ttl_onset[(ttl_onset >= onset) & (ttl_onset < offset)]
-        ttl_onset = ttl_onset[ttl_onset < offset]
-        ttl_onset_df = pd.DataFrame(columns=('DateTime', 'TimefromScanOnset'))
-        ttl_onset_df['DateTime'] = [datetime.fromtimestamp(ons).isoformat()
-                                    for ons in ttl_onset]
-        ttl_onset_df['TimefromScanOnset'] = ttl_onset - onset
-        ttl_onset_fname = Path(str(fname_fmt).format('TTLonset'))
-        ttl_onset_fname = ttl_onset_fname.parent / \
-            (ttl_onset_fname.stem + '.csv')
-        ii = 0
-        while ttl_onset_fname.is_file():
-            ii += 1
+        if self.save_ttl:
+            # --- TTL ---
+            ttl_onset = data['ttl_onset']
+            ttl_onset = ttl_onset[(ttl_onset >= onset) & (ttl_onset < offset)]
+            ttl_onset = ttl_onset[ttl_onset < offset]
+            ttl_onset_df = pd.DataFrame(
+                columns=('DateTime', 'TimefromScanOnset'))
+            ttl_onset_df['DateTime'] = [datetime.fromtimestamp(ons).isoformat()
+                                        for ons in ttl_onset]
+            ttl_onset_df['TimefromScanOnset'] = ttl_onset - onset
+            ttl_onset_fname = Path(str(fname_fmt).format('TTLonset'))
             ttl_onset_fname = ttl_onset_fname.parent / \
-                (ttl_onset_fname.stem + f"_{ii}" + ttl_onset_fname.suffix)
-        ttl_onset_df.to_csv(ttl_onset_fname)
+                (ttl_onset_fname.stem + '.csv')
+            ii = 0
+            while ttl_onset_fname.is_file():
+                ii += 1
+                ttl_onset_fname = ttl_onset_fname.parent / \
+                    (ttl_onset_fname.stem + f"_{ii}" + ttl_onset_fname.suffix)
+            ttl_onset_df.to_csv(ttl_onset_fname)
 
-        ttl_offset = data['ttl_offset']
-        ttl_offset = ttl_offset[(ttl_offset >= onset) & (ttl_offset < offset)]
-        ttl_offset = ttl_offset[ttl_offset < offset]
-        ttl_offset_df = pd.DataFrame(columns=('DateTime', 'TimefromScanOnset'))
-        ttl_offset_df['DateTime'] = [datetime.fromtimestamp(ons).isoformat()
-                                     for ons in ttl_offset]
-        ttl_offset_df['TimefromScanOnset'] = ttl_offset - onset
-        ttl_offset_fname = Path(str(fname_fmt).format('TTLoffset'))
-        ttl_offset_fname = ttl_offset_fname.parent / \
-            (ttl_offset_fname.stem + '.csv')
-        ii = 0
-        while ttl_offset_fname.is_file():
-            ii += 1
+            ttl_offset = data['ttl_offset']
+            ttl_offset = ttl_offset[(ttl_offset >= onset) &
+                                    (ttl_offset < offset)]
+            ttl_offset = ttl_offset[ttl_offset < offset]
+            ttl_offset_df = pd.DataFrame(
+                columns=('DateTime', 'TimefromScanOnset'))
+            ttl_offset_df['DateTime'] = [
+                datetime.fromtimestamp(ons).isoformat()
+                for ons in ttl_offset]
+            ttl_offset_df['TimefromScanOnset'] = ttl_offset - onset
+            ttl_offset_fname = Path(str(fname_fmt).format('TTLoffset'))
             ttl_offset_fname = ttl_offset_fname.parent / \
-                (ttl_offset_fname.stem + f"_{ii}" + ttl_offset_fname.suffix)
-        ttl_offset_df.to_csv(ttl_offset_fname)
+                (ttl_offset_fname.stem + '.csv')
+            ii = 0
+            while ttl_offset_fname.is_file():
+                ii += 1
+                ttl_offset_fname = ttl_offset_fname.parent / \
+                    (ttl_offset_fname.stem + f"_{ii}" +
+                     ttl_offset_fname.suffix)
+            ttl_offset_df.to_csv(ttl_offset_fname)
 
-        self._logger.info(
-            f"Save TTL data in {ttl_onset_fname} and {ttl_offset_fname}")
+            self._logger.info(
+                f"Save TTL data in {ttl_onset_fname} and {ttl_offset_fname}")
 
         # --- Physio data ---
-        # As the data is resampled, 1 s outside the scan period is included.
-        dataMask = (tstamp >= onset-1.0) & (tstamp <= offset+1.0) & \
+        # As the data is resampled, 2 s outside the scan period is included.
+        dataMask = (tstamp >= onset-2.0) & (tstamp <= offset+2.0) & \
             np.logical_not(np.isnan(tstamp))
         if dataMask.sum() == 0:
             return
