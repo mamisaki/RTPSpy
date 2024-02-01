@@ -463,7 +463,7 @@ class TTLPhysioPlot(QtCore.QObject):
         while self.plt_win.isVisible() and not self._cancel:
             try:
                 # Get signals
-                plt_data = self.recorder.get_plot_signals(self.plot_len_sec)
+                plt_data = self.recorder.get_plot_signals(self.plot_len_sec+1)
                 if plt_data is None:
                     continue
 
@@ -477,7 +477,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 card[tstamp == 0] = 0
                 resp[tstamp == 0] = 0
 
-                zero_t = time.time() - self._ln_ttl[0].get_xdata()[-1]
+                zero_t = time.time() - np.max(self._ln_ttl[0].get_xdata())
                 tstamp = tstamp - zero_t
                 plt_xt = self._ln_ttl[0].get_xdata()
 
@@ -591,7 +591,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 # Card filtered
                 b = firwin(numtaps=41, cutoff=3, window="hamming",
                            pass_zero='lowpass', fs=self.recorder.sample_freq)
-                card_ex_filtered = lfilter(b, 1, card_ex, axis=0)
+                card_ex_filtered = lfilter(b, 1, card_ex)
                 card_ex_filtered = np.flipud(card_ex_filtered)
                 card_ex_filtered = lfilter(b, 1, card_ex_filtered)
                 card_ex_filtered = np.flipud(card_ex_filtered)

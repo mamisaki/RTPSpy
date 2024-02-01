@@ -282,7 +282,7 @@ class RtpWatch(RTP):
 
             if self.nii_save_filename is None:
                 # Set save_filename
-                patinet = dcm.PatientName.split('^')
+                patinet = str(dcm.PatientName).split('^')
                 if re.match(r'\w\w\d\d\d', patinet[0]):  # LIBR ID
                     sub = patinet[0]
                 else:

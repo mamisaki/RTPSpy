@@ -426,7 +426,7 @@ class RtpRegress(RTP):
             # -- Design matrix --
             # Append motion parameter
             if self.mot_reg != 'None':
-                mot = self.volreg.motion[vol_idx, :]
+                mot = self.volreg._motion[vol_idx, :]
                 if self.mot_reg in ('mot12', 'dmot6'):
                     if self._vol_num > 1 and self.mot0 is not None:
                         dmot = mot - self.mot0
@@ -535,7 +535,7 @@ class RtpRegress(RTP):
             Beta = lstsq_SVDsolver(Xp, Yp[:, self.Y_mean_mask])
             Yh = torch.matmul(Xp, Beta)
 
-            if self.reg_retro_proc:
+            if self.reg_retro_proc and self._vol_num == self.wait_num+1:
                 # Process (and save) the previous volumes retrospectively.
                 Resids = Yp[:, self.Y_mean_mask] - Yh
 
@@ -560,7 +560,7 @@ class RtpRegress(RTP):
                     # temporay nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
-                    save_name = re.sub(f"{self.vol_num}", f"{vi+1}",
+                    save_name = re.sub(f"{self._vol_num}", f"{vi+1}",
                                        save_name_temp)
                     retro_fmri_img.set_filename(save_name)
 
@@ -603,8 +603,7 @@ class RtpRegress(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};;tstamp={tstamp}"
-            msg += f";Regression is done for {f}"
+            msg = f"#{vol_idx+1};Regression is done for {f};tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
