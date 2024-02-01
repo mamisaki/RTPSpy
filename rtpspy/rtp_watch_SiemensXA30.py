@@ -103,6 +103,7 @@ class RtpWatch(RTP):
 
         self._last_proc_f = ''
         self._done_proc = -1
+        self._vol_num = 0
         self.scan_name = None
         self.nii_save_filename = None
 
@@ -273,15 +274,19 @@ class RtpWatch(RTP):
 
             # --- Process the file --------------------------------------------
             # Increment the number of received volume
-            self.vol_num += 1
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = 0
+            self._vol_num += 1  # 1-base
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = 0  # 0-base index
 
             fmri_img = self.dcm2nii(dcm, file_path)
 
             if self.nii_save_filename is None:
                 # Set save_filename
-                sub = dcm.PatientName
+                patinet = dcm.PatientName.split('^')
+                if re.match(r'\w\w\d\d\d', patinet[0]):  # LIBR ID
+                    sub = patinet[0]
+                else:
+                    sub = '_'.join(patinet)
                 ser = dcm.SeriesNumber
                 serDesc = dcm.SeriesDescription
                 self.nii_save_filename = f"sub-{sub}_ser-{int(ser)}"
@@ -292,24 +297,25 @@ class RtpWatch(RTP):
                 self.scan_name = f"Ser-{ser}"
 
             nii_fname = self.nii_save_filename + \
-                f"_{self.vol_num+1:04d}.nii.gz"
+                f"_{self._vol_num+1:04d}.nii.gz"
             fmri_img.set_filename(nii_fname)
 
             # Record process time
-            self.proc_time.append(time.time())
-            proc_delay = self.proc_time[-1] - file_path.stat().st_ctime
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
+            proc_delay = tstamp - file_path.stat().st_ctime
             if self.save_delay:
                 self.proc_delay.append(proc_delay)
 
             # log
             f = file_path.name
-            if len(self.proc_time) > 1:
-                t_interval = self.proc_time[-1] - self.proc_time[-2]
+            if len(self._proc_time) > 1:
+                t_interval = self._proc_time[-1] - self._proc_time[-2]
             else:
                 t_interval = -1
-            msg = f'#{self.vol_num}, Read {f}'
-            msg += f' (took {proc_delay:.4f}s,'
-            msg += f' interval {t_interval:.4f}s).'
+            msg = f"#{self._vol_num};tstamp={tstamp}"
+            msg += f";Read {f};took {proc_delay:.4f}s"
+            msg += f";interval {t_interval:.4f}s"
             self._logger.info(msg)
 
             if self.next_proc:
@@ -318,11 +324,11 @@ class RtpWatch(RTP):
                 save_name = fmri_img.get_filename()
 
                 # Run the next process
-                self.next_proc.do_proc(fmri_img, vol_idx=self.vol_num,
-                                       pre_proc_time=self.proc_time[-1])
+                self.next_proc.do_proc(fmri_img, vol_idx=self._vol_num-1,
+                                       pre_proc_time=self._proc_time[-1])
 
             # Record the number of the processed volume
-            self._done_proc = self.vol_num
+            self._done_proc = self._vol_num
 
             # Save processed image
             if self.save_proc:

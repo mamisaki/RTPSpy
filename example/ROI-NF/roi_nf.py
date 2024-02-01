@@ -43,23 +43,23 @@ class ROINF(RtpApp):
                 # Load ROI mask
                 self.ROI_mask = np.asanarry(nib.load(self.ROI_orig).dataobj)
 
-            self.vol_num += 1  # Number of volumes recieved by this module.
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             dataV = fmri_img.get_fdata()  # Get data
 
             # --- Extract and send the ROI mean signal ------------------------
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
-            self.roi_sig[0].append(mean_sig)
+            self._roi_sig[0].append(mean_sig)
 
             if self.extApp_sock is None:
                 # Error: Socket is not opened.
@@ -84,23 +84,24 @@ class ROINF(RtpApp):
 
             # --- Post procress -----------------------------------------------
             # Record the processing time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # Log message
             if self._verb:
                 f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, ROI signal extraction is done for {f}'
+                msg = f"#{vol_idx+1};tstamp={tstamp}"
+                msg += f";ROI signal extraction is done for {f}"
                 if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
+                    msg += f';took {proc_delay:.4f}s'
                 self.logmsg(msg)
 
             # Update the signal plot
-            self.plt_xi.append(vol_idx)
+            self._plt_xi.append(vol_idx+1)
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()

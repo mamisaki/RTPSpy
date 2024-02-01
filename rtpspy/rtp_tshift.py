@@ -92,17 +92,17 @@ class RtpTshift(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
-            # Increment the number of received volume: vol_num is 0-based
-            self.vol_num += 1
+            # Increment the number of received volume
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             # --- Initialize --------------------------------------------------
             if fmri_img.shape[self.slice_dim] != len(self.slice_timing):
@@ -153,7 +153,7 @@ class RtpTshift(RTP):
                 # log message
                 fname = Path(self.pre_fmri_img.get_filename()).name
                 fname = fname.replace('.nii.gz', '')
-                msg = f"#{vol_idx-1}, "
+                msg = f"#{vol_idx}, "
                 msg += "Retrospective slice-timing correction"
                 msg += f" is done for {fname}."
                 self._logger.info(msg)
@@ -166,7 +166,7 @@ class RtpTshift(RTP):
                 if self.save_proc:
                     self.keep_processed_image(self.pre_fmri_img,
                                               save_temp=self.online_saving,
-                                              vol_num=self.vol_num-1)
+                                              vol_num=vol_idx-1)
 
                 if self.next_proc:
                     # Keep the current processed data
@@ -205,18 +205,19 @@ class RtpTshift(RTP):
 
             # --- Post procress -----------------------------------------------
             # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f'#{vol_idx}, Slice-timing correction is done for {f}'
+            msg = f"#{vol_idx+1};;tstamp={tstamp}"
+            msg += f";Slice-timing correction is done for {f}"
             if pre_proc_time is not None:
-                msg += f' (took {proc_delay:.4f}s)'
-            msg += '.'
+                msg += f";took {proc_delay:.4f}s)"
             self._logger.info(msg)
 
             # Set filename
@@ -229,7 +230,7 @@ class RtpTshift(RTP):
 
                 # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self.proc_time[-1])
+                                       pre_proc_time=self._proc_time[-1])
 
             # Save processed image
             if self.save_proc:

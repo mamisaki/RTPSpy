@@ -189,16 +189,16 @@ class LANF(RtpApp):
 
         try:
             # Increment the number of received volume
-            self.vol_num += 1
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             dataV = fmri_img.get_fdata()
 
@@ -239,24 +239,25 @@ class LANF(RtpApp):
 
             # --- Post procress -----------------------------------------------
             # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             if self._verb:
                 f = Path(fmri_img.get_filename()).name
-                msg = f'#{vol_idx}, ROI signal extraction is done for {f}'
+                msg = f"#{vol_idx+1};;tstamp={tstamp}"
+                msg += f";ROI signal extraction is done for {f}"
                 if pre_proc_time is not None:
-                    msg += f' (took {proc_delay:.4f}s)'
-                msg += '.'
+                    msg += f";took {proc_delay:.4f}s"
                 self.logmsg(msg)
 
             # Update signal plot
-            self.plt_xi.append(vol_idx)
-            self.roi_sig[0].append(mean_sig)
+            self._plt_xi.append(vol_idx+1)
+            self._roi_sig[0].append(mean_sig)
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
