@@ -214,8 +214,8 @@ class RtpTshift(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};;tstamp={tstamp}"
-            msg += f";Slice-timing correction is done for {f}"
+            msg = f"#{vol_idx+1};;Slice-timing correction is done for {f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s)"
             self._logger.info(msg)

@@ -161,8 +161,8 @@ class RtpVolreg(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};;tstamp={tstamp}"
-            msg += f";Volume registration is done for {f}"
+            msg = f"#{vol_idx+1};Volume registration is done for {f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
@@ -807,7 +807,7 @@ class RtpVolreg(RTP):
                                        self.ui_maxLen_spBx.setValue))
         ui_rows.append((var_lb, self.ui_maxLen_spBx))
         self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
-    
+
         # --- Checkbox row ----------------------------------------------------
         # Save
         self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
@@ -904,7 +904,7 @@ if __name__ == '__main__':
     """
 
     proc_delay = rtp_volreg.proc_delay
-    motion = rtp_volreg.motion[rtp_volreg._proc_start_idx:, :]
+    motion = rtp_volreg._motion[rtp_volreg._proc_start_idx:, :]
     rtp_tshift.end_reset()
 
     mot_f = rtp_volreg.saved_filename.name.replace('.nii.gz', '')
