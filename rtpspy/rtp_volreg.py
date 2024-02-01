@@ -51,7 +51,8 @@ class RtpVolreg(RTP):
                     'quintic': 4, 'heptic': 5, 'tsshift': 6}
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, ref_vol=0, regmode='heptic', **kwargs):
+    def __init__(self, ref_vol=0, regmode='heptic', max_scan_length=1000,
+                 **kwargs):
         """
         Parameters
         ----------
@@ -66,14 +67,19 @@ class RtpVolreg(RTP):
             The default is 'heptic'. See
             https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dvolreg.html
             for details.
+        max_scan_length : int, optional
+            Maximum scan length. This is used for pre-allocating memory space
+            for motion matrix. The default is 1000.
         """
         super(RtpVolreg, self).__init__(**kwargs)
 
         # Set instance parameters
         self.regmode = regmode
+        self.max_scan_length = max_scan_length
 
         # Initialize parameters and C library function call
-        self.motion = np.ndarray([0, 6], dtype=np.float32)  # motion parameter
+        # motion parameter
+        self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
         self.set_ref_vol(ref_vol)
         self.setup_libfuncs()
 
@@ -83,10 +89,10 @@ class RtpVolreg(RTP):
         self.phi_thresh = 0.07  # degree
 
         # --- initialize for motion plot ---
-        self.plt_xi = []
-        self.plt_motion = []
+        self._plt_xi = []
+        self._plt_motion = []
         for ii in range(6):
-            self.plt_motion.append(list([]))
+            self._plt_motion.append(list([]))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
@@ -96,6 +102,7 @@ class RtpVolreg(RTP):
             self._logger.error(errmsg)
             self.err_popup(errmsg)
 
+        self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
 
@@ -105,40 +112,28 @@ class RtpVolreg(RTP):
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
             # Increment the number of received volume: vol_num is 0-based
-            self.vol_num += 1
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             # --- Initialize --------------------------------------------------
-            # Fill motion vectors of missing volumes with zero.
-            while self.motion.shape[0] < vol_idx:
-                self.motion = np.concatenate(
-                        [self.motion, np.zeros((1, 6), dtype=np.float32)],
-                        axis=0)
-
             # if self.ref_vol is int (index of reference volume in the current
             # scan), wait for the reference index and set the reference.
             if type(self.ref_vol) is int:
                 if vol_idx < self.ref_vol:
-                    # Append zero vector
-                    mot = np.zeros((1, 6), dtype=np.float32)
-                    self.motion = np.concatenate([self.motion, mot], axis=0)
                     return
 
                 elif vol_idx >= self.ref_vol:
                     ref_vi = self.ref_vol
                     self.ref_vol = fmri_img
                     self.align_setup()
-                    # Append zero vector
-                    mot = np.zeros((1, 6), dtype=np.float32)
-                    self.motion = np.concatenate([self.motion, mot], axis=0)
                     msg = f"Alignment reference is set to volume {ref_vi}"
                     msg += " of current sequence."
                     self._logger.info(msg)
@@ -146,30 +141,30 @@ class RtpVolreg(RTP):
 
             # --- Run the procress --------------------------------------------
             # Perform volume alignment
-            reg_dataV, mot = self.align_one(fmri_img)
+            reg_dataV, mot = self.align_one(fmri_img, vol_idx)
 
-            # Set aligned data in fmri_img and motions in self.motion.
+            # Set aligned data in fmri_img and motions in self._motion.
             fmri_img.uncache()
             fmri_img._dataobj = reg_dataV
             fmri_img.set_data_dtype = reg_dataV.dtype
 
-            mot = mot[np.newaxis, [0, 1, 2, 5, 3, 4]]
-            self.motion = np.concatenate([self.motion, mot], axis=0)
+            self._motion[vol_idx, :] = mot[[0, 1, 2, 5, 3, 4]]
 
             # --- Post procress -----------------------------------------------
             # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f'#{vol_idx}, Volume registration is done for {f}'
+            msg = f"#{vol_idx+1};;tstamp={tstamp}"
+            msg += f";Volume registration is done for {f}"
             if pre_proc_time is not None:
-                msg += f' (took {proc_delay:.4f}s)'
-            msg += '.'
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set save_name
@@ -182,12 +177,12 @@ class RtpVolreg(RTP):
 
                 # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self.proc_time[-1])
+                                       pre_proc_time=self._proc_time[-1])
 
             # Update motion plot
-            self.plt_xi.append(vol_idx)
+            self._plt_xi.append(vol_idx+1)
             for ii in range(6):
-                self.plt_motion[ii].append(self.motion[-1][ii])
+                self._plt_motion[ii].append(self._motion[vol_idx, ii])
 
             # Save processed image
             if self.save_proc:
@@ -215,12 +210,12 @@ class RtpVolreg(RTP):
         self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         # Reset running variables
-        self.motion = np.ndarray([0, 6], dtype=np.float32)
+        self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
 
         # Reset plot values
-        self.plt_xi[:] = []
+        self._plt_xi[:] = []
         for ii in range(6):
-            self.plt_motion[ii][:] = []
+            self._plt_motion[ii][:] = []
 
         return super(RtpVolreg, self).end_reset()
 
@@ -361,7 +356,7 @@ class RtpVolreg(RTP):
         self.chol_fitim = chol_fitim_arr
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def align_one(self, fmri_img):
+    def align_one(self, fmri_img, vol_idx):
         """
         Align one volume [0] of fmri_img to the reference image.
 
@@ -404,8 +399,8 @@ class RtpVolreg(RTP):
                 ctypes.POINTER(ctypes.c_double))
 
         # Initial motion parameter
-        if len(self.motion) and not np.any(np.isnan(self.motion[-1])):
-            init_motpar = self.motion[-1]
+        if not np.all(self._motion[vol_idx-1, :] == 0):
+            init_motpar = self._motion[vol_idx-1, :]
         else:
             init_motpar = np.zeros(6, dtype=np.float32)
 
@@ -476,19 +471,19 @@ class RtpVolreg(RTP):
 
         # ---------------------------------------------------------------------
         def run(self):
-            plt_xi = self.root.plt_xi.copy()
+            plt_xi = self.root._plt_xi.copy()
             while self.plt_win.isVisible() and not self.abort:
                 if self.main_win is not None and not self.main_win.isVisible():
                     break
 
-                if len(self.root.plt_xi) == len(plt_xi):
+                if len(self.root._plt_xi) == len(plt_xi):
                     time.sleep(0.1)
                     continue
 
                 try:
                     # Plot motion
-                    plt_xi = self.root.plt_xi.copy()
-                    plt_motion = self.root.plt_motion
+                    plt_xi = self.root._plt_xi.copy()
+                    plt_motion = self.root._plt_motion
                     for ii, ax in enumerate(self._axes):
                         ll = min(len(plt_xi), len(plt_motion[ii]))
                         if ll == 0:
@@ -696,6 +691,24 @@ class RtpVolreg(RTP):
                     regmode_id = RtpVolreg.regmode_dict[val]
                 self.ui_regmode_cmbBx.setCurrentIndex(regmode_id)
 
+        elif attr == 'max_scan_length':
+            if self.desMtx_read is not None and \
+                    self.desMtx_read.shape[0] > val:
+                val = self.desMtx_read.shape[0]
+                if reset_fn:
+                    reset_fn(val)
+
+            # Update self.desMtx0
+            self.setup_regressor_template(self.desMtx_read,
+                                          max_scan_length=val,
+                                          col_names_read=self.col_names_read)
+            if val < self.wait_num:
+                val = self.wait_num + 1
+
+            if reset_fn is None:
+                if hasattr(self, 'ui_maxLen_spBx'):
+                    self.ui_maxLen_spBx.setValue(val)
+
         elif attr == 'save_proc':
             if hasattr(self, 'ui_saveProc_chb'):
                 self.ui_saveProc_chb.setChecked(val)
@@ -782,6 +795,19 @@ class RtpVolreg(RTP):
         ui_rows.append((var_lb, self.ui_regmode_cmbBx))
         self.ui_objs.extend([var_lb, self.ui_regmode_cmbBx])
 
+        # max_scan_length
+        var_lb = QtWidgets.QLabel("Maximum scan length :")
+        self.ui_maxLen_spBx = QtWidgets.QSpinBox()
+        self.ui_maxLen_spBx.setMinimum(1)
+        self.ui_maxLen_spBx.setMaximum(9999)
+        self.ui_maxLen_spBx.setValue(self.max_scan_length)
+        self.ui_maxLen_spBx.editingFinished.connect(
+                lambda: self.set_param('max_scan_length',
+                                       self.ui_maxLen_spBx.value(),
+                                       self.ui_maxLen_spBx.setValue))
+        ui_rows.append((var_lb, self.ui_maxLen_spBx))
+        self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
+    
         # --- Checkbox row ----------------------------------------------------
         # Save
         self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
@@ -800,12 +826,11 @@ class RtpVolreg(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         all_opts = super().get_params()
-        excld_opts = ('work_dir', 'motion', 'plt_xi',
-                      'plt_motion', 'chol_fitim', 'ref_vol', 'nx', 'ny', 'nz',
+        excld_opts = ('work_dir', 'chol_fitim', 'ref_vol', 'nx', 'ny', 'nz',
                       'fitim', 'dx', 'dy', 'dz', 'ax1', 'ax2', 'ax3')
         sel_opts = {}
         for k, v in all_opts.items():
-            if k in excld_opts:
+            if k in excld_opts or k[0] == '_':
                 continue
             if isinstance(v, Path):
                 v = str(v)
@@ -879,7 +904,7 @@ if __name__ == '__main__':
     """
 
     proc_delay = rtp_volreg.proc_delay
-    motion = rtp_volreg.motion[rtp_volreg.proc_start_idx:, :]
+    motion = rtp_volreg.motion[rtp_volreg._proc_start_idx:, :]
     rtp_tshift.end_reset()
 
     mot_f = rtp_volreg.saved_filename.name.replace('.nii.gz', '')

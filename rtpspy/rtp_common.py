@@ -54,9 +54,9 @@ class RTP(object):
         self.main_win = main_win
 
         # Initialize parameters
-        self.vol_num = -1
-        self.proc_start_idx = -1
-        self.proc_time = []
+        self._vol_num = 0  # 1-base, Number of processed (received) volumes
+        self._proc_start_idx = -1  # 0-base index
+        self._proc_time = []
         self.proc_delay = []
 
         self.saved_files = []
@@ -97,9 +97,9 @@ class RTP(object):
         This should be overridden.
         """
 
-        self.vol_num = -1
-        self.proc_start_idx = -1
-        self.proc_time = []
+        self._vol_num = 0
+        self._proc_start_idx = -1
+        self._proc_time = []
         self.proc_delay = []
         self.saved_files = []
         self.saved_data = None
@@ -157,9 +157,9 @@ class RTP(object):
                 self.saved_filename
 
         # Reset running variables
-        self.vol_num = -1
-        self.proc_start_idx = -1
-        self.proc_time = []
+        self._vol_num = 0
+        self._proc_start_idx = -1
+        self._proc_time = []
         self.proc_delay = []
         self.saved_files = []
         self.saved_data = None
@@ -209,7 +209,7 @@ class RTP(object):
         fmri_img : nibabel image
             nibabel image object.
         vol_num : int, optional
-            Saving volume index. If vol_num is None, self.vol_num is used.
+            Saving volume index. If vol_num is None, self._vol_num is used.
             The default is None.
         save_temp : bool, optional
             Save the current data online as a single volume filet for debugging
@@ -221,8 +221,8 @@ class RTP(object):
         savefname = fmri_img.get_filename()
         if Path(savefname).is_file():
             savefname = 'RTP_image'
-            if self.vol_num >= 0:
-                savefname += f"_{self.vol_num:03d}"
+            if self._vol_num > 0:
+                savefname += f"_{self._vol_num:04d}"
             savefname += '.nii.gz'
 
         savefname = Path(self.work_dir) / 'RTP' / savefname
@@ -233,7 +233,7 @@ class RTP(object):
                 [*fmri_img.shape, self.max_scan_length], dtype=np.float32)
 
         if vol_num is None:
-            vol_num = self.vol_num
+            vol_num = self._vol_num
 
         if save_temp:
             self.save_data(fmri_img, savefname)
@@ -277,11 +277,11 @@ class RTP(object):
     def get_params(self):
         opts = dict()
         excld_opts = ('main_win',
-                      'saved_files', 'proc_time', 'next_proc',
-                      'vol_num', 'enabled', 'save_proc',
+                      'saved_files', 'next_proc',
+                      'enabled', 'save_proc',
                       'save_delay', 'proc_delay', 'done_proc:', 'proc_data',
                       'saved_data', 'max_scan_length', 'done_proc',
-                      'saved_data_affine', 'proc_start_idx', 'saved_filename',
+                      'saved_data_affine', 'saved_filename',
                       'online_saving')
 
         for var_name, val in self.__dict__.items():
@@ -346,8 +346,8 @@ class RTP(object):
             os.makedirs(savefname.parent)
 
         # Preapre data array
-        stidx = max(self.proc_start_idx, 0)
-        img_data = saved_data[:, :, :, stidx:self.vol_num+1]
+        stidx = max(self._proc_start_idx, 0)
+        img_data = saved_data[:, :, :, stidx:self._vol_num]
         simg = nib.Nifti1Image(img_data, affine)
         simg.to_filename(savefname)
 

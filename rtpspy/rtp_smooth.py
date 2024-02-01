@@ -85,16 +85,16 @@ class RtpSmooth(RTP):
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
             # Increment the number of received volume: vol_num is 0-based
-            self.vol_num += 1
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             # --- Initialize --------------------------------------------------
             # Unless the mask is set, set it by a received volume
@@ -114,18 +114,19 @@ class RtpSmooth(RTP):
 
             # --- Post procress -----------------------------------------------
             # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f'#{vol_idx}, Smoothing is done for {f}'
+            msg = f"#{vol_idx+1};;tstamp={tstamp}"
+            msg += f";Smoothing is done for {f}"
             if pre_proc_time is not None:
-                msg += f' (took {proc_delay:.4f}s)'
-            msg += '.'
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set save_name
@@ -138,7 +139,7 @@ class RtpSmooth(RTP):
 
                 # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self.proc_time[-1])
+                                       pre_proc_time=self._proc_time[-1])
 
             # Save processed image
             if self.save_proc:

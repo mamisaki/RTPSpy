@@ -288,17 +288,17 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
-            # Increment the number of received volume
-            self.vol_num += 1
+            # Increment the number of received volumes
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             dataV = fmri_img.get_fdata()
             if dataV.ndim > 3:
@@ -377,7 +377,7 @@ class RtpRegress(RTP):
                 self.setup_regressor_template(self.desMtx_read,
                                               self.max_scan_length,
                                               self.col_names_read)
-                desMtx = self.desMtx0[self.proc_start_idx:, :].copy()
+                desMtx = self.desMtx0[self._proc_start_idx:, :].copy()
 
                 # Add maximum number of polynomial regressors
                 nt = desMtx.shape[0]
@@ -392,7 +392,7 @@ class RtpRegress(RTP):
             if self.YMtx is None:
                 vox_num = np.sum(self.maskV)
                 self.YMtx = torch.empty(
-                        self.desMtx0.shape[0]-self.proc_start_idx, vox_num,
+                        self.desMtx0.shape[0]-self._proc_start_idx, vox_num,
                         dtype=torch.float32)
                 try:
                     self.YMtx = self.YMtx.to(self.device)
@@ -421,14 +421,14 @@ class RtpRegress(RTP):
                     ydata[self.Y_mean_mask]/self.Y_mean[self.Y_mean_mask]*100
                 ydata[ydata > 200] = 200
 
-            self.YMtx[self.vol_num, :] = ydata
+            self.YMtx[vol_idx, :] = ydata
 
             # -- Design matrix --
             # Append motion parameter
             if self.mot_reg != 'None':
                 mot = self.volreg.motion[vol_idx, :]
                 if self.mot_reg in ('mot12', 'dmot6'):
-                    if self.vol_num > 0 and self.mot0 is not None:
+                    if self._vol_num > 1 and self.mot0 is not None:
                         dmot = mot - self.mot0
                     else:
                         dmot = np.zeros(6, dtype=np.float32)
@@ -443,33 +443,33 @@ class RtpRegress(RTP):
 
                 # Assuming self.motcols is contiguous
                 if self.mot_reg in ('mot6', 'mot12'):
-                    self.desMtx[self.vol_num,
+                    self.desMtx[vol_idx,
                                 self.motcols[0]:self.motcols[0]+6] = mot
                     if self.mot_reg == 'mot12':
-                        self.desMtx[self.vol_num,
+                        self.desMtx[vol_idx,
                                     self.motcols[6]:self.motcols[6]+6] = dmot
                 elif self.mot_reg == 'dmot6':
-                    self.desMtx[self.vol_num,
+                    self.desMtx[vol_idx,
                                 self.motcols[0]:self.motcols[0]+6] = dmot
 
             # Append mask mean signal regressor from mask_src_proc
             if self.GS_reg or self.WM_reg or self.Vent_reg:
                 msk_src_data = self.mask_src_proc.proc_data[self.maskV]
                 if self.GS_reg:
-                    self.desMtx[self.vol_num, self.GS_col] =  \
+                    self.desMtx[vol_idx, self.GS_col] =  \
                         float(msk_src_data[self.GS_maskdata].mean())
 
                 if self.WM_reg:
-                    self.desMtx[self.vol_num, self.WM_col] =  \
+                    self.desMtx[vol_idx, self.WM_col] =  \
                         float(msk_src_data[self.WM_maskdata].mean())
 
                 if self.Vent_reg:
-                    self.desMtx[self.vol_num, self.Vent_col] = \
+                    self.desMtx[vol_idx, self.Vent_col] = \
                         float(msk_src_data[self.Vent_maskdata].mean())
 
-            # --- If the number of samples is not enough, retrun --------------
-            if self.vol_num+1 < self.wait_num:
-                wait_idx = self.proc_start_idx+self.wait_num-1
+            # --- If the number of samples is not enough, return --------------
+            if self._vol_num <= self.wait_num:
+                wait_idx = self._proc_start_idx+self.wait_num
                 msg = f"Wait until volume #{wait_idx}"
                 self._logger.info(msg)
                 return
@@ -483,9 +483,9 @@ class RtpRegress(RTP):
                     self._logger.error(errmsg)
                     return
 
-                retrots = retrots[self.proc_start_idx:, :]
+                retrots = retrots[self._proc_start_idx:, :]
                 for ii, icol in enumerate(self.retrocols):
-                    self.desMtx[:self.vol_num+1, icol] = \
+                    self.desMtx[:vol_idx+1, icol] = \
                             torch.from_numpy(
                                     retrots[:, ii].astype(np.float32)
                                     ).to(self.device)
@@ -494,7 +494,7 @@ class RtpRegress(RTP):
             # Set Y_mean for scaling data
             if self.Y_mean is None:
                 # Scaling
-                YMtx = self.YMtx[:self.vol_num+1, :]
+                YMtx = self.YMtx[:vol_idx+1, :]
                 # YMtx is the reference to the original data, self.YMtx
                 self.Y_mean = YMtx.mean(axis=0)
                 self.Y_mean_mask = self.Y_mean.abs() > 1e-6
@@ -506,17 +506,17 @@ class RtpRegress(RTP):
                 YMtx[:, ~self.Y_mean_mask] = 0.0
                 # The operation is done on the original data,
                 # so no need to return like below
-                # ydata = self.YMtx[self.vol_num, :]
+                # ydata = self.YMtx[vol_idx, :]
 
             # Add polynomials to the design matrix
-            polyreg = self.poly_reg(self.vol_num+1, self.TR)
+            polyreg = self.poly_reg(vol_idx+1, self.TR)
             reg0_num = self.desMtx0.shape[1]
             polyreg_num = polyreg.shape[1]
-            self.desMtx[:self.vol_num+1, reg0_num:reg0_num+polyreg_num] = \
+            self.desMtx[:vol_idx+1, reg0_num:reg0_num+polyreg_num] = \
                 torch.from_numpy(polyreg).to(self.device)
 
             # Extract a part of regressors (until the current volume)
-            Xp = self.desMtx[:self.vol_num+1, :reg0_num+polyreg_num].clone()
+            Xp = self.desMtx[:vol_idx+1, :reg0_num+polyreg_num].clone()
 
             # Standardizing regressors of motion, GS, WM, Vent
             norm_regs = ('roll', 'pitch', 'yaw', 'dS', 'dL', 'dP',
@@ -529,13 +529,13 @@ class RtpRegress(RTP):
                     Xp[:, ii] = reg
 
             # Extract a part of Y (until the current volume)
-            Yp = self.YMtx[:self.vol_num+1, :]
+            Yp = self.YMtx[:vol_idx+1, :]
 
             # Calculate Beta with the least sqare error, ||Y - XB||^2
             Beta = lstsq_SVDsolver(Xp, Yp[:, self.Y_mean_mask])
             Yh = torch.matmul(Xp, Beta)
 
-            if self.reg_retro_proc and self.vol_num+1 == self.wait_num:
+            if self.reg_retro_proc:
                 # Process (and save) the previous volumes retrospectively.
                 Resids = Yp[:, self.Y_mean_mask] - Yh
 
@@ -560,7 +560,8 @@ class RtpRegress(RTP):
                     # temporay nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
-                    save_name = re.sub(f"{vol_idx}", f"{vi}", save_name_temp)
+                    save_name = re.sub(f"{self.vol_num}", f"{vi+1}",
+                                       save_name_temp)
                     retro_fmri_img.set_filename(save_name)
 
                     # Run the next process
@@ -593,18 +594,19 @@ class RtpRegress(RTP):
 
             # --- Post procress -----------------------------------------------
             # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f'#{vol_idx}, Regression is done for {f}'
+            msg = f"#{vol_idx+1};;tstamp={tstamp}"
+            msg += f";Regression is done for {f}"
             if pre_proc_time is not None:
-                msg += f' (took {proc_delay:.4f}s)'
-            msg += '.'
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set filename
@@ -618,7 +620,7 @@ class RtpRegress(RTP):
 
                 # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self.proc_time[-1])
+                                       pre_proc_time=self._proc_time[-1])
 
             # Save processed image
             if self.save_proc:

@@ -178,11 +178,11 @@ class RtpApp(RTP):
         # --- Initialize signal plot ------------------------------------------
         self.num_ROIs = 1
         self.roi_labels = ['ROI']
-        self.plt_xi = []
+        self._plt_xi = []
 
-        self.roi_sig = []
+        self._roi_sig = []
         for ii in range(self.num_ROIs):
-            self.roi_sig.append(list([]))
+            self._roi_sig.append(list([]))
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
@@ -228,9 +228,9 @@ class RtpApp(RTP):
             self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
 
         # Reset plot values
-        self.plt_xi[:] = []
+        self._plt_xi[:] = []
         for ii in range(self.num_ROIs):
-            self.roi_sig[ii][:] = []
+            self._roi_sig[ii][:] = []
 
         if hasattr(self, 'pltROISig'):
             self.pltROISig.reset_plot()
@@ -243,16 +243,16 @@ class RtpApp(RTP):
         """
         try:
             # Increment the number of received volume
-            self.vol_num += 1
+            self._vol_num += 1  # 1- base number of volumes recieved by this
             if vol_idx is None:
-                vol_idx = self.vol_num
+                vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
                 return
 
-            if self.proc_start_idx < 0:
-                self.proc_start_idx = vol_idx
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
 
             dataV = fmri_img.get_fdata()
 
@@ -285,24 +285,24 @@ class RtpApp(RTP):
                 self._logger.info(f"Write data '{val_str}'")
 
             # --- Post procress -----------------------------------------------
-            # Record process time
-            self.proc_time.append(time.time())
+            tstamp = time.time()
+            self._proc_time.append(tstamp)
             if pre_proc_time is not None:
-                proc_delay = self.proc_time[-1] - pre_proc_time
+                proc_delay = self._proc_time[-1] - pre_proc_time
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f'#{vol_idx}, ROI signal extraction is done for {f}'
+            msg = f"#{vol_idx+1};;tstamp={tstamp}"
+            msg += f";ROI signal extraction is done for {f}"
             if pre_proc_time is not None:
-                msg += f' (took {proc_delay:.4f}s)'
-            msg += '.'
+                msg += f";took {proc_delay:.4f}s)"
             self._logger.info(msg)
 
             # Update signal plot
-            self.plt_xi.append(vol_idx)
-            self.roi_sig[0].append(mean_sig)
+            self._plt_xi.append(vol_idx+1)
+            self._roi_sig[0].append(mean_sig)
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -1277,10 +1277,10 @@ class RtpApp(RTP):
                 save_fnames['RTP parameters'] = save_f
 
                 # Save ROI signals
-                if len(self.roi_sig) > 0:
+                if len(self._roi_sig) > 0:
                     roi_save_f = save_dir / f'ROI_sig_{scan_name}.csv'
-                    self.save_ROI_sig(roi_save_f, self.plt_xi,
-                                      self.roi_sig, self.roi_labels)
+                    self.save_ROI_sig(roi_save_f, self._plt_xi,
+                                      self._roi_sig, self.roi_labels)
                     save_fnames['ROI signals'] = roi_save_f
 
                 # Get the root and last processes
@@ -1554,19 +1554,19 @@ class RtpApp(RTP):
 
         # ---------------------------------------------------------------------
         def run(self):
-            plt_xi = self.root.plt_xi.copy()
+            plt_xi = self.root._plt_xi.copy()
             while self.plt_win.isVisible() and not self.abort:
                 if self.main_win is not None and not self.main_win.isVisible():
                     break
 
-                if len(self.root.plt_xi) == len(plt_xi):
+                if len(self.root._plt_xi) == len(plt_xi):
                     time.sleep(0.1)
                     continue
 
                 try:
                     # Plot signal
-                    plt_xi = self.root.plt_xi.copy()
-                    plt_roi_sig = self.root.roi_sig
+                    plt_xi = self.root._plt_xi.copy()
+                    plt_roi_sig = self.root._roi_sig
                     for ii, ax in enumerate(self._axes):
                         ll = min(len(plt_xi), len(plt_roi_sig[ii]))
                         if ll == 0:
@@ -1770,8 +1770,8 @@ class RtpApp(RTP):
 
         # Check delay in WATCH
         if self.enable_RTP and not np.isnan(self.max_watch_wait) and \
-                len(self.rtp_objs['WATCH'].proc_time):
-            delay = time.time() - self.rtp_objs['WATCH'].proc_time[-1]
+                len(self.rtp_objs['WATCH']._proc_time):
+            delay = time.time() - self.rtp_objs['WATCH']._proc_time[-1]
             if delay > self.max_watch_wait:
                 self._logger.info(
                     f'No new file was seen for {delay:.3f} s. End session.')
