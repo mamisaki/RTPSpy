@@ -476,9 +476,10 @@ class TTLPhysioPlot(QtCore.QObject):
 
                 card[tstamp == 0] = 0
                 resp[tstamp == 0] = 0
-
                 zero_t = time.time() - np.max(self._ln_ttl[0].get_xdata())
                 tstamp = tstamp - zero_t
+                ttl_onset = ttl_onset - zero_t
+                ttl_offset = ttl_offset - zero_t
                 plt_xt = self._ln_ttl[0].get_xdata()
 
                 # Extend xt (time points) for interpolation
@@ -520,6 +521,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 ttl_onset_plt = []
                 ttl_offset_plt = []
                 on_off_plt = np.array([])
+                change_state = ''
                 if len(ttl_onset):
                     ttl_onset_plt = ttl_onset[(ttl_onset >= plt_xt[0]) &
                                               (ttl_onset <= plt_xt[-1])]
