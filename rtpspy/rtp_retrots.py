@@ -10,6 +10,7 @@ RTP retrots for making online RETROICOR regressors
 import warnings
 import numpy as np
 from scipy.signal import lfilter, firwin, hilbert, convolve
+from scipy.interpolate import interp1d
 
 
 # %% RtpRetroTS class ========================================================
@@ -53,6 +54,8 @@ class RtpRetroTS():
         self._phys_fs = physFS
         self._TR = TR
         self._slice_offset = tshift
+        resp = self._clean_resamp(resp)
+        card = self._clean_resamp(card)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -429,6 +432,22 @@ class RtpRetroTS():
                           np.inf]
         counts, edges = np.histogram(x, bin_edges)
         return counts
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _clean_resamp(self, v):
+        idx_good = np.argwhere(~np.isnan(v)).ravel()
+        if idx_good[0] > 0:
+            v[:idx_good[0]] = v[idx_good[0]]
+        if idx_good[-1] < len(v)-1:
+            v[idx_good[-1]:] = v[idx_good[-1]]
+
+        idx_bad = np.argwhere(np.isnan(v)).ravel()
+        if len(idx_bad):
+            x = np.arange(0, len(v))
+            xg = np.setdiff1d(x, idx_bad)
+            v[idx_bad] = interp1d(xg, v[xg], bounds_error=None)(idx_bad)
+
+        return v
 
 
 # %% __main__ (test) ==========================================================
