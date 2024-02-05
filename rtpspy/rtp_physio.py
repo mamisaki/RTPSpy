@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import serial
 from serial.tools.list_ports import comports
-from scipy import interpolate
+from scipy.interpolate import interp1d
 from scipy.signal import lfilter, firwin
 import matplotlib as mpl
 
@@ -498,13 +498,11 @@ class TTLPhysioPlot(QtCore.QObject):
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore",
                                               category=RuntimeWarning)
-                        f = interpolate.interp1d(tstamp, card,
-                                                 bounds_error=False)
+                        f = interp1d(tstamp, card, bounds_error=False)
                         card_ex = f(xt_interval_ex)
                         card = card_ex[xt_ex_mask]
 
-                        f = interpolate.interp1d(tstamp, resp,
-                                                 bounds_error=False)
+                        f = interp1d(tstamp, resp, bounds_error=False)
                         resp_ex = f(xt_interval_ex)
                         resp = resp_ex[xt_ex_mask]
 
@@ -991,13 +989,16 @@ class RtpPhysio(RTP):
         save_resp = data['resp'][dataMask]
         tstamp = tstamp[dataMask]
 
+        save_card = self._clean_resamp(save_card, tstamp)
+        save_resp = self._clean_resamp(save_resp, tstamp)
+
         if resample_regular_interval:
             # Resample
             try:
                 ti = np.arange(onset, offset, 1.0/self.sample_freq)
-                f = interpolate.interp1d(tstamp, save_card, bounds_error=False)
+                f = interp1d(tstamp, save_card, bounds_error=False)
                 save_card = f(ti)
-                f = interpolate.interp1d(tstamp, save_resp, bounds_error=False)
+                f = interp1d(tstamp, save_resp, bounds_error=False)
                 save_resp = f(ti)
             except Exception:
                 print(f"tstamp = {tstamp}")
@@ -1061,6 +1062,30 @@ class RtpPhysio(RTP):
             data['ttl_init_state'] = 0
 
         return data
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _clean_resamp(self, v, tstamp=None):
+        idx_bad = np.argwhere(np.isnan(v)).ravel()
+        if len(idx_bad) == 0:
+            return v
+
+        idx_good = np.setdiff1d(np.arange(0, len(v)), idx_bad)
+        if idx_good[0] > 0:
+            v[:idx_good[0]] = v[idx_good[0]]
+        if idx_good[-1] < len(v)-1:
+            v[idx_good[-1]:] = v[idx_good[-1]]
+
+        idx_bad = np.argwhere(np.isnan(v)).ravel()
+        if len(idx_bad):
+            x = np.arange(0, len(v))
+            idx_good = np.setdiff1d(x, idx_bad)
+            if tstamp is None:
+                tstamp = x
+            v[idx_bad] = interp1d(
+                tstamp[idx_good], v[idx_good], bounds_error=None)(
+                    tstamp[idx_bad])
+
+        return v
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_scan_onset_bkwd(self, TR=None):
@@ -1142,13 +1167,11 @@ class RtpPhysio(RTP):
             warnings.simplefilter("ignore", category=RuntimeWarning)
 
             res_t = np.arange(0, Nvol*TR+1.0, 1.0/physFS)
-            resp_res_f = interpolate.interp1d(tstamp, resp,
-                                              bounds_error=False)
+            resp_res_f = interp1d(tstamp, resp, bounds_error=False)
             Resp = resp_res_f(res_t)
             Resp = Resp[~np.isnan(Resp)]
 
-            card_res_f = interpolate.interp1d(tstamp, card,
-                                              bounds_error=False)
+            card_res_f = interp1d(tstamp, card, bounds_error=False)
             Card = card_res_f(res_t)
             Card = Card[~np.isnan(Card)]
 
