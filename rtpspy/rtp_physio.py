@@ -1043,10 +1043,9 @@ class RtpPhysio(RTP):
                 if len(dd):
                     data[k][-len(dd):] = dd
 
-        data['ttl_onset'] = data['ttl_onset'][
-            data['ttl_onset'] >= data['tstamp'][0]]
-        data['ttl_offset'] = data['ttl_offset'][
-            data['ttl_offset'] >= data['tstamp'][0]]
+        t0 = np.nanmax(data['tstamp']) - plot_len_sec
+        data['ttl_onset'] = data['ttl_onset'][data['ttl_onset'] >= t0]
+        data['ttl_offset'] = data['ttl_offset'][data['ttl_offset'] >= t0]
 
         onset = data['ttl_onset'][
             data['ttl_onset'] < data['tstamp'][0]]
