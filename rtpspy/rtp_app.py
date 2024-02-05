@@ -118,8 +118,7 @@ class RtpApp(RTP):
             "FastSeg": 100,
             "SkullStrip": 100,
             "AlAnat": 40,
-            "RTP_mask": 2,
-            "GSR_mask": 1,
+            "RTP_GSR_mask": 3,
             "ANTs": 120,
             "ApplyWarp": 10,
             "Resample_WM_mask": 1,
@@ -587,30 +586,30 @@ class RtpApp(RTP):
                         self.ui_CreateMasks_btn.setEnabled(True)
                     return
 
-                cmd = f"3dbucket -overwrite -prefix {dst_f} {src_f}"
-                ret = improc._show_cmd_progress(
-                    cmd, progress_bar,
-                    msgTxt="Copy base function image",
-                    desc='+' * 70 + '\n' + '+++ Copy base function image\n' +
-                    f"Save base function image as {dst_f.name}" +
-                    f" in {RTP_dir}.\n")
+                if not dst_f.is_file() or overwrite:
+                    cmd = f"3dbucket -overwrite -prefix {dst_f} {src_f}"
+                    ret = improc._show_cmd_progress(
+                        cmd, progress_bar,
+                        msgTxt="Copy base function image",
+                        desc='+' * 70 + '\n' +
+                        '+++ Copy base function image\n' +
+                        f"Save base function image as {dst_f.name}" +
+                        f" in {RTP_dir}.\n")
+                    if ret != 0:
+                        assert False, 'Failed at copying base function image.'
 
                 # If json file exists copy it too
-                src_f = src_f.replace("'", "")
-                src_f = re.sub(r'\[\d+\]', '', src_f)
-                if '.gz' in Path(src_f).suffixes:
-                    src_f_stem = Path(Path(src_f).stem).stem
+                src_f0 = src_f.replace("'", "")
+                src_f0 = re.sub(r'\[\d+\]', '', src_f0)
+                if '.gz' in Path(src_f0).suffixes:
+                    src_f0_stem = Path(Path(src_f).stem).stem
                 else:
-                    src_f_stem = Path(src_f).stem
+                    src_f0_stem = Path(src_f).stem
 
-                json_f = Path(src_f).parent / (src_f_stem + '.json')
+                json_f = Path(src_f0).parent / (src_f0_stem + '.json')
                 if json_f.is_file():
-                    if '.gz' in dst_f.suffixes:
-                        dst_f_stem = Path(Path(dst_f).stem).stem
-                    else:
-                        dst_f_stem = dst_f.stem
-                    dst_json_f = Path(dst_f).parent / (dst_f_stem + '.json')
-                    if not dst_json_f.is_file() and not overwrite:
+                    dst_json_f = RTP_dir / (src_f_stem + '.json')
+                    if not dst_json_f.is_file() or overwrite:
                         shutil.copy(json_f, dst_json_f)
                 else:
                     # Save TR and slice timing
@@ -639,9 +638,6 @@ class RtpApp(RTP):
                 if progress_bar is not None:
                     progress_bar.add_desc('\n')
 
-                if ret != 0:
-                    assert False, 'Failed at copying base function image.'
-
                 self.set_param('func_orig', dst_f)
 
             # --- 0.1 Check image space ---------------------------------------
@@ -657,13 +653,18 @@ class RtpApp(RTP):
                 subprocess.check_call(
                     shlex.split(f'3drefit -space ORIG -view orig {anat_orig}'))
 
+            # Deoblique self.anat_orig
+            anat_orig = RTP_dir / Path(self.anat_orig).name
+            improc.copy_deoblique(self.anat_orig, anat_orig,
+                                  progress_bar=progress_bar)
+
             if not no_FastSeg:
                 # --- 1. FastSeg ----------------------------------------------
                 # Make Brain, WM, Vent segmentations
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
                 seg_files = improc.run_fast_seg(
-                    RTP_dir, self.anat_orig, total_ETA,
+                    RTP_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, overwrite=overwrite)
                 assert seg_files is not None
 
@@ -676,7 +677,7 @@ class RtpApp(RTP):
                 # --- 1. 3dSkullStrip -----------------------------------------
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
-                    RTP_dir, self.anat_orig, total_ETA,
+                    RTP_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert brain_anat_orig is not None, "skullStrip failed.\n"
@@ -729,51 +730,52 @@ class RtpApp(RTP):
                 assert ROI_orig is not None
                 self.set_param('ROI_orig', ROI_orig)
 
+            # --- 6. Make white matter and ventricle masks --------------------
             if no_FastSeg:
-                for roi in ('WM', 'Vent'):
-                    if roi == 'WM':
-                        roi_f = self.WM_template
-                    elif roi == 'Vent':
-                        roi_f = self.Vent_template
+                if warp_params is not None:
+                    for roi in ('WM', 'Vent'):
+                        if roi == 'WM':
+                            roi_f = self.WM_template
+                        elif roi == 'Vent':
+                            roi_f = self.Vent_template
 
-                    warped_f = improc.ants_warp_resample(
-                        RTP_dir, self.alAnat, roi_f, total_ETA,
-                        warp_params, interpolator='nearestNeighbor',
-                        progress_bar=progress_bar, ask_cmd=ask_cmd,
-                        overwrite=overwrite)
-                    assert warped_f is not None
+                        warped_f = improc.ants_warp_resample(
+                            RTP_dir, self.alAnat, roi_f, total_ETA,
+                            warp_params, interpolator='nearestNeighbor',
+                            progress_bar=progress_bar, ask_cmd=ask_cmd,
+                            overwrite=overwrite)
+                        assert warped_f is not None
 
-                    if roi == 'WM':
-                        WM_seg = warped_f
-                    elif roi == 'Vent':
-                        Vent_seg = warped_f
+                        if roi == 'WM':
+                            WM_seg = warped_f
+                        elif roi == 'Vent':
+                            Vent_seg = warped_f
+            else:
+                for segname in ('WM', 'Vent', 'aseg'):
+                    if segname == 'WM':
+                        erode = 2
+                        seg_anat_f = WM_seg
+                    elif segname == 'Vent':
+                        erode = 1
+                        seg_anat_f = Vent_seg
+                    elif segname == 'aseg':
+                        if no_FastSeg:
+                            continue
+                        erode = 0
+                        seg_anat_f = aseg_seg
 
-            # --- 5. Make white matter and ventricle masks --------------------
-            for segname in ('WM', 'Vent', 'aseg'):
-                if segname == 'WM':
-                    erode = 2
-                    seg_anat_f = WM_seg
-                elif segname == 'Vent':
-                    erode = 1
-                    seg_anat_f = Vent_seg
-                elif segname == 'aseg':
+                    assert seg_anat_f.is_file()
                     if no_FastSeg:
-                        continue
-                    erode = 0
-                    seg_anat_f = aseg_seg
+                        aff1D_f = None
 
-                assert seg_anat_f.is_file()
-                if no_FastSeg:
-                    aff1D_f = None
+                    seg_al_f = improc.resample_segmasks(
+                        RTP_dir, seg_anat_f, segname, erode, self.func_orig,
+                        total_ETA, aff1D_f, progress_bar=progress_bar,
+                        ask_cmd=ask_cmd, overwrite=overwrite)
+                    assert seg_al_f is not None
 
-                seg_al_f = improc.resample_segmasks(
-                    RTP_dir, seg_anat_f, segname, erode, self.func_orig,
-                    total_ETA, aff1D_f, progress_bar=progress_bar,
-                    ask_cmd=ask_cmd, overwrite=overwrite)
-                assert seg_al_f is not None
-
-                # Use self.set_param() to update GUI fields
-                self.set_param(f'{segname}_orig', seg_al_f)
+                    # Use self.set_param() to update GUI fields
+                    self.set_param(f'{segname}_orig', seg_al_f)
 
         except Exception:
             OK = False

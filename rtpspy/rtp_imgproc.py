@@ -16,7 +16,6 @@ import sys
 import shlex
 
 import numpy as np
-import nibabel as nib
 
 from PyQt5 import QtWidgets
 from .rtp_common import RTP
@@ -48,8 +47,7 @@ class RtpImgProc(RTP):
             "FastSeg": 100,
             "SkullStrip": 100,
             "AlAnat": 40,
-            "RTP_mask": 2,
-            "GSR_mask": 1,
+            "RTP_GSR_mask": 3,
             "ANTs": 120,
             "ApplyWarp": 10,
             "Resample_WM_mask": 1,
@@ -191,6 +189,22 @@ class RtpImgProc(RTP):
 
         proc.terminate()
         return proc.returncode
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def copy_deoblique(self, input, prefix, progress_bar=None):
+        oblique = subprocess.check_output(
+            shlex.split(f"3dinfo -is_oblique {input}"))
+        oblique = int(oblique.decode().rstrip())
+        if oblique:
+            cmd = f"3dWarp -deoblique -prefix {prefix} {input}"
+        else:
+            cmd = f"3dcopy {input} {prefix}"
+
+        # Run cmd
+        ret = self._show_cmd_progress(
+            cmd, progress_bar, msgTxt=f"Deobliqu {Path(input).name}",
+            desc='\n== Deobplique anatomy ==')
+        assert ret == 0, f'Failed at deoblique {input}.\n'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _show_proc_progress(self, proc, progress_bar=None, msgTxt='', desc='',
@@ -522,7 +536,8 @@ class RtpImgProc(RTP):
             cmd += " -volreg off -tshift off -giant_move"
             if ask_cmd:
                 labelTxt = 'Commdand line: (see '
-                labelTxt += 'https://afni.nimh.nih.gov/pub/dist/doc/program_help/'
+                labelTxt += \
+                    'https://afni.nimh.nih.gov/pub/dist/doc/program_help/'
                 labelTxt += 'align_epi_anat.py.html)'
                 labelTxt += "\nConsider -ginormous_move or"
                 labelTxt += " -partial_coverage option"
@@ -654,8 +669,12 @@ class RtpImgProc(RTP):
                 out_f0 = seg_anat_f
 
             if aff1D_f is not None:
+                # --- deoblique ---
+                out_f1 = seg_al_f.parent / ('rm.2.' + seg_al_f.name)
+                cmd = f"3dWarp -deoblique -prefix {out_f1} {out_f0} && "
+
                 # --- Apply mat.aff12.1D ---
-                cmd = f"3dAllineate -overwrite -final NN -input {out_f0}"
+                cmd += f"3dAllineate -overwrite -final NN -input {out_f1}"
                 cmd += f" -1Dmatrix_apply {aff1D_f}"
                 cmd += f" -master {func_orig} -prefix {seg_al_f}"
             else:
@@ -736,49 +755,63 @@ class RtpImgProc(RTP):
         """
 
         rm_fs = []
+        RTP_mask = work_dir / "RTP_mask.nii.gz"
+        GSR_mask = work_dir / 'GSR_mask.nii.gz'
 
-        # --- Make RTP mask ---------------------------------------------------
         # Print job description
         descStr = '+' * 70 + '\n'
-        descStr += "+++ Make RTP mask\n"
+        descStr += "+++ Make GSR mask\n"
         if progress_bar is not None:
-            progress_bar.set_msgTxt('Make RTP mask')
+            progress_bar.set_msgTxt('Make RTP, GSR masks')
             progress_bar.add_desc(descStr)
         else:
-            sys.stdout.write(descStr)
+            if self.verb:
+                sys.stdout.write(descStr)
 
-        RTP_mask = work_dir / "RTP_mask.nii.gz"
-        if not RTP_mask.is_file() or overwrite:
+        if not RTP_mask.is_file() or not GSR_mask.is_file() or overwrite:
             func_orig = Path(func_orig)
             fbase = re.sub(r'\+.*', '', func_orig.name)
             func_mask = work_dir / f"automask_{fbase}.nii.gz"
-
-            cmd = f"3dAutomask -overwrite -prefix {func_mask} {func_orig}"
-            if len(nib.load(func_orig).shape) > 3 and \
-                    nib.load(func_orig).shape[-1] > 1:
-                cmd += f"'[{ref_vi}]'"
+            cmd = f"3dAutomask -overwrite -prefix {func_mask} {func_orig} && "
+            rm_fs.append(func_mask)
 
             if alAnat is not None and Path(alAnat).is_file():
                 alAnat = Path(alAnat)
                 fbase = re.sub(r'\+.*', '', alAnat.name)
-                anat_mask = work_dir / f"anatmask_{fbase}.nii.gz"
                 temp_out = work_dir / 'rm.anat_mask_tmp.nii.gz'
 
-                cmd += f" && 3dmask_tool -overwrite -input {alAnat}"
+                anat_mask = work_dir / f"anatmask_{fbase}.nii.gz"
+                cmd += f"3dmask_tool -overwrite -input {alAnat}"
                 cmd += f" -prefix {temp_out} -frac 0.0 -fill_holes && "
+
                 cmd += f"3dresample -overwrite -rmode NN -master {func_orig}"
                 cmd += f" -prefix {anat_mask} -input {temp_out} && "
 
+                # RTP mask : union of func automask and anat mask
                 cmd += "3dmask_tool -overwrite"
                 cmd += f" -input {anat_mask} {func_mask}"
-                cmd += f" -prefix {RTP_mask} -frac 0.0"
+                cmd += f" -prefix {RTP_mask} -frac 0.0 && "
+
+                # GSR mask : intersect of func automask and anat mask
+                cmd += f"3dmask_tool -overwrite -input {func_mask}"
+                cmd += f" {anat_mask} -prefix {GSR_mask} -frac 1.0"
 
                 rm_fs.append(anat_mask)
                 rm_fs.append(temp_out)
-
             else:
+                # RTP and GSR masks :func automask
                 cmd += " && 3dAFNItoNIFTI -overwrite"
-                cmd += f" -prefix {RTP_mask} {func_mask}"
+                cmd += f" -prefix {RTP_mask} {func_mask} && "
+                cmd = f"cp {GSR_mask} {RTP_mask}"
+
+            # Print job description
+            descStr = '+' * 70 + '\n'
+            descStr += "+++ Make RTP, GSR masks\n"
+            if progress_bar is not None:
+                progress_bar.set_msgTxt('Make RTP and GSR masks')
+                progress_bar.add_desc(descStr)
+            else:
+                sys.stdout.write(descStr)
 
             if ask_cmd:
                 labelTxt = 'Commdand line: (see '
@@ -793,15 +826,14 @@ class RtpImgProc(RTP):
             proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, cwd=work_dir)
             assert proc.returncode is None or proc.returncode == 0, \
-                'Failed at RTPmask creation.\n'
+                'Failed at RTP/GSR mask creation.\n'
 
             # Wait for the process to finish with showing the progress.
             ret = self._show_cmd_progress(
-                cmd, progress_bar=progress_bar, msgTxt='Making RTP mask')
+                cmd, progress_bar=progress_bar, msgTxt='Making RTP/GSR masks')
             assert ret == 0
 
-            rm_fs.append(func_mask)
-            self.proc_times["RTP_mask"] = np.ceil(time.time() - st)
+            self.proc_times["RTP_GSR_mask"] = np.ceil(time.time() - st)
 
             if progress_bar is not None:
                 progress_bar.add_desc('\n')
@@ -809,62 +841,13 @@ class RtpImgProc(RTP):
         else:
             # Use existing file.
             if progress_bar is not None:
-                bar_inc = (self.proc_times["RTP_mask"]) / total_ETA * 100
+                bar_inc = (self.proc_times["RTP_GSR_mask"]) / total_ETA * 100
                 bar_val0 = progress_bar.progBar.value()
                 progress_bar.set_value(bar_val0 + bar_inc)
-                progress_bar.add_desc(f"Use existing file: {RTP_mask}\n\n")
+                progress_bar.add_desc(
+                    f"Use existing file: {RTP_mask} and {GSR_mask}\n\n")
             else:
-                print(f"Use existing file: {RTP_mask}\n")
-
-        # --- Make GSR_mask ---------------------------------------------------
-        # Print job description
-        descStr = '+' * 70 + '\n'
-        descStr += "+++ Make GSR mask\n"
-        if progress_bar is not None:
-            progress_bar.set_msgTxt('Make GSR mask')
-            progress_bar.add_desc(descStr)
-        else:
-            sys.stdout.write(descStr)
-
-        GSR_mask = work_dir / 'GSR_mask.nii.gz'
-        if not GSR_mask.is_file() or overwrite:
-            if alAnat is not None and alAnat.is_file():
-                cmd = f"3dmask_tool -overwrite -input {func_mask} {anat_mask}"
-                cmd += f" -prefix {GSR_mask} -frac 1.0"
-            else:
-                cmd = f"cp {GSR_mask} {RTP_mask}"
-
-            if ask_cmd:
-                labelTxt = 'Commdand line: (see '
-                labelTxt += 'https://afni.nimh.nih.gov/pub/dist/doc/'
-                labelTxt += 'program_help/3dmask_tool.html)'
-                cmd, okflag = self._edit_command(labelTxt=labelTxt, cmdTxt=cmd)
-                if not okflag:
-                    for rm_f in rm_fs:
-                        if rm_f.is_file():
-                            rm_f.unlink()
-                    return None
-
-            # Run the process
-            st = time.time()
-            ret = self._show_cmd_progress(cmd, progress_bar=progress_bar,
-                                          msgTxt='Making GSR mask')
-            assert ret == 0
-
-            self.proc_times["GSR_mask"] = np.ceil(time.time() - st)
-
-            if progress_bar is not None:
-                progress_bar.add_desc('\n')
-
-        else:
-            # Use existing file.
-            if progress_bar is not None:
-                bar_inc = (self.proc_times["GSR_mask"]) / total_ETA * 100
-                bar_val0 = progress_bar.progBar.value()
-                progress_bar.set_value(bar_val0 + bar_inc)
-                progress_bar.add_desc(f"Use existing file: {GSR_mask}\n\n")
-            else:
-                print(f"Use existing file: {GSR_mask}\n")
+                print(f"Use existing files: {RTP_mask} and {GSR_mask}\n")
 
         for rm_f in rm_fs:
             if rm_f.is_file():
