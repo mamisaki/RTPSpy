@@ -1128,21 +1128,21 @@ class RtpApp(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            self.rtp_objs['PHYSIO'].scan_onset = 0
-            self.rtp_objs['PHYSIO'].wait_ttl_on = True
+            if 'PHYSIO' in self.rtp_objs and \
+                    self.rtp_objs['PHYSIO'] is not None:
+                self.rtp_objs['PHYSIO'].scan_onset = 0
+                self.rtp_objs['PHYSIO'].wait_ttl_on = True
             self._scanning = False
             self._wait_start = True
 
             # Run wait_onset thread
-            if self.rtp_objs['PHYSIO'] is not None and \
-                    self.rtp_objs['PHYSIO'].is_recording():
-                self.th_wait_onset = QtCore.QThread()
-                self.wait_onset = RtpApp.WAIT_ONSET(
+            self.th_wait_onset = QtCore.QThread()
+            self.wait_onset = RtpApp.WAIT_ONSET(
                     self, self.rtp_objs['PHYSIO'], self.extApp_sock)
-                self.wait_onset.moveToThread(self.th_wait_onset)
-                self.th_wait_onset.started.connect(self.wait_onset.run)
-                self.wait_onset.finished.connect(self.th_wait_onset.quit)
-                self.th_wait_onset.start()
+            self.wait_onset.moveToThread(self.th_wait_onset)
+            self.th_wait_onset.started.connect(self.wait_onset.run)
+            self.wait_onset.finished.connect(self.th_wait_onset.quit)
+            self.th_wait_onset.start()
 
             # Change button text
             self.ui_ready_btn.setText('Waiting for scan start ...')
@@ -1697,7 +1697,7 @@ class RtpApp(RTP):
 
         finished = QtCore.pyqtSignal()
 
-        def __init__(self, parent, onsetObj, extApp_sock=None):
+        def __init__(self, parent, onsetObj=None, extApp_sock=None):
             super().__init__()
             self.parent = parent
             self.onsetObj = onsetObj
@@ -1705,15 +1705,18 @@ class RtpApp(RTP):
             self.abort = False
 
         def run(self):
-            while self.onsetObj.scan_onset == 0 and not self.abort:
-                # print(self.onsetObj.scan_onset)
-                time.sleep(0.001)
+            while not self.abort:
+                if self.onsetObj is not None:
+                    if self.onsetObj.scan_onset != 0:
+                        onset_time = self.onsetObj.scan_onset
+                        break
+
+                    time.sleep(0.001)
 
             if self.abort:
                 self.finished.emit()
                 return
 
-            onset_time = self.onsetObj.scan_onset
             self.parent._scanning = True
             self.parent._wait_start = False
             self.parent.scan_onset = onset_time
@@ -1790,6 +1793,13 @@ class RtpApp(RTP):
 
         # schedule the next check
         self.chk_run_timer.start(1000)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def keyPressEvent(self, event):
+        if self._wait_start:
+            if event.key() == QtCore.Qt.Key_T:
+                # Scan start
+                self.manual_start()
 
     # --- Simulation ----------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

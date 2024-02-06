@@ -401,6 +401,9 @@ def save_parameters(objs, fname='RTPSpy_params.pkl'):
             continue
 
         props[k] = dict()
+        if objs[k] is None:
+            continue
+
         for var_name, var_val in objs[k].get_params().items():
             if var_name in ('main_win', '_std_out', '_err_out') or \
                     'ui_' in var_name or \
