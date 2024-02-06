@@ -643,9 +643,15 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.listParam_txtBrws.setText(param_list)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def keyPressEvent(self, event):
+        for rtp_app in self.rtp_apps.values():
+            rtp_app.keyPressEvent(event)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
         # Stop physio
         if 'PHYSIO' in self.rtp_objs and \
+                self.rtp_objs['PHYSIO'] is not None and \
                 self.rtp_objs['PHYSIO'].is_recording():
             self.rtp_objs['PHYSIO'].stop_recording()
             del self.rtp_objs['PHYSIO']
