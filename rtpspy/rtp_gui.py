@@ -15,6 +15,8 @@ import time
 from collections import OrderedDict
 import logging
 import sys
+import subprocess
+import shlex
 
 import torch
 from PyQt5 import QtCore, QtWidgets, QtGui
@@ -649,6 +651,18 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
+        # Check is the dcm2nnix is running
+        try:
+            ostr = subprocess.check_output(shlex.split('pgrep -f dcm2niix'))
+            if len(ostr.decode().rstrip()):
+                errmsg = 'Do not close yet!'
+                errmsg += ' DICOM to NIfTI conversion is still in progress.'
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
+                return
+        except Exception:
+            pass
+
         # Stop physio
         if 'PHYSIO' in self.rtp_objs and \
                 self.rtp_objs['PHYSIO'] is not None and \
