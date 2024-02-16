@@ -6,7 +6,7 @@
     "configurations": [
         {
             "name": "Python: Current File with profiler",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "cProfile",
             "args": [
@@ -15,7 +15,7 @@
         },
         {
             "name": "Python: Current File",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",

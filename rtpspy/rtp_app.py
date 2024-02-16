@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 try:
     # Load modules from the same directory
     from .rtp_common import (RTP, boot_afni, MatplotlibWindow, DlgProgressBar,
-                             excepthook)
+                             excepthook, load_parameters, save_parameters)
     from .rtp_watch_SiemensXA30 import RtpWatch
     from .rtp_volreg import RtpVolreg
     from .rtp_tshift import RtpTshift
@@ -49,12 +49,11 @@ try:
 
 except Exception:
     # For DEBUG environment
-    sys.path.append("./")
-    from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
-                                   DlgProgressBar, excepthook)
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
                         RtpRegress, RtpPhysio, RtpImgProc)
-
+    from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
+                                   DlgProgressBar, excepthook, load_parameters,
+                                   save_parameters)
     from rtpspy.mri_sim import rtMRISim
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
 
@@ -276,7 +275,12 @@ class RtpApp(RTP):
                     self._logger.info(f"Sent '{msg}' to an external app")
 
                 except Exception as e:
-                    self._logger.error(str(e))
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    errmsg = '{}, {}:{}'.format(
+                            exc_type, exc_tb.tb_frame.f_code.co_filename,
+                            exc_tb.tb_lineno)
+                    self._logger.error(str(e) + '\n' + errmsg)
+
             else:
                 # Online saving in a file
                 with open(self.sig_save_file, 'a') as save_fd:
@@ -342,7 +346,7 @@ class RtpApp(RTP):
         ses = out_dir.name.replace('_', '')
 
         cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
-        cmd += f" -i y -z y -w 0 -o {out_dir} {dcm_dir}"
+        cmd += f" -i y -z o -w 0 -o {out_dir} {dcm_dir}"
         try:
             # progress dialog
             msgBox = QtWidgets.QMessageBox(self.main_win)
@@ -407,6 +411,19 @@ class RtpApp(RTP):
             Progress dialog. The default is False.
 
         """
+        '''DEBUG
+        RTP_dir = Path('/data/rt/P000200/RTP')
+        anat_orig=Path(
+        func_orig=Path(
+            '/data/rt/P000200/sub-AU972_ses-P000200_ser-04_desc-sbref_pa.nii.gz')
+        anat_orig=Path(
+            '/data/rt/P000200/sub-AU972_ses-P000200_ser-02_desc-t1_mprage.nii.gz')
+        template=Path(
+            '/home/mmisaki@librad.laureateinstitute.org/RTPApp/RNT-CNF/atlas/MNI152_2009_template.nii.gz')
+        ROI_template=Path(
+            '/home/mmisaki@librad.laureateinstitute.org/RTPApp/RNT-CNF/atlas/rSTS_rAI_template.nii.gz')
+        overwrite=True
+        '''
         # Check work_dir
         if type(self.work_dir) is str and self.work_dir == '':
             errmsg = "Working directory is not set."
@@ -501,10 +518,13 @@ class RtpApp(RTP):
 
         # Progress bar
         if progress_dlg:
+            sys.stdout.flush()
+            original_stdout = sys.stdout
             progress_bar = DlgProgressBar(
                 title="Mask image creation", modal=False,
                 parent=self.main_win, st_time=time.time(),
                 win_size=(750, 320))
+            sys.stdout = progress_bar.ostream
             progress_bar.set_value(0)
         else:
             progress_bar = None
@@ -544,19 +564,33 @@ class RtpApp(RTP):
             RTP_dir.mkdir()
 
         try:
-            # --- 0. Copy func_orig to work_dir as vr_base_* ------------------
-            if Path(func_orig).parent != self.work_dir or \
+            # --- Check image space -------------------------------------------
+            func_space = None
+            # anat_space = None
+            try:
+                func_space = subprocess.check_output(
+                    shlex.split(f'3dinfo -space {func_orig}')
+                    ).decode().rstrip()
+
+                # anat_space = subprocess.check_output(
+                #     shlex.split(f'3dinfo -space {anat_orig}')
+                #     ).decode().rstrip()
+            except Exception:
+                pass
+
+            # Deoblique self.anat_orig
+            anat_orig = RTP_dir / Path(self.anat_orig).name
+            improc.copy_deoblique(self.anat_orig, anat_orig,
+                                  progress_bar=progress_bar)
+
+            # --- 0. Copy func_orig to RTP_dir as vr_base_* ------------------
+            if Path(func_orig).parent != RTP_dir or \
                     not Path(func_orig).stem.startswith('vr_base_') or \
                     overwrite:
-
                 src_f = func_orig
-                if re.search(r"\'*\[\d+\]\'*$", Path(src_f).name) is None:
-                    src_f = f"'{src_f}[0]'"
-
                 src_f_stem = Path(func_orig).stem
-                suff = Path(func_orig).suffix
-                if '.gz' in suff:
-                    suff = Path(src_f_stem).suffix
+                suffix = Path(func_orig).suffix
+                if suffix == '.gz':
                     src_f_stem = Path(src_f_stem).stem
 
                 # Exclude watch_file_pattern from vr_base fname
@@ -568,45 +602,29 @@ class RtpApp(RTP):
                 if re.search(r'\\.nii', pat):
                     pat = re.sub(r'\\.nii', '', pat)
 
-                src_f_stem = re.sub(pat, '', src_f_stem)
-                if not src_f_stem.startswith('vr_base_'):
-                    src_f_stem = 'vr_base_' + src_f_stem
+                src_save_fname = re.sub(pat, '', src_f_stem)
+                if not src_save_fname.startswith('vr_base_'):
+                    src_save_fname = 'vr_base_' + src_save_fname
 
-                if suff in ('.HEAD', '.BRIK'):
-                    if not src_f_stem.endswith('+orig'):
-                        src_f_stem += '+orig'
-                    dst_f = RTP_dir / f'{src_f_stem}.HEAD'
-                elif suff == '.nii':
-                    dst_f = RTP_dir / f'{src_f_stem}.nii.gz'
-                else:
-                    errmsg = f"File type {suff} cannot be recognized."
-                    self._logger.error(errmsg)
-                    self.err_popup(errmsg)
-                    if hasattr(self, 'ui_CreateMasks_btn'):
-                        self.ui_CreateMasks_btn.setEnabled(True)
-                    return
+                dst_f = RTP_dir / f'{src_save_fname}.nii.gz'
+                if src_f != dst_f and (not dst_f.is_file() or overwrite):
+                    src_img = improc.load_image(src_f)
+                    if src_img is None:
+                        if progress_dlg:
+                            sys.stdout = original_stdout
+                        return
+                    print("#" * 80)
+                    print(f"Copy {src_f} to {dst_f}")
+                    nib.save(src_img, dst_f)
+                    if func_space is not None:
+                        ostr = subprocess.check_output(
+                            shlex.split(
+                                f"3drefit -space {func_space} {dst_f}"),
+                            stderr=subprocess.STDOUT)
+                        print(ostr.decode())
 
-                if not dst_f.is_file() or overwrite:
-                    cmd = f"3dbucket -overwrite -prefix {dst_f} {src_f}"
-                    ret = improc._show_cmd_progress(
-                        cmd, progress_bar,
-                        msgTxt="Copy base function image",
-                        desc='+' * 70 + '\n' +
-                        '+++ Copy base function image\n' +
-                        f"Save base function image as {dst_f.name}" +
-                        f" in {RTP_dir}.\n")
-                    if ret != 0:
-                        assert False, 'Failed at copying base function image.'
-
-                # If json file exists copy it too
-                src_f0 = src_f.replace("'", "")
-                src_f0 = re.sub(r'\[\d+\]', '', src_f0)
-                if '.gz' in Path(src_f0).suffixes:
-                    src_f0_stem = Path(Path(src_f).stem).stem
-                else:
-                    src_f0_stem = Path(src_f).stem
-
-                json_f = Path(src_f0).parent / (src_f0_stem + '.json')
+                # If a json file exists, copy it as well
+                json_f = Path(src_f).parent / (src_f_stem + '.json')
                 if json_f.is_file():
                     dst_json_f = RTP_dir / (src_f_stem + '.json')
                     if not dst_json_f.is_file() or overwrite:
@@ -635,28 +653,8 @@ class RtpApp(RTP):
                         with open(json_f, 'w') as fd:
                             json.dump(img_info, fd, indent=4)
 
-                if progress_bar is not None:
-                    progress_bar.add_desc('\n')
-
+                print('\n')
                 self.set_param('func_orig', dst_f)
-
-            # --- 0.1 Check image space ---------------------------------------
-            space = subprocess.check_output(
-                shlex.split(f'3dinfo -space {func_orig}')).decode().rstrip()
-            if space == 'TLRC':
-                subprocess.check_call(
-                    shlex.split(f'3drefit -space ORIG -view orig {func_orig}'))
-
-            space = subprocess.check_output(
-                shlex.split(f'3dinfo -space {anat_orig}')).decode().rstrip()
-            if space == 'TLRC':
-                subprocess.check_call(
-                    shlex.split(f'3drefit -space ORIG -view orig {anat_orig}'))
-
-            # Deoblique self.anat_orig
-            anat_orig = RTP_dir / Path(self.anat_orig).name
-            improc.copy_deoblique(self.anat_orig, anat_orig,
-                                  progress_bar=progress_bar)
 
             if not no_FastSeg:
                 # --- 1. FastSeg ----------------------------------------------
@@ -695,7 +693,7 @@ class RtpApp(RTP):
             # Use self.set_param() to update GUI fields
             self.set_param('alAnat', alAnat)
 
-            alAnat_f_stem = self.alAnat.stem.replace('+orig', '')
+            alAnat_f_stem = self.alAnat.stem.replace('.nii', '')
             aff1D_f = RTP_dir / (alAnat_f_stem + '_mat.aff12.1D')
             assert aff1D_f.is_file()
 
@@ -802,6 +800,7 @@ class RtpApp(RTP):
 
             progress_bar.setWindowTitle(progress_bar.title)
             progress_bar.btnCancel.setText('Close')
+            sys.stdout = original_stdout
 
         if OK:
             self.proc_times = improc.proc_times
@@ -3352,6 +3351,9 @@ if __name__ == '__main__':
     all_rtp_objs = rtp_app.rtp_objs
     all_rtp_objs.update(app_obj)
 
+    if Path('RNT_CNF_params.pkl').is_file():
+        load_parameters(all_rtp_objs, fname='RNT_CNF_params.pkl')
+
     # Run the application
     sys.excepthook = excepthook
     try:
@@ -3367,4 +3369,5 @@ if __name__ == '__main__':
         exit_code = -1
 
     # --- End ---
+    save_parameters(all_rtp_objs, fname='RNT_CNF_params.pkl')
     sys.exit(exit_code)

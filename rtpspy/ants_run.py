@@ -78,4 +78,3 @@ if __name__ == '__main__':
     elif run == 'warp_resample':
         ants_warp_resample(fix_f, move_f, out_f, transforms,
                            interpolator=interpolation, verbose=verbose)
-
