@@ -16,6 +16,8 @@ import sys
 import shlex
 
 import numpy as np
+import nibabel as nib
+import ants
 
 from PyQt5 import QtWidgets
 from .rtp_common import RTP
@@ -191,22 +193,6 @@ class RtpImgProc(RTP):
         return proc.returncode
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def copy_deoblique(self, input, prefix, progress_bar=None):
-        oblique = subprocess.check_output(
-            shlex.split(f"3dinfo -is_oblique {input}"))
-        oblique = int(oblique.decode().rstrip())
-        if oblique:
-            cmd = f"3dWarp -deoblique -prefix {prefix} {input}"
-        else:
-            cmd = f"3dcopy {input} {prefix}"
-
-        # Run cmd
-        ret = self._show_cmd_progress(
-            cmd, progress_bar, msgTxt=f"Deobliqu {Path(input).name}",
-            desc='\n== Deobplique anatomy ==')
-        assert ret == 0, f'Failed at deoblique {input}.\n'
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _show_proc_progress(self, proc, progress_bar=None, msgTxt='', desc='',
                             ETA=None, total_ETA=None):
         """
@@ -275,6 +261,47 @@ class RtpImgProc(RTP):
 
         return ret
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def load_image(self, fname):
+        """Load image file and retur nibabel Nifti1Image object
+        """
+        try:
+            img = nib.load(fname)
+
+            suffix = Path(fname).suffix
+            if suffix == '.gz':
+                suffix = Path(Path(fname).stem).suffix
+
+            if suffix == '.nii':
+                img_data = img.get_fdata().astype(img.header.get_data_dtype())
+                img = nib.Nifti1Image(img_data, affine=img.affine)
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            errmsg = '{}, {}:{}'.format(
+                    exc_type, exc_tb.tb_frame.f_code.co_filename,
+                    exc_tb.tb_lineno)
+            self._logger.error(str(e) + '\n' + errmsg)
+            self.err_popup(errmsg)
+            return None
+
+        return img
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def copy_deoblique(self, input, prefix, progress_bar=None):
+        oblique = subprocess.check_output(
+            shlex.split(f"3dinfo -is_oblique {input}"))
+        oblique = int(oblique.decode().rstrip())
+        if oblique:
+            cmd = f"3dWarp -overwrite -deoblique -prefix {prefix} {input}"
+        else:
+            cmd = f"3dcopy -overwrite {input} {prefix}"
+
+        # Run cmd
+        ret = self._show_cmd_progress(
+            cmd, progress_bar, msgTxt=f"Deobliqu {Path(input).name}",
+            desc='\n== Deobplique anatomy ==')
+        assert ret == 0, f'Failed at deoblique {input}.\n'
+
     # --- Image processing methos ---------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_fast_seg(self, work_dir, anat_orig, total_ETA, progress_bar=None,
@@ -313,9 +340,7 @@ class RtpImgProc(RTP):
         if progress_bar is not None:
             progress_bar.set_msgTxt(
                 'Brain extraction and WM/Vent segmentation')
-            progress_bar.add_desc(descStr)
-        else:
-            sys.stdout.write(descStr)
+        print(descStr)
 
         # Check if the result files exist.
         brain_anat_orig = work_dir / (out_prefix + '_Brain.nii.gz')
@@ -350,9 +375,10 @@ class RtpImgProc(RTP):
                 return None
 
             # make_seg_images
-            show_proc_progress = lambda proc: self._show_proc_progress(
-                proc, progress_bar, msgTxt='FastSeg image segnemtation',
-                total_ETA=total_ETA)
+            def show_proc_progress(proc):
+                return self._show_proc_progress(
+                    proc, progress_bar, msgTxt='FastSeg image segmentation',
+                    total_ETA=total_ETA)
 
             out_fs = fastSeg.make_seg_images(
                 in_f, fsSeg_mgz, prefix,
@@ -415,7 +441,7 @@ class RtpImgProc(RTP):
 
         """
 
-        # Set FastSeg output prefix.
+        # Set output prefix.
         out_prefix = anat_orig.name.replace(
             ''.join(anat_orig.suffixes[-2:]), '')
         out_prefix = out_prefix.replace('+orig', '').replace('+tlrc', '')
@@ -513,15 +539,13 @@ class RtpImgProc(RTP):
         descStr += "+++ Align anat to func\n"
         if progress_bar is not None:
             progress_bar.set_msgTxt('Align anat to func')
-            progress_bar.add_desc(descStr)
-        else:
-            sys.stdout.write(descStr)
+
+        print(descStr)
 
         brain_anat_orig = Path(brain_anat_orig)
         suffs = brain_anat_orig.suffixes
         alAnat = work_dir / \
-            (brain_anat_orig.name.replace(''.join(suffs),
-                                          '_al_func+orig.HEAD'))
+            (brain_anat_orig.name.replace(''.join(suffs), '_al_func.nii.gz'))
         if not alAnat.is_file() or overwrite:
             if alAnat.is_file():
                 alAnat.unlink()
@@ -532,7 +556,7 @@ class RtpImgProc(RTP):
             cmd = "align_epi_anat.py -overwrite -anat2epi"
             cmd += f" -anat {anat_orig_rel} -epi {func_orig_rel} -epi_base 0"
             cmd += " -suffix _al_func -epi_strip 3dAutomask -anat_has_skull no"
-            cmd += f" -master_anat {anat_orig_rel}"
+            cmd += f" -master_anat {brain_anat_orig}"
             cmd += " -volreg off -tshift off -giant_move"
             if ask_cmd:
                 labelTxt = 'Commdand line: (see '
@@ -558,6 +582,16 @@ class RtpImgProc(RTP):
                 ETA=self.proc_times["AlAnat"], total_ETA=total_ETA)
             if ret != 0:
                 return None
+
+            # Convert aligned anatomy to NIfTI
+            alAnat_f_stem = alAnat.stem.replace('.nii', '')
+            alAnat_brik = list(work_dir.glob(alAnat_f_stem + '*.HEAD'))
+            if len(alAnat_brik):
+                cmd = f"3dAFNItoNIFTI -overwrite -prefix {alAnat}"
+                cmd += f" {alAnat_brik[0]}"
+                ret = self._show_cmd_progress(
+                    cmd, progress_bar, msgTxt='Convert alAnat to NIfTI',
+                    desc="++ Convert alAnat to NIfTI\n")
 
             self.proc_times["AlAnat"] = np.ceil(time.time() - st)
             assert alAnat.is_file()
@@ -864,29 +898,13 @@ class RtpImgProc(RTP):
         descStr += "+++ ANTs registration\n"
         if progress_bar is not None:
             progress_bar.set_msgTxt('ANTs registraion')
-            progress_bar.add_desc(descStr)
-        else:
-            sys.stdout.write(descStr)
+        print(descStr)
 
         # --- Warp template to alAnat -----------------------------------------
         aff_f = work_dir / 'template2orig_0GenericAffine.mat'
         wrp_f = work_dir / 'template2orig_1Warp.nii.gz'
         if not aff_f.is_file() or not wrp_f.is_file() or overwrite:
-            # Convert aligned anatomy to NIfTI
-            alAnat_f_stem = alAnat.stem.replace('+orig', '')
-            alAnat_nii = work_dir / (alAnat_f_stem + '.nii.gz')
-            if not alAnat_nii.is_file() or overwrite:
-                cmd = f"3dAFNItoNIFTI -overwrite -prefix {alAnat_nii}"
-                cmd += f" {alAnat}"
-                ret = self._show_cmd_progress(
-                    cmd, progress_bar, msgTxt='Convert alAnat to NIfTI',
-                    desc="++ Convert alAnat to NIfTI\n")
-                assert ret == 0
-
-                if progress_bar is not None:
-                    progress_bar.add_desc('\n')
-
-            fix_f = os.path.relpath(alAnat_nii.absolute(), work_dir)
+            fix_f = os.path.relpath(alAnat.absolute(), work_dir)
             move_f = os.path.relpath(Path(template_f).absolute(),
                                      work_dir)
             outprefix = 'template2orig_'
@@ -934,6 +952,38 @@ class RtpImgProc(RTP):
 
             if progress_bar is not None:
                 progress_bar.add_desc('\n')
+
+            # try:
+            #     # Warp template to anat
+            #     print("Running antsRegistrationSyNQuickRepro[b] ...")
+
+            #     st = time.time()
+            #     anat_img = ants.image_read(str(alAnat))
+            #     template_img = ants.image_read(str(template_f))
+            #     t2a_reg = ants.registration(
+            #         anat_img, template_img,
+            #         'antsRegistrationSyNQuickRepro[b]',
+            #         verbose=False)
+
+            #     shutil.copy(t2a_reg['fwdtransforms'][0], wrp_f)
+            #     shutil.copy(t2a_reg['fwdtransforms'][1], aff_f)
+            #     invwrp_f = work_dir / 'template2orig_1InverseWarp.nii.gz'
+            #     shutil.copy(t2a_reg['invtransforms'][1], invwrp_f)
+
+            # except Exception as e:
+            #     errmsg = str(e)+'\n'
+            #     errmsg += "'ants.registration' failed."
+            #     self._logger.error(errmsg)
+            #     self.err_popup(errmsg)
+            #     return -1
+
+            # self.proc_times["ANTs"] = np.ceil(time.time() - st)
+            # if progress_bar is not None:
+            #     bar_inc = self.proc_times["ANTs"] / total_ETA * 100
+            #     bar_val0 = progress_bar.progBar.value()
+            #     progress_bar.set_value(bar_val0+bar_inc)
+
+            # print(f'Done (took {self.proc_times["ANTs"]} s)\n')
 
         else:
             # Use existing file
@@ -996,67 +1046,38 @@ class RtpImgProc(RTP):
         descStr += "+++ Apply warp\n"
         if progress_bar is not None:
             progress_bar.set_msgTxt('Apply Warp')
-            progress_bar.add_desc(descStr)
-        else:
-            sys.stdout.write(descStr)
+        print(descStr)
 
         warped_f = work_dir / \
             Path(move_f).name.replace('.nii', '_inOrig.nii')
         if not warped_f.is_file() or overwrite:
-            # Apply warp with resample in fix_f space
-            fix_f = os.path.relpath(fix_f, work_dir)
-            move_f = os.path.relpath(move_f, work_dir)
-            warp_params = [os.path.relpath(ff, work_dir)
-                           for ff in transformlist]
-            out_f = os.path.relpath(warped_f, work_dir)
-
-            # Prepare the command
-            ants_run = shutil.which("ants_run.py")
-            if ants_run is None:
-                ants_run = Path(__file__).absolute().parent / 'ants_run.py'
-                ants_run = f"python3 {ants_run}"
-
-            cmd = f"{ants_run} warp_resample -f {fix_f} -m {move_f}"
-            cmd += f" -t {' '.join([ff for ff in warp_params])}"
-            cmd += f" -i {interpolator} -o {out_f} -v"
-
-            if ask_cmd:
-                labelTxt = 'Commdand line:'
-                cmd, okflag = self._edit_command(labelTxt=labelTxt, cmdTxt=cmd)
-                if not okflag:
-                    return None
-
-            # Spawn the process
             st = time.time()
+
             try:
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=work_dir)
+                # Apply warp with resampling in fix_f space
+                print(f'Apply transform to {move_f.name} ...')
+
+                fix_img = ants.image_read(str(fix_f))
+                move_img = ants.image_read(str(move_f))
+                out_img = ants.apply_transforms(
+                    fix_img, move_img, transformlist, imagetype=imagetype,
+                    interpolator=interpolator, verbose=False)
+                ants.image_write(out_img, str(warped_f))
             except Exception as e:
                 errmsg = str(e)+'\n'
-                errmsg += "'{}' failed.".format(cmd)
+                errmsg += "'ants.apply_transforms' failed."
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 return None
 
-            assert proc.returncode is None or proc.returncode == 0, \
-                'Failed at warp and resample.\n'
-
-            # Wait for the process to finish with showing the progress.
-            ret = self._show_proc_progress(
-                proc, progress_bar,
-                msgTxt="Warp and resample image",
-                ETA=self.proc_times["ApplyWarp"],
-                total_ETA=total_ETA)
-            if ret != 0:
-                return None
-
             self.proc_times['ApplyWarp'] = np.ceil(time.time() - st)
+            if progress_bar is not None:
+                bar_inc = self.proc_times["ApplyWarp"] / total_ETA * 100
+                bar_val0 = progress_bar.progBar.value()
+                progress_bar.set_value(bar_val0+bar_inc)
 
             assert warped_f.is_file()
-
-            if progress_bar is not None:
-                progress_bar.add_desc('\n')
+            print(f"Done. (took {self.proc_times['ApplyWarp']} s)\n")
 
         else:
             # Use existing file

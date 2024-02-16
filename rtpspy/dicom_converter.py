@@ -241,7 +241,7 @@ class DicomConverter():
                         cmd += " -w 1"
                     else:
                         cmd += " -w 2"
-                    cmd += f" -z y {tmpdir}"
+                    cmd += f" -z o {tmpdir}"
                     try:
                         proc = subprocess.Popen(
                             shlex.split(cmd), stdout=subprocess.PIPE,

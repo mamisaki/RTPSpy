@@ -501,6 +501,15 @@ class DlgProgressBar(QtWidgets.QDialog):
     Progress bar dialog
     """
 
+    class EmittingStream(QtCore.QObject):
+        textWritten = QtCore.pyqtSignal(str)
+
+        def write(self, text):
+            self.textWritten.emit(str(text))
+
+        def flush(self):
+            pass
+
     def __init__(self, title='Progress', modal=True, parent=None,
                  win_size=(640, 320), show_button=True, st_time=None):
         super().__init__(parent)
@@ -541,8 +550,21 @@ class DlgProgressBar(QtWidgets.QDialog):
 
         self.st_time = st_time
         self.title = title
+        self.ostream = DlgProgressBar.EmittingStream(
+            textWritten=self.update_console)
 
         self.show()
+
+    def update_console(self, text):
+
+        self.desc_pTxtEd.moveCursor(QtGui.QTextCursor.End)
+        self.desc_pTxtEd.insertPlainText(text)
+
+        sb = self.desc_pTxtEd.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+        self.repaint()
+        QtWidgets.QApplication.instance().processEvents()
 
     def set_value(self, val):
         """

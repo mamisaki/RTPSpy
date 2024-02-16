@@ -655,10 +655,11 @@ class RtpGUI(QtWidgets.QMainWindow):
         try:
             ostr = subprocess.check_output(shlex.split('pgrep -f dcm2niix'))
             if len(ostr.decode().rstrip()):
-                errmsg = 'Do not close yet!'
+                errmsg = 'Do not close!'
                 errmsg += ' DICOM to NIfTI conversion is still in progress.'
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
+                event.ignore()
                 return
         except Exception:
             pass
@@ -687,3 +688,5 @@ class RtpGUI(QtWidgets.QMainWindow):
                 os.makedirs(Path(dst_fname).parent)
 
             shutil.copy(src_fname, dst_fname)
+
+        self._log_update_timer.stop()
