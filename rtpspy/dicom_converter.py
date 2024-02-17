@@ -222,7 +222,7 @@ class DicomConverter():
             if not nii_f.is_file() or overwrite:
                 self._logger.info(
                     "<B>Running dcm2niix for series" +
-                    f" {out_dir.name}:{ser}:{serDesc}")
+                    f" {out_dir.name}:{ser}:{serDesc} ...")
                 tmpdir = out_dir / f'tmp_dcm2niix_ser{int(ser)}'
                 if tmpdir.is_dir():
                     shutil.rmtree(tmpdir)
@@ -266,6 +266,9 @@ class DicomConverter():
 
                 if tmpdir.is_dir():
                     shutil.rmtree(tmpdir)
+
+                self._logger.info(
+                    "<B>Complete dcm2niix conversion.")
 
             created_nii[ser] = nii_f
             if not make_brik:
