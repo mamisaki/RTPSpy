@@ -449,6 +449,12 @@ class RtpDicomMonitor:
                     # Reset physio parameters
                     self._save_physio = False
 
+                last_ser = self._last_dicom_header.SeriesNumber
+                last_ser_de = self._last_dicom_header.SeriesDescription
+                self._logger.info(
+                    f"Close series {last_ser} ({last_ser_de})\n#" +
+                    '-' * 80 + '\n#\n#')
+
                 # Run DICOM convert process
                 dicom_dir = self._last_proc_f.parent
                 # dcm_conv_proc = Process(
@@ -460,12 +466,6 @@ class RtpDicomMonitor:
                 self.dcm_converter.rt_convert_dicom(
                     dicom_dir, self._study_dir, make_brik=self.make_brik
                 )
-
-                last_ser = self._last_dicom_header.SeriesNumber
-                last_ser_de = self._last_dicom_header.SeriesDescription
-                self._logger.info(
-                    f"Close series {last_ser} ({last_ser_de})\n#" +
-                    '-' * 80 + '\n#\n#')
 
                 self._isRun_series = False
                 self._current_series = -1

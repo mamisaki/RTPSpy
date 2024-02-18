@@ -194,6 +194,12 @@ class RtpApp(RTP):
 
         self.rtp_objs = rtp_objs
 
+        # --- Clean tmp dicom -------------------------------------------------
+        tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
+        for rmf in tmp_dcm:
+            if rmf.is_file():
+                shutil.rmtree(rmf.parent)
+
         # --- Set the default RTP parameters ----------------------------------
         if default_rtp_params is not None:
             # Set default parameters
@@ -1023,9 +1029,30 @@ class RtpApp(RTP):
         return 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _is_running_dcm2nii(self):
+        # Check if dcm2niix is in progress
+        tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
+        if len(tmp_dcm):
+            errmsg = 'DICOM to NIfTI conversion is still in progress.'
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
+            return True
+
+        try:
+            ostr = subprocess.check_output(shlex.split('pgrep -f dcm2niix'))
+            if len(ostr.decode().rstrip()):
+                errmsg = 'DICOM to NIfTI conversion is still in progress.'
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
         """ Ready running the process """
-
         #  --- Disable ui to block parameters change --------------------------
         if self.enable_RTP > 0 and self.main_win is not None:
             self.ui_setEnabled(False)
@@ -1355,10 +1382,10 @@ class RtpApp(RTP):
             vsize = np.abs([r[np.argmax(np.abs(r))]
                             for r in bimg.affine[:3, :3]])
         vshape = bimg.shape[:3] * vsize
-        wh_ax = [int(baseWinSize*vshape[0]//vshape[1]), baseWinSize]
-        wh_sg = [baseWinSize, int(baseWinSize*vshape[2]//vshape[1])]
-        wh_cr = [int(baseWinSize*vshape[0]//vshape[1]),
-                 int(baseWinSize*vshape[2]//vshape[1])]
+        wh_ax = np.abs([int(baseWinSize*vshape[0]//vshape[1]), baseWinSize])
+        wh_sg = np.abs([baseWinSize, int(baseWinSize*vshape[2]//vshape[1])])
+        wh_cr = np.abs([int(baseWinSize*vshape[0]//vshape[1]),
+                        int(baseWinSize*vshape[2]//vshape[1])])
 
         # Get cursor position
         if ovl in ['roi', 'wm', 'vent', 'mask']:
@@ -1383,20 +1410,32 @@ class RtpApp(RTP):
                       TRUSTHOST=self.AFNIRT_TRUSTHOST)
 
         # Run plugout_drive to drive afni
+        le = 800  # left end
+        tp = 500  # top
         cmd = 'plugout_drive'
-        cmd += " -com 'SWITCH_SESSION {}'".format(os.path.basename(work_dir))
+        cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
         cmd += " -com 'RESCAN_THIS'"
-        cmd += " -com 'SWITCH_UNDERLAY {}'".format(os.path.basename(base_img))
-        cmd += " -com 'SWITCH_OVERLAY {}'" .format(os.path.basename(ovl_img))
+        cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
+        cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
         cmd += " -com 'SEE_OVERLAY +'"
         cmd += " -com 'OPEN_WINDOW A.axialimage"
-        cmd += " geom={}x{}+0+0 opacity=6'".format(*wh_ax)
+        cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
         cmd += " -com 'OPEN_WINDOW A.sagittalimage"
-        cmd += " geom={}x{}+{}+0 opacity=6'".format(*wh_sg, wh_ax[0])
-        cmd += " -com 'OPEN_WINDOW A.coronalimage"
-        cmd += " geom={}x{}+{}+0 opacity=6'".format(*wh_cr, wh_ax[0]+wh_sg[0])
+        if le+wh_ax[0]+wh_sg[0]+wh_cr[0]-100 > 1920:
+            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp-100}"
+            cmd += " opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.coronalimage"
+            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]-50}"
+            cmd += f"+{wh_sg[1]+tp-100} opacity=6'"
+        else:
+            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp}"
+            cmd += " opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.coronalimage"
+            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]+wh_sg[0]-100}"
+            cmd += f"+{tp} opacity=6'"
+
         if ovl in ['roi', 'wm', 'vent', 'mask']:
-            cmd += " -com 'SET_SPM_XYZ {} {} {}'".format(*xyz)
+            cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
         cmd += " -quit"
         subprocess.run(cmd, shell=True)
 

@@ -48,6 +48,7 @@ class DicomConverter():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def rt_convert_dicom(self, dicom_dir, out_dir, make_brik=False,
                          overwrite=False):
+        self._logger.info(f'<B>Process DICOM files in {dicom_dir} ...')
         try:
             dicom_dst = out_dir / 'dicom'
             if not dicom_dst.is_dir():
@@ -62,7 +63,7 @@ class DicomConverter():
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 errstr = ''.join(
                     traceback.format_exception(exc_type, exc_obj, exc_tb))
-                sys.stderr.write(errstr)
+                self._logger.error(f"<B>{errstr}")
                 return
 
             if dicom_dir.is_dir():
@@ -73,7 +74,7 @@ class DicomConverter():
                     exc_type, exc_obj, exc_tb = sys.exc_info()
                     errstr = ''.join(
                         traceback.format_exception(exc_type, exc_obj, exc_tb))
-                    sys.stderr.write(errstr)
+                    self._logger.error(f"<B>{errstr}")
                     return
 
             if tmp_dicom_dir.is_dir():
@@ -96,7 +97,10 @@ class DicomConverter():
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
-            self._logger.error(errstr)
+            self._logger.error(f"<B>{errstr}")
+            return
+
+        self._logger.info("<B>Complete dcm2niix conversion.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _list_dicom_files(self, dicom_dir, out_dir, study=None):
@@ -176,7 +180,7 @@ class DicomConverter():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def convert_dicom(self, dcm_info, dicom_dir, out_dir, make_brik=False,
                       overwrite=False):
-        self._logger.debug(f'Process DICOM files in {dicom_dir} ...')
+        self._logger.info(f'Process DICOM files in {dicom_dir} ...')
 
         dicom_dir = Path(dicom_dir)
         out_dir = Path(out_dir)
@@ -221,7 +225,7 @@ class DicomConverter():
             # -- Convert DICOM to NIfTI -----------------------------------
             if not nii_f.is_file() or overwrite:
                 self._logger.info(
-                    "<B>Running dcm2niix for series" +
+                    "Running dcm2niix for series" +
                     f" {out_dir.name}:{ser}:{serDesc} ...")
                 tmpdir = out_dir / f'tmp_dcm2niix_ser{int(ser)}'
                 if tmpdir.is_dir():
@@ -266,9 +270,6 @@ class DicomConverter():
 
                 if tmpdir.is_dir():
                     shutil.rmtree(tmpdir)
-
-                self._logger.info(
-                    "<B>Complete dcm2niix conversion.")
 
             created_nii[ser] = nii_f
             if not make_brik:
