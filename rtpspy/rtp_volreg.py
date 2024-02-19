@@ -14,6 +14,7 @@ import time
 import re
 import ctypes
 import traceback
+import logging
 
 import numpy as np
 import nibabel as nib
@@ -102,7 +103,14 @@ class RtpVolreg(RTP):
             self._logger.error(errmsg)
             self.err_popup(errmsg)
 
+        # Reset running variables
         self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
+
+        # Reset plot values
+        self._plt_xi[:] = []
+        for ii in range(6):
+            self._plt_motion[ii][:] = []
+
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
 
@@ -208,15 +216,6 @@ class RtpVolreg(RTP):
         """ End process and reset process parameters. """
 
         self._logger.info(f"Reset {self.__class__.__name__} module.")
-
-        # Reset running variables
-        self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
-
-        # Reset plot values
-        self._plt_xi[:] = []
-        for ii in range(6):
-            self._plt_motion[ii][:] = []
-
         return super(RtpVolreg, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -433,6 +432,7 @@ class RtpVolreg(RTP):
         def __init__(self, root, main_win=None):
             super().__init__()
 
+            self._logger = logging.getLogger(self.__class__.__name__)
             self.root = root
             self.main_win = main_win
             self.abort = False
@@ -449,12 +449,12 @@ class RtpVolreg(RTP):
                 y = main_geom.y() + 400
             else:
                 x, y = (0, 0)
-            self.plt_win.setGeometry(x, y, 500, 450)
+            self.plt_win.setGeometry(x, y, 500, 500)
 
             # Set axis
             self.mot_labels = ['roll (deg.)', 'pitch (deg.)', 'yaw (deg.)',
-                               'dS (mm)', 'dL (mm)', 'dP (mm)']
-            self._axes = self.plt_win.canvas.figure.subplots(6, 1)
+                               'dS (mm)', 'dL (mm)', 'dP (mm)', 'FD']
+            self._axes = self.plt_win.canvas.figure.subplots(7, 1)
             self.plt_win.canvas.figure.subplots_adjust(
                     left=0.15, bottom=0.08, right=0.95, top=0.97, hspace=0.35)
             self._ln = []
@@ -462,7 +462,12 @@ class RtpVolreg(RTP):
                 ax.set_ylabel(self.mot_labels[ii])
                 ax.set_xlim(0, 10)
                 self._ln.append(ax.plot(0, 0))
-
+                if ii < 6:
+                    ax.set_ylim(-0.1, 0.1)
+                else:
+                    ax.axhline(0.2, c='k', ls=':')
+                    ax.axhline(0.3, c='r', ls='--')
+                    ax.set_ylim(0, 0.5)
             ax.set_xlabel('TR')
 
             # show window
@@ -471,6 +476,7 @@ class RtpVolreg(RTP):
 
         # ---------------------------------------------------------------------
         def run(self):
+            self._mot_alart_band = []
             plt_xi = self.root._plt_xi.copy()
             while self.plt_win.isVisible() and not self.abort:
                 if self.main_win is not None and not self.main_win.isVisible():
@@ -482,21 +488,55 @@ class RtpVolreg(RTP):
 
                 try:
                     # Plot motion
-                    plt_xi = self.root._plt_xi.copy()
+                    plt_xi = np.array(self.root._plt_xi.copy())
                     plt_motion = self.root._plt_motion
-                    for ii, ax in enumerate(self._axes):
-                        ll = min(len(plt_xi), len(plt_motion[ii]))
-                        if ll == 0:
-                            continue
+                    plt_FD = np.zeros_like(plt_motion[0])
+                    if len(plt_motion[0]) > 1:
+                        plt_FD[1:] = np.sum(
+                            np.abs(np.diff(np.array(plt_motion), axis=1)),
+                            axis=0)
 
-                        self._ln[ii][0].set_data(plt_xi[:ll],
-                                                 plt_motion[ii][:ll])
+                    for ii, ax in enumerate(self._axes):
+                        if ii < len(plt_motion):
+                            ll = min(len(plt_xi), len(plt_motion[ii]))
+                            if ll == 0:
+                                continue
+
+                            self._ln[ii][0].set_data(plt_xi[:ll],
+                                                     plt_motion[ii][:ll])
+                        else:
+                            ll = min(len(plt_xi), len(plt_FD))
+                            if ll == 0:
+                                continue
+                            self._ln[ii][0].set_data(plt_xi[:ll],
+                                                     plt_FD[:ll])
+
                         ax.relim()
                         ax.autoscale_view()
 
                         xl = ax.get_xlim()
                         if (plt_xi[-1]//10 + 1)*10 > xl[1]:
                             ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
+
+                    # Motion alarm band
+                    for b in self._mot_alart_band:
+                        b.remove()
+
+                    self._mot_alart_band = []
+                    fd_mark_02_idx = np.argwhere(
+                        (plt_FD >= 0.2) & (plt_FD < 0.3)).ravel()
+                    fd_mark_03_idx = np.argwhere(plt_FD >= 0.3).ravel()
+
+                    ax_FD = self._axes[-1]
+                    for x in plt_xi[fd_mark_02_idx]:
+                        band = ax_FD.axvspan(x-1, x, ec='k', fc='yellow',
+                                             alpha=0.2, linewidth=0.1)
+                        self._mot_alart_band.append(band)
+
+                    for x in plt_xi[fd_mark_03_idx]:
+                        band = ax_FD.axvspan(x-1, x, ec='k', fc='red',
+                                             alpha=0.2, linewidth=0.1)
+                        self._mot_alart_band.append(band)
 
                     self.plt_win.canvas.draw()
 
@@ -508,7 +548,8 @@ class RtpVolreg(RTP):
                     errmsg = '{}, {}:{}'.format(
                             exc_type, exc_tb.tb_frame.f_code.co_filename,
                             exc_tb.tb_lineno)
-                    self.root.errmsg(str(e) + '\n' + errmsg, no_pop=True)
+                    self._logger.error(str(e) + '\n' + errmsg)
+                    sys.stderr.write(errmsg)
                     continue
 
             self.end_thread()
