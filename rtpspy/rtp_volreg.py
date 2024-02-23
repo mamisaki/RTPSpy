@@ -530,12 +530,12 @@ class RtpVolreg(RTP):
                     ax_FD = self._axes[-1]
                     for x in plt_xi[fd_mark_02_idx]:
                         band = ax_FD.axvspan(x-1, x, ec='k', fc='yellow',
-                                             alpha=0.2, linewidth=0.1)
+                                             alpha=0.4, linewidth=0.1)
                         self._mot_alart_band.append(band)
 
                     for x in plt_xi[fd_mark_03_idx]:
                         band = ax_FD.axvspan(x-1, x, ec='k', fc='red',
-                                             alpha=0.2, linewidth=0.1)
+                                             alpha=0.4, linewidth=0.1)
                         self._mot_alart_band.append(band)
 
                     self.plt_win.canvas.draw()
