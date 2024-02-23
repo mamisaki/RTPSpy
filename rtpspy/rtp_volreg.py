@@ -465,8 +465,8 @@ class RtpVolreg(RTP):
                 if ii < 6:
                     ax.set_ylim(-0.1, 0.1)
                 else:
-                    ax.axhline(0.2, c='k', ls=':')
-                    ax.axhline(0.3, c='r', ls='--')
+                    ax.axhline(0.2, c='k', ls=':', lw=0.5)
+                    ax.axhline(0.3, c='r', ls='--', lw=0.5)
                     ax.set_ylim(0, 0.5)
             ax.set_xlabel('TR')
 
