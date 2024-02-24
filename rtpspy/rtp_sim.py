@@ -16,6 +16,7 @@ from datetime import datetime
 import argparse
 import json
 import codecs
+import traceback
 
 import numpy as np
 import nibabel as nib
@@ -88,9 +89,8 @@ class RTP_SIM(RtpApp):
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
+            errmsg = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
             self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

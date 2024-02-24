@@ -450,9 +450,8 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
 
     except Exception:
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
+        errmsg = ''.join(
+            traceback.format_exception(exc_type, exc_obj, exc_tb))
         print(errmsg)
 
 

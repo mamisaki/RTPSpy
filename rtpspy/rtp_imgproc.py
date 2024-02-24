@@ -14,6 +14,7 @@ import time
 import os
 import sys
 import shlex
+import traceback
 
 import numpy as np
 import nibabel as nib
@@ -277,9 +278,8 @@ class RtpImgProc(RTP):
                 img = nib.Nifti1Image(img_data, affine=img.affine)
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
+            errmsg = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(str(e) + '\n' + errmsg)
             self.err_popup(errmsg)
             return None

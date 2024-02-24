@@ -282,9 +282,8 @@ class RtpApp(RTP):
 
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errmsg = '{}, {}:{}'.format(
-                            exc_type, exc_tb.tb_frame.f_code.co_filename,
-                            exc_tb.tb_lineno)
+                    errmsg = ''.join(
+                        traceback.format_exception(exc_type, exc_obj, exc_tb))
                     self._logger.error(str(e) + '\n' + errmsg)
 
             else:
@@ -315,9 +314,8 @@ class RtpApp(RTP):
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
+            errmsg = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(str(e) + '\n' + errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1327,9 +1325,8 @@ class RtpApp(RTP):
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
+            errmsg = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(str(e) + '\n' + errmsg)
 
         if self.isAlive_extApp():
