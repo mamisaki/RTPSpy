@@ -412,12 +412,11 @@ def pack_data(data):
     try:
         pkl_data = pickle.dumps(data)
         pkl_data = f"PKL_{len(pkl_data)}_".encode('utf-8') + pkl_data
-    except Exception as e:
+    except Exception:
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        errmsg = '{}, {}:{}\n'.format(
-                exc_type, exc_tb.tb_frame.f_code.co_filename,
-                exc_tb.tb_lineno)
-        sys.stderr.write(str(e) + '\n' + errmsg,)
+        errmsg = ''.join(
+            traceback.format_exception(exc_type, exc_obj, exc_tb))
+        sys.stderr.write(errmsg)
         pkl_data = None
 
     return pkl_data

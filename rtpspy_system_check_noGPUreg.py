@@ -136,5 +136,4 @@ if __name__ == '__main__':
         print('x' * 80)
         print('RTPSpy system check failed.')
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        exc_type, exc_obj, exc_tb = sys.exc_info()
         traceback.print_exception(exc_type, exc_obj, exc_tb)

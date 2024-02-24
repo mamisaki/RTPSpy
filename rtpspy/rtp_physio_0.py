@@ -667,12 +667,10 @@ class TTLPhysioPlot(QtCore.QObject):
                 self.plt_win.canvas.draw()
                 time.sleep(1/60)
 
-            except Exception as e:
+            except Exception:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
-                errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
-                errmsg += ' ' + str(e)
+                errmsg = ''.join(
+                    traceback.format_exception(exc_type, exc_obj, exc_tb))
                 print("!!!Error:{}".format(errmsg))
 
         self.end_thread()
