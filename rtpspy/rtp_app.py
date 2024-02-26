@@ -185,7 +185,7 @@ class RtpApp(RTP):
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
         rtp_objs['PHYSIO'] = RtpPhysio()
-        rtp_objs['WATCH'] = RtpWatch(scan_onset_obj=rtp_objs['PHYSIO'])
+        rtp_objs['WATCH'] = RtpWatch()
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
