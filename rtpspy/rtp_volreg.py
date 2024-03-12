@@ -497,19 +497,33 @@ class RtpVolreg(RTP):
                             axis=0)
 
                     for ii, ax in enumerate(self._axes):
+                        yl = ax.get_ylim()
                         if ii < len(plt_motion):
                             ll = min(len(plt_xi), len(plt_motion[ii]))
                             if ll == 0:
                                 continue
-
                             self._ln[ii][0].set_data(plt_xi[:ll],
                                                      plt_motion[ii][:ll])
+                            ymin = np.nanmin(plt_motion[ii]) - \
+                                np.diff(yl) * 0.1
+                            ymax = np.nanmax(plt_motion[ii]) + \
+                                np.diff(yl) * 0.1
                         else:
                             ll = min(len(plt_xi), len(plt_FD))
                             if ll == 0:
                                 continue
                             self._ln[ii][0].set_data(plt_xi[:ll],
                                                      plt_FD[:ll])
+                            ymin = np.nanmin(plt_FD) - np.diff(yl) * 0.1
+                            ymax = np.nanmax(plt_FD) + np.diff(yl) * 0.1
+
+                        # Rescale ylim
+                        if ymin < yl[0] or ymax > yl[1]:
+                            ymin = min(ymin, yl[0])
+                            ymin = np.floor(ymin/0.05)*0.05
+                            ymax = max(ymax, yl[1])
+                            ymax = np.ceil(ymax/0.05)*0.05
+                            ax.set_ylim([ymin, ymax])
 
                         ax.relim()
                         ax.autoscale_view()
@@ -540,8 +554,8 @@ class RtpVolreg(RTP):
 
                     self.plt_win.canvas.draw()
 
-                except IndexError:
-                    continue
+                # except IndexError:
+                #     continue
 
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -887,7 +901,7 @@ class RtpVolreg(RTP):
 if __name__ == '__main__':
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Load test data
     testdata_f = test_dir / 'func_epi.nii.gz'
