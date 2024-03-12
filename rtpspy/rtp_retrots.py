@@ -23,7 +23,6 @@ class RtpRetroTS():
                  fir_order=40):
         """
         Parameters
-        zero_phase_offset: float (optional)
         """
         self.zero_phase_offset = zero_phase_offset
         self.respiration_cutoff_frequency = respiration_cutoff_frequency
@@ -35,19 +34,6 @@ class RtpRetroTS():
     def RetroTs(self, resp, card, TR, physFS, tshift=0, Nvol=None):
         """
         RetroTS process function
-        Return regressors for tshift timiming slice.
-
-        Options
-        -------
-        Resp : array
-            Respiration signal data array
-        Card : array
-            Cardiac signal data array
-        NReg : int
-            Length of regressor
-        Retrun
-        ------
-        RetroTS regressor
         """
 
         # Set parameters
@@ -299,18 +285,7 @@ class RtpRetroTS():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def phase_estimator(self, amp_type, peak_vars):
-
         '''
-        import numpy as np
-        v = phasee['v'].copy()
-        t = phasee['t'].copy()
-        tp_trace = phasee['tp_trace'].copy()
-        tn_trace = phasee['tn_trace'].copy()
-        TR = phasee["volume_tr"]
-        number_of_slices = phasee["number_of_slices"]
-        slice_offset = phasee["slice_offset"]
-        zero_phase_offset = phasee["zero_phase_offset"]
-        prd = phasee["prd"]
         '''
 
         v = peak_vars['v']
@@ -454,36 +429,11 @@ class RtpRetroTS():
 if __name__ == '__main__':
     rtp_retrots = RtpRetroTS()
     rtp_retrots.TR = 1.5
-    # if not rtp_retrots.ready_proc():
-    #     sys.stderr.write("Failed to be ready for proc.\n")
-
-    # if not call_rt_physio(rtp_retrots.rtp_physio_address, 'ping'):
-    #     sys.exit()
-
-    # # call_rt_physio(rtp_retrots.rtp_physio_address, 'WAIT_TTL_ON')
-    # # time.sleep(30)
-
-    # NVol = 20
-    # for _ in range(10):
-    #     reg = rtp_retrots.do_proc(NVol)
-    #     print(reg)
-    #     time.sleep(1.5)
-    #     NVol += 1
 
     from pathlib import Path
-    card_f = Path('/data/rt/S20240104150322/Card_500Hz_ser-12.1D')
-    resp_f = Path('/data/rt/S20240104150322/Resp_500Hz_ser-12.1D')
+    card_f = Path('/data/rt/S20240104150322/Card_100Hz_ser-12.1D')
+    resp_f = Path('/data/rt/S20240104150322/Resp_100Hz_ser-12.1D')
     resp = np.loadtxt(resp_f)
     card = np.loadtxt(card_f)
-    rtp_retrots._phys_fs = 500
+    rtp_retrots._phys_fs = 100
     reg = rtp_retrots.RetroTs(resp, card)
-
-    # for _ in range(10):
-    #     st = time.time()
-    #     reg = rtp_retrots.RetroTs(resp, card)
-    #     print(f'total: {time.time() - st}')
-
-    # for n in range(20, 201):
-    #     num_points = int(n * TR * PhysFS)
-    #     reg = restrots.do_proc(Resp[:num_points], Card[:num_points], TR,
-    #                            PhysFS)
