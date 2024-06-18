@@ -956,7 +956,7 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def poly_reg(self, nt, TR):
         """
-        Make legendre polynomial regressor or nt length data
+        Make legendre polynomial regressor for nt length data
 
         Option
         ------
