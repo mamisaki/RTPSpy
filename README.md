@@ -1,10 +1,10 @@
 # RTPSpy: fMRI Real-Time Processing System in Python
 
-:::note info
-We are currently developing the new version of the library that will run on a container (i.e. docker, singularity, and apptainer).
-Some packages are under development and may not work outside of our environment.
-If you need help setting them up in your environment, please contact me (mamisaki@gmail.com). I may be able to help you implement the system for your environment.
-:::
+> [!NOTE]
+> We are currently developing the new version of the library that will run on a container (i.e. docker, singularity, and apptainer).  
+> Some packages are under development and may not work outside of our environment.  
+> If you need help setting them up in your environment, please contact me (mamisaki@gmail.com). I may be able to help you implement the system for your environment.
+
 
 RTPSpy is a python library for real-time fMRI (rtfMRI) data processing systems.   
 The package includes;
