@@ -1,4 +1,4 @@
-name: RTPSpyDev
+name: RTPSpy
 channels:
   - pytorch
   - nvidia
