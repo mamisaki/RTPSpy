@@ -594,7 +594,14 @@ class RtpApp(RTP):
                 src_f = func_orig
                 src_f_stem = Path(func_orig).stem
                 suffix = Path(func_orig).suffix
-                if suffix == '.gz':
+                ma = re.search(r"[\'*|\"*]\[(\d+)\][\'*|\"*]", suffix)
+                vidx = None
+                if ma is not None:
+                    src_f = str(src_f).replace(ma.group(), '')
+                    suffix = str(suffix).replace(ma.group(), '')
+                    vidx = int(ma.groups()[0])
+
+                if '.gz' in suffix:
                     src_f_stem = Path(src_f_stem).stem
 
                 # Exclude watch_file_pattern from vr_base fname
@@ -612,7 +619,7 @@ class RtpApp(RTP):
 
                 dst_f = RTP_dir / f'{src_save_fname}.nii.gz'
                 if src_f != dst_f and (not dst_f.is_file() or overwrite):
-                    src_img = improc.load_image(src_f)
+                    src_img = improc.load_image(src_f, vidx=vidx)
                     if src_img is None:
                         if progress_dlg:
                             sys.stdout = original_stdout
@@ -3293,10 +3300,10 @@ class RtpApp(RTP):
 
 #     watch_file_pattern = r'nr_\d+.*\.nii'
 
-#     # Set RTP_PHYSIO to RTP_PHYSIO_DUMMY
-#     # from rtpspy import RTP_PHYSIO_DUMMY
+#     # Set RTP_PHYSIO to RtpPhysioDummy
+#     # from rtpspy import RtpPhysioDummy
 #     # sample_freq = 40
-#     # rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
+#     # rtp_app.rtp_objs['PHYSIO'] = RtpPhysioDummy(
 #     #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
 
 #     # RTP parameters

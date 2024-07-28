@@ -169,11 +169,13 @@ class RtpImgProc(RTP):
 
         """
 
+        out0 = bytearray()
         while proc.poll() is None:
             try:
-                out0 = proc.stdout.read(4).decode()
-                out = '\n'.join(out0.splitlines())
-                if len(out0) and out0[-1] == '\n':
+                out0 += proc.stdout.read(4)
+                out1 = out0.decode()
+                out = '\n'.join(out1.splitlines())
+                if len(out1) and out1[-1] == '\n':
                     out += '\n'
 
                 print(out, end='')
@@ -181,14 +183,23 @@ class RtpImgProc(RTP):
             except subprocess.TimeoutExpired:
                 pass
 
+            except UnicodeDecodeError:
+                continue
+            out0 = bytearray()
+
             if hasattr(self, 'isVisible') and not self.isVisible():
                 break
 
-        try:
-            out = proc.stdout.read().decode()
-            print('\n'.join(out.splitlines()) + '\n')
-        except subprocess.TimeoutExpired:
-            pass
+        while True:
+            try:
+                out0 += proc.stdout.read(4)
+                out = out0.decode()
+                print('\n'.join(out.splitlines()) + '\n')
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            except UnicodeDecodeError:
+                continue
 
         proc.terminate()
         return proc.returncode
@@ -263,7 +274,7 @@ class RtpImgProc(RTP):
         return ret
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def load_image(self, fname):
+    def load_image(self, fname, vidx=None):
         """Load image file and retur nibabel Nifti1Image object
         """
         try:
@@ -275,6 +286,8 @@ class RtpImgProc(RTP):
 
             if suffix == '.nii':
                 img_data = img.get_fdata().astype(img.header.get_data_dtype())
+                if vidx is not None and img_data.ndim > 3:
+                    img_data = img_data[:, :, :, vidx]
                 img = nib.Nifti1Image(img_data, affine=img.affine)
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -388,7 +401,7 @@ class RtpImgProc(RTP):
             if out_fs is None:
                 return None
 
-            # Delete woring files
+            # Delete working files
             if subj_dir.is_dir():
                 shutil.rmtree(subj_dir)
 
@@ -799,8 +812,7 @@ class RtpImgProc(RTP):
             progress_bar.set_msgTxt('Make RTP, GSR masks')
             progress_bar.add_desc(descStr)
         else:
-            if self.verb:
-                sys.stdout.write(descStr)
+            sys.stdout.write(descStr)
 
         if not RTP_mask.is_file() or not GSR_mask.is_file() or overwrite:
             func_orig = Path(func_orig)
