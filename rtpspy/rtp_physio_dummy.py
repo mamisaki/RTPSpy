@@ -1,7 +1,8 @@
 #!/usr/bin/env ipython3
 # -*- coding: utf-8 -*-
 """
-@author: mmisaki@laureateinstitute.org
+Dummy class of RtpPhysio
+@author: mamisaki@gmail.com.net
 """
 
 
@@ -18,26 +19,19 @@ except Exception:
 
 
 # %% ==========================================================================
-class RTP_PHYSIO_DUMMY(RTP):
-    """ Dummy class of RTP_PHYSIO for simulation"""
-
-    def __init__(self, ecg_f, resp_f, sample_freq, rtp_retrots, verb=True):
-        """
-        Options
-        -------
-        ecg_f: Path object or string
-            ecg signal file
-        resp_f: Path object or string
-        sample_freq: float
-            Frequency of signal in the files (Hz)
-        rtp_retrots: RtpRetroTS object
-            instance of RtpRetroTS for making RetroTS reggressor
-        verb: bool
-            verbose flag to print log message
-        """
-
+class RtpPhysioDummy(RTP):
+    """ Dummy class of RtpPhysio for simulation"""
+    def __init__(self, buf_len_sec=1800, sport=None,
+                 sample_freq=100, rpc_port=63212,
+                 debug=False, sim_data=None, **kwargs):
         super().__init__()  # call __init__() in RTP class
+        del self.work_dir
 
+        self.sample_freq = sample_freq
+        self.wait_ttl_on = False
+        
+        
+        
         # --- Set parameters ---
         self.sample_freq = sample_freq
         self.rtp_retrots = rtp_retrots
@@ -55,6 +49,24 @@ class RTP_PHYSIO_DUMMY(RTP):
 
         self.not_available = False
 
+
+        
+        self, ecg_f, resp_f, sample_freq, rtp_retrots, verb=True):
+        """
+        Options
+        -------
+        ecg_f: Path object or string
+            ecg signal file
+        resp_f: Path object or string
+        sample_freq: float
+            Frequency of signal in the files (Hz)
+        rtp_retrots: RtpRetroTS object
+            instance of RtpRetroTS for making RetroTS reggressor
+        verb: bool
+            verbose flag to print log message
+        """
+        
+        
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_retrots(self, TR, Nvol=np.inf, tshift=0, timeout=None):
         if self.rtp_retrots is None:

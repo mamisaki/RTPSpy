@@ -25,7 +25,9 @@ rtpspy/rtp_gui.py
 rtpspy/rtp_imgproc.py
 rtpspy/rtp_mrid.py
 rtpspy/rtp_physio.py
+rtpspy/rtp_physio_0.py
 rtpspy/rtp_physio_dummy.py
+rtpspy/rtp_physio_ge.py
 rtpspy/rtp_physio_gpio.py
 rtpspy/rtp_regress.py
 rtpspy/rtp_retrots.py
