@@ -25,3 +25,4 @@ rtpspy/FastSurfer
 .vscode/launch.json
 *.1D
 rtpspy/lib_RetroTS/*
+tests/work/rtp_ROI_signal.csv
