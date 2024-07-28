@@ -37,7 +37,7 @@ try:
     # Load modules from the same directory
     from .rtp_common import (RTP, boot_afni, MatplotlibWindow, DlgProgressBar,
                              excepthook, load_parameters, save_parameters)
-    from .rtp_watch_SiemensXA30 import RtpWatch
+    from .rtp_watch import RtpWatch
     from .rtp_volreg import RtpVolreg
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
@@ -1194,6 +1194,8 @@ class RtpApp(RTP):
         self.scan_onset = time.time()
         self._scanning = True
         self._wait_start = False
+
+        self.rtp_objs['PHYSIO'].scan_onset = self.scan_onset
 
         if self.extApp_sock is not None:
             # Send message to self.extApp_sock
