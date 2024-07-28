@@ -16,7 +16,7 @@ import nibabel as nib
 import torch
 
 from rtpspy import RtpApp
-from rtpspy import RTP_PHYSIO_DUMMY
+from rtpspy import RtpPhysio
 
 
 # %% main =====================================================================
@@ -77,10 +77,11 @@ if __name__ == '__main__':
             Vent_template=Vent_template_f, overwrite=True)
 
         # --- Set up RTP ------------------------------------------------------
-        # Set RTP_PHYSIO to RTP_PHYSIO_DUMMY
-        sample_freq = 40
-        rtp_app.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
-            ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
+        # Set RTP_PHYSIO
+        resp = np.loadtxt(resp_f)
+        card = np.loadtxt(ecg_f)
+        rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
+            sample_freq=40, sim_data=(card, resp))
 
         # RTP parameters
         rtp_params = {'WATCH': {'watch_dir': watch_dir,
