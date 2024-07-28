@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Real-time physiological signal recording class.
-@author: mmisaki@libr.net
+@author: mamisaki@gmail.com
 
 Model class : NumatoGPIORecoding
 View class : TTLPhysioPlot
@@ -194,7 +194,7 @@ class NumatoGPIORecoding():
                 self.sig_sport = None
         self._sig_ser = None
 
-        self._debug = debug
+        self._dubug = debug
         if debug:
             self._sim_card, self._sim_resp = sim_data
             self._sim_data_len = min(len(self._sim_card), len(self._sim_resp))
@@ -304,7 +304,7 @@ class NumatoGPIORecoding():
             self._sig_ser.reset_output_buffer()
             self._sig_ser.reset_input_buffer()
             self._sig_ser.write(b"gpio read 0\r")
-            resp0 = self._sig_ser.read(1024)
+            port0 = self._sig_ser.read(1024)
             tstamp_ttl = time.time()
 
             if time.time() >= next_rec-rec_delay:
@@ -313,15 +313,15 @@ class NumatoGPIORecoding():
                 self._sig_ser.reset_input_buffer()
                 # Card
                 self._sig_ser.write(b"adc read 1\r")
-                resp1 = self._sig_ser.read(25)
+                port1 = self._sig_ser.read(25)
                 # Resp
                 self._sig_ser.write(b"adc read 2\r")
-                resp2 = self._sig_ser.read(25)
+                port2 = self._sig_ser.read(25)
                 tstamp_physio = time.time()
             else:
                 tstamp_physio = None
 
-            ma = re.search(r'gpio read 0\n\r(\d)\n', resp0.decode())
+            ma = re.search(r'gpio read 0\n\r(\d)\n', port0.decode())
             if ma:
                 sig = ma.groups()[0]
                 ttl = int(sig == '1')
@@ -335,16 +335,16 @@ class NumatoGPIORecoding():
             ttl_state = ttl
 
             if tstamp_physio is not None:
-                if not self._debug:
+                if not self._dummy:
                     # Card
                     try:
-                        card = float(resp1.decode().split('\n\r')[1])
+                        card = float(port1.decode().split('\n\r')[1])
                     except Exception:
                         card = np.nan
 
                     # Resp
                     try:
-                        resp = float(resp2.decode().split('\n\r')[1])
+                        resp = float(port2.decode().split('\n\r')[1])
                     except Exception:
                         resp = np.nan
                 else:
@@ -362,6 +362,61 @@ class NumatoGPIORecoding():
                     next_rec += rec_interval
 
             time.sleep(0.001)
+
+
+# %% ==========================================================================
+class DummyRecording():
+    """ Dummy class of physio recording"""
+    def __init__(self, ttl_onset_que, ttl_offset_que, physio_que,
+                 sim_data, sample_freq=40, **kwargs):
+
+        # Set parameters
+        self._ttl_onset_que = ttl_onset_que
+        self._ttl_offset_que = ttl_offset_que
+        self._physio_que = physio_que
+        self._sample_freq = sample_freq
+
+        self._sim_card, self._sim_resp = sim_data
+        self._sim_data_len = min(len(self._sim_card), len(self._sim_resp))
+        self._sim_data_pos = 0
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def read_signal_loop(self):
+        ttl_state = 0
+        rec_interval = 1.0 / self._sample_freq
+        rec_delay = 0
+        next_rec = time.time() + rec_interval
+        st_physio_read = 0
+        tstamp_physio = None
+        while True:
+            tstamp_ttl = time.time()
+            if time.time() >= next_rec-rec_delay:
+                st_physio_read = time.time()
+                tstamp_physio = time.time()
+            else:
+                tstamp_physio = None
+
+            ttl = 0
+            if ttl_state == 0 and ttl == 1:
+                self._ttl_onset_que.put(tstamp_ttl)
+            elif ttl_state == 1 and ttl == 0:
+                self._ttl_offset_que.put(tstamp_ttl)
+            ttl_state = ttl
+
+            if tstamp_physio is not None:
+                card = self._sim_card[self._sim_data_pos]
+                resp = self._sim_resp[self._sim_data_pos]
+                self._sim_data_pos = (self._sim_data_pos + 1) % \
+                    self._sim_data_len
+
+                self._physio_que.put((tstamp_physio, card, resp))
+                ct = time.time()
+                rec_delay = time.time() - st_physio_read
+
+                while next_rec-rec_delay < ct:
+                    next_rec += rec_interval
+
+            time.sleep(0.01)
 
 
 # %% TTLPhysioPlot ============================================================
@@ -575,18 +630,16 @@ class TTLPhysioPlot(QtCore.QObject):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
-                    ymin = max(0,
-                               np.floor(
-                                   np.nanmin(card[-adjust_period:]) / 25) * 25)
-                    ymax = min(1024,
-                               np.ceil(
-                                   np.nanmax(card[-adjust_period:]) / 25) * 25)
+                    ymin = np.floor(np.nanmin(card[-adjust_period:]) / 25) * 25
+                    ymax = np.ceil(np.nanmax(card[-adjust_period:]) / 25) * 25
                     if ymax - ymin < 50:
                         if ymin + 50 < 1024:
                             ymax = ymin + 50
                         else:
                             ymin = ymax - 50
-                self._ax_card.set_ylim((ymin, ymax))
+                if not np.isnan(ymin) and not np.isinf(ymin) and \
+                        not np.isnan(ymax) and not np.isinf(ymax):
+                    self._ax_card.set_ylim((ymin, ymax))
 
                 # Card filtered
                 b = firwin(numtaps=41, cutoff=3, window="hamming",
@@ -600,34 +653,34 @@ class TTLPhysioPlot(QtCore.QObject):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
-                    ymin = max(
-                        0, np.floor(
-                            np.nanmin(
-                                card_filtered[-adjust_period:]) / 25) * 25)
-                    ymax = min(
-                        1024, np.ceil(
-                            np.nanmax(
-                                card_filtered[-adjust_period:]) / 25) * 25)
+                    ymin = np.floor(
+                        np.nanmin(card_filtered[-adjust_period:]) / 25) * 25
+                    ymax = np.ceil(
+                        np.nanmax(card_filtered[-adjust_period:]) / 25) * 25
                     if ymax - ymin < 50:
                         if ymin + 50 < 1024:
                             ymax = ymin + 50
                         else:
                             ymin = ymax - 50
-                self._ax_card_filtered.set_ylim((ymin, ymax))
+                if not np.isnan(ymin) and not np.isinf(ymin) and \
+                        not np.isnan(ymax) and not np.isinf(ymax):
+                    self._ax_card_filtered.set_ylim((ymin, ymax))
 
                 # Resp
                 self._ln_resp[0].set_ydata(resp)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
-                    ymin = max(0, np.floor(np.nanmin(resp) / 25) * 25)
-                    ymax = min(1024, np.ceil(np.nanmax(resp) / 25) * 25)
+                    ymin = np.floor(np.nanmin(resp) / 25) * 25
+                    ymax = np.ceil(np.nanmax(resp) / 25) * 25
                     if ymax - ymin < 50:
                         if ymin + 50 < 1024:
                             ymax = ymin + 50
                         else:
                             ymin = ymax - 50
-                self._ax_resp.set_ylim((ymin, ymax))
+                if not np.isnan(ymin) and not np.isinf(ymin) and \
+                        not np.isnan(ymax) and not np.isinf(ymax):
+                    self._ax_resp.set_ylim((ymin, ymax))
 
                 if self.is_scanning:
                     self._ln_card[0].set_color('r')
@@ -678,7 +731,7 @@ class RtpPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, buf_len_sec=1800, sport=None,
                  sample_freq=100, rpc_port=63212, save_ttl=True,
-                 debug=False, sim_data=None, **kwargs):
+                 device='Numato', debug=False, sim_data=None, **kwargs):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -723,10 +776,18 @@ class RtpPhysio(RTP):
         self._physio_que = Queue()
 
         # --- Create recorder ---
-        self._recorder = NumatoGPIORecoding(
-            self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
-            sport, sample_freq=self.sample_freq,
-            debug=debug, sim_data=sim_data)
+        self._device = device
+        if device == 'Numato':
+            self._recorder = NumatoGPIORecoding(
+                self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
+                sport, sample_freq=self.sample_freq,
+                debug=debug, sim_data=sim_data)
+        elif device == 'GE':
+            pass
+        elif device == 'Dummy':
+            self._recorder = DummyRecording(
+                self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
+                sim_data=sim_data, sample_freq=self.sample_freq)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
@@ -1271,13 +1332,13 @@ if __name__ == '__main__':
     # recorder
     if debug:
         test_dir = Path(__file__).absolute().parent.parent / 'tests'
-        card_f = test_dir / 'Card_100Hz_ser-12.1D'
-        resp_f = test_dir / 'Resp_100Hz_ser-12.1D'
+        card_f = test_dir / 'ECG.1D'
+        resp_f = test_dir / 'Resp.1D'
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(card_f)
         rtp_physio = RtpPhysio(
-            sample_freq=100, rpc_port=rpc_port,
-            debug=True, sim_data=(card, resp))
+            sample_freq=40, rpc_port=rpc_port,
+            device='Dummy', sim_data=(card, resp))
     else:
         rtp_physio = RtpPhysio(
             sample_freq=100, rpc_port=rpc_port)
@@ -1285,33 +1346,3 @@ if __name__ == '__main__':
     rtp_physio.open_plot()
 
     sys.exit(app.exec_())
-
-    # DEBUG
-    # st = time.time()
-    # TR = 2
-    # set_scan_onset = True
-    # last_tr = 0
-    # while True:
-    #     time.sleep(1/60)
-    #     signal_plot.update()
-    #     plt_root.update()
-    #     try:
-    #         assert plt_root.winfo_exists()
-    #     except Exception:
-    #         break
-
-    #     if time.time() - st > 20:
-    #         if set_scan_onset:
-    #             recorder.set_scan_onset_bkwd()
-    #             set_scan_onset = False
-
-    #         if time.time() - last_tr > TR:
-    #             NVol = int((time.time() - st) // TR)
-    #             retroTSReg = recorder.get_retrots(50, TR, 0, NVol)
-    #             last_tr = time.time()
-    #             print(retroTSReg)
-
-    #         # retroTSReg = call_rt_physio(
-    #         #     ('localhost', rpc_port),
-    #         #     ('GET_RETROTS', 50, 2, 0),
-    #         #     pkl=True, get_return=True)

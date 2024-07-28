@@ -22,10 +22,10 @@ import numpy as np
 import nibabel as nib
 
 try:
-    from .rtp_physio import RTP_PHYSIO_DUMMY
+    from .rtp_physio import RtpPhysio
     from .rtp_app import RtpApp
 except Exception:
-    from rtpspy.rtp_physio import RTP_PHYSIO_DUMMY
+    from rtpspy.rtp_physio import RtpPhysio
     from rtpspy.rtp_app import RtpApp
 
 
@@ -269,9 +269,10 @@ def run_simulation(raw_fmri_f, anat_mri_f, rtp_param_f=None,
                 resp_f = rtp_params['PHYSIO']['resp_f']
                 assert Path(resp_f).is_file()
                 sample_freq = rtp_params['PHYSIO']['sample_freq']
-                rtp_sim.rtp_objs['PHYSIO'] = RTP_PHYSIO_DUMMY(
-                    ecg_f, resp_f, sample_freq,
-                    rtp_sim.rtp_objs['RETROTS'])
+                resp = np.loadtxt(resp_f)
+                card = np.loadtxt(ecg_f)
+                rtp_sim.rtp_objs['PHYSIO'] = RtpPhysio(
+                    sample_freq=sample_freq, sim_data=(card, resp))
 
     # --- RTP setup -----------------------------------------------------------
     print("   mask creation ...")
