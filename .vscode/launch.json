@@ -22,7 +22,22 @@
             "justMyCode": false,
             "cwd": "${workspaceFolder}",
             "purpose":["debug-in-terminal"],
-            "args": ["--debug"]
+            "args": ["--preserve", "--debug"]
+        },
+        {
+            "name": "Python: RtpWatch",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}",
+            "purpose":["debug-in-terminal"],
+            "args": [
+                "--watch_file_pattern", "'.+\\.nii'",
+                "--file_type", "Nifti",
+                "tests/func_epi.nii.gz"
+            ]
         }
     ]
 }

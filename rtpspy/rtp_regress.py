@@ -287,9 +287,14 @@ class RtpRegress(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
+        """
+        vol_idx: 0-based index of imaging volume from the scan start
+        self._vol_num: Number of volumes received in this module.
+        """
+
         try:
             # Increment the number of received volumes
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            self._vol_num += 1  # 1-base number of volumes recieved by this
             if vol_idx is None:
                 vol_idx = self._vol_num - 1  # 0-base index
 
@@ -377,7 +382,7 @@ class RtpRegress(RTP):
                 self.setup_regressor_template(self.desMtx_read,
                                               self.max_scan_length,
                                               self.col_names_read)
-                desMtx = self.desMtx0[self._proc_start_idx:, :].copy()
+                desMtx = self.desMtx0.copy()
 
                 # Add maximum number of polynomial regressors
                 nt = desMtx.shape[0]
@@ -470,20 +475,20 @@ class RtpRegress(RTP):
             # --- If the number of samples is not enough, return --------------
             if self._vol_num <= self.wait_num:
                 wait_idx = self._proc_start_idx+self.wait_num
-                msg = f"Wait until volume #{wait_idx}"
+                msg = f"#{vol_idx+1}:Wait until volume #{wait_idx+1}"
                 self._logger.info(msg)
                 return
 
             # --- Update retroicor regressors ---------------------------------
             if self.phys_reg != 'None' and self.rtp_physio is not None:
                 retrots = self.rtp_physio.get_retrots(
-                    self.TR, vol_idx+1, self.tshift, timeout=self.TR)
+                    self.TR, vol_idx+1, self.tshift,
+                    timeout=self.TR)
                 if retrots is None:
                     errmsg = "RETROTS regressors cannot be made."
                     self._logger.error(errmsg)
                     return
 
-                retrots = retrots[self._proc_start_idx:, :]
                 for ii, icol in enumerate(self.retrocols):
                     self.desMtx[:vol_idx+1, icol] = \
                             torch.from_numpy(
@@ -494,7 +499,7 @@ class RtpRegress(RTP):
             # Set Y_mean for scaling data
             if self.Y_mean is None:
                 # Scaling
-                YMtx = self.YMtx[:vol_idx+1, :]
+                YMtx = self.YMtx[self._proc_start_idx:vol_idx+1, :]
                 # YMtx is the reference to the original data, self.YMtx
                 self.Y_mean = YMtx.mean(axis=0)
                 self.Y_mean_mask = self.Y_mean.abs() > 1e-6
@@ -509,14 +514,16 @@ class RtpRegress(RTP):
                 # ydata = self.YMtx[vol_idx, :]
 
             # Add polynomials to the design matrix
-            polyreg = self.poly_reg(vol_idx+1, self.TR)
+            polyreg = self.poly_reg(vol_idx-self._proc_start_idx+1, self.TR)
             reg0_num = self.desMtx0.shape[1]
             polyreg_num = polyreg.shape[1]
-            self.desMtx[:vol_idx+1, reg0_num:reg0_num+polyreg_num] = \
+            self.desMtx[self._proc_start_idx:vol_idx+1,
+                        reg0_num:reg0_num+polyreg_num] = \
                 torch.from_numpy(polyreg).to(self.device)
 
             # Extract a part of regressors (until the current volume)
-            Xp = self.desMtx[:vol_idx+1, :reg0_num+polyreg_num].clone()
+            Xp = self.desMtx[self._proc_start_idx:vol_idx+1,
+                             :reg0_num+polyreg_num].clone()
 
             # Standardizing regressors of motion, GS, WM, Vent
             norm_regs = ('roll', 'pitch', 'yaw', 'dS', 'dL', 'dP',
@@ -529,7 +536,7 @@ class RtpRegress(RTP):
                     Xp[:, ii] = reg
 
             # Extract a part of Y (until the current volume)
-            Yp = self.YMtx[:vol_idx+1, :]
+            Yp = self.YMtx[self._proc_start_idx:vol_idx+1, :]
 
             # Calculate Beta with the least sqare error, ||Y - XB||^2
             Beta = lstsq_SVDsolver(Xp, Yp[:, self.Y_mean_mask])
@@ -548,6 +555,8 @@ class RtpRegress(RTP):
                 # Save filename template
                 save_name_temp = Path(fmri_img.get_filename()).name
                 save_name_temp = 'regRes.' + save_name_temp
+                dstr = re.search(f"0*{vol_idx+1}", save_name_temp).group()
+
                 # Data space
                 vol_data = np.zeros_like(self.maskV, dtype=np.float32)
                 flat_data = np.zeros(np.sum(self.maskV), dtype=np.float32)
@@ -560,8 +569,9 @@ class RtpRegress(RTP):
                     # temporay nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
-                    save_name = re.sub(f"{self._vol_num}", f"{vi+1}",
-                                       save_name_temp)
+                    dstr_i0 = f"{vi+1}"
+                    dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
+                    save_name = save_name_temp.replace(dstr, dstr_i)
                     retro_fmri_img.set_filename(save_name)
 
                     # Run the next process

@@ -358,7 +358,7 @@ class RtpTshift(RTP):
 
         if len(notset_params):
             errmsg = ', '.join(notset_params)
-            errmsg += ' cannot be read.'
+            errmsg += ' has not been read from the sample.'
             self._logger.error(errmsg)
             self.err_popup(errmsg)
 

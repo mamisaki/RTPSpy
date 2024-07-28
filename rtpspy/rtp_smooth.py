@@ -204,7 +204,7 @@ class RtpSmooth(RTP):
             if maskdata.ndim > 3:
                 maskdata = maskdata[:, :, :, sub_i]
 
-            msg = f"Mask = {self.mask_file }"
+            msg = f"Mask = {self.mask_file}"
             if ma:
                 msg += f"[{sub_i}]"
             self._logger.info(msg)

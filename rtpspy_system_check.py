@@ -10,6 +10,8 @@ from pathlib import Path
 import time
 import sys
 import traceback
+import argparse
+import logging
 
 import numpy as np
 import nibabel as nib
@@ -21,9 +23,28 @@ from rtpspy import RtpPhysio
 
 # %% main =====================================================================
 if __name__ == '__main__':
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='rtp_system_check')
+    parser.add_argument('--TR', default=2.0)
+    parser.add_argument('--preserve',  action='store_true',
+                        help="Keep existing processd mask")
+    parser.add_argument('--debug',  action='store_true')
+
+    args = parser.parse_args()
+    TR = args.TR
+    overwrite = not args.preserve
+    debug = args.debug
+
+    # -------------------------------------------------------------------------
     print("=" * 80)
     print("Test RTPSpy installation")
     sys.stdout.flush()
+
+    # Set logging
+    logging.basicConfig(
+        stream=sys.stdout, level=logging.INFO,
+        format='%(asctime)s.%(msecs)04d,%(name)s,%(message)s')
 
     try:
         # --- Filenames -------------------------------------------------------
@@ -74,7 +95,7 @@ if __name__ == '__main__':
             func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
             template=template_f, ROI_template=ROI_template_f,
             no_FastSeg=no_FastSeg, WM_template=WM_template_f,
-            Vent_template=Vent_template_f, overwrite=True)
+            Vent_template=Vent_template_f, overwrite=overwrite)
 
         # --- Set up RTP ------------------------------------------------------
         # Set RTP_PHYSIO
@@ -84,11 +105,12 @@ if __name__ == '__main__':
             sample_freq=40, device='Dummy', sim_data=(card, resp))
 
         # RTP parameters
+        rtp_app.func_param_ref = Path(testdata_f)
         rtp_params = {'WATCH': {'watch_dir': watch_dir,
-                                'watch_file_pattern': r'nr_\d+.*\.nii'},
-                      'TSHIFT': {'slice_timing_from_sample': testdata_f,
-                                 'method': 'cubic', 'ignore_init': 3},
+                                'watch_file_pattern': r'nr_\d+.*\.nii',
+                                'file_type': 'Nifti'},
                       'VOLREG': {'regmode': 'cubic'},
+                      'TSHIFT': {'method': 'cubic', 'ignore_init': 3},
                       'SMOOTH': {'blur_fwhm': 6.0},
                       'REGRESS': {'mot_reg': 'mot12',
                                   'GS_reg': True, 'WM_reg': True,
@@ -100,7 +122,7 @@ if __name__ == '__main__':
         # Mask files made by make_masks() are automatically set in RTP_setup()
 
         # Ready to run the pipeline
-        rtp_app.ready_to_run()
+        proc_chain = rtp_app.ready_to_run()
 
         # --- Simulate scan (Copy data volume-by-volume) ----------------------
         # Load data
@@ -108,11 +130,14 @@ if __name__ == '__main__':
         fmri_data = np.asanyarray(img.dataobj)
         N_vols = img.shape[-1]
 
+        if debug:
+            rtp_app.rtp_objs['WATCH'].stop_watching()
+
         # Start
         rtp_app.manual_start()
         scan_onset_time = rtp_app.scan_onset
 
-        next_tr = 2.0
+        next_tr = TR
         for ii in range(N_vols):
             next_tr = (ii+1)*2.0
             while time.time() - scan_onset_time < next_tr:
@@ -120,12 +145,15 @@ if __name__ == '__main__':
                 time.sleep(0.001)
 
             # Copy volume file to watch_dir
-            save_filename = watch_dir / f"system_test_nr_{ii:04d}.nii.gz"
+            save_filename = watch_dir / f"system_test_nr_{ii+1:04d}.nii.gz"
             nib.save(
                 nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
                 save_filename)
 
-        time.sleep(2.0)
+            if debug:
+                proc_chain.do_proc(save_filename)
+
+            time.sleep(TR)
         rtp_app.end_run()
 
         # End
