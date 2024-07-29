@@ -688,7 +688,7 @@ class RtpWatch(RTP):
             if hasattr(self, "ui_cleanReady_chb"):
                 self.ui_cleanReady_chb.setChecked(val)
 
-        elif attr == "rtp_physio_address":
+        elif attr == "rtp_ttl_physio_address":
             if type(val) is str:
                 host, port = val.split(":")
                 val = (host, int(port))
