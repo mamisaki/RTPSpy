@@ -42,7 +42,7 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
-    from .rtp_physio import RtpPhysio
+    from .rtp_ttl_physio import RtpPhysio
     from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data

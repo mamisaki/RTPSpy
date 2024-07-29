@@ -49,7 +49,7 @@ mpl.rcParams['font.size'] = 8
 
 
 # %% call_rt_physio ===========================================================
-def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
+def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
                    logger=None):
     """
     Parameters:
@@ -63,7 +63,7 @@ def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.connect(rtp_physio_address)
+        sock.connect(rtp_ttl_physio_address)
     except ConnectionRefusedError:
         time.sleep(1)
         if data == 'ping':
@@ -1440,14 +1440,14 @@ if __name__ == '__main__':
         resp_f = test_dir / 'Resp_100Hz_ser-12.1D'
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(card_f)
-        rtp_physio = RtpPhysio(
+        rtp_ttl_physio = RtpPhysio(
             sample_freq=100, rpc_port=rpc_port,
             debug=True, sim_data=(card, resp))
     else:
-        rtp_physio = RtpPhysio(
+        rtp_ttl_physio = RtpPhysio(
             sample_freq=100, rpc_port=rpc_port)
 
-    rtp_physio.open_plot()
+    rtp_ttl_physio.open_plot()
 
     sys.exit(app.exec_())
 

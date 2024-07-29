@@ -22,10 +22,10 @@ import numpy as np
 import nibabel as nib
 
 try:
-    from .rtp_physio import RtpPhysio
+    from .rtp_ttl_physio import RtpPhysio
     from .rtp_app import RtpApp
 except Exception:
-    from rtpspy.rtp_physio import RtpPhysio
+    from rtpspy.rtp_ttl_physio import RtpPhysio
     from rtpspy.rtp_app import RtpApp
 
 

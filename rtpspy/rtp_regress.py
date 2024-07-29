@@ -140,7 +140,7 @@ class RtpRegress(RTP):
             RVT+RICOR13: both RVT5 and RICOR8
             RVT is not recomended for RTP (see Misaki and Bodrka, 2021.)
             The default is 'None'.
-        rtp_phyiso : RtpPyshio object, optional
+        rtp_physio : RtpPyshio object, optional
             RtpPyshio object to get retrots regressors. The default is None.
         tshift : float, optional
             Slice timing offset (second) for calculating the restrots

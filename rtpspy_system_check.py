@@ -154,6 +154,7 @@ if __name__ == '__main__':
                 proc_chain.do_proc(save_filename)
 
             time.sleep(TR)
+
         rtp_app.end_run()
 
         # End

@@ -70,7 +70,7 @@ mpl.rcParams['font.size'] = 8
 
 
 # %% call_rt_physio ===========================================================
-def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
+def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
                    logger=None):
     """
     Parameters:
@@ -84,7 +84,7 @@ def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.connect(rtp_physio_address)
+        sock.connect(rtp_ttl_physio_address)
     except ConnectionRefusedError:
         time.sleep(1)
         if data == 'ping':

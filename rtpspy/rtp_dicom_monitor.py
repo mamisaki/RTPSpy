@@ -25,7 +25,7 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
-from rtpspy.rtp_physio import call_rt_physio
+from rtpspy.rtp_ttl_physio import call_rt_physio
 from rpc_socket_server import RPCSocketServer
 
 if '__file__' not in locals():
@@ -56,7 +56,7 @@ class RtpDicomMonitor:
                  study_prefix='P', study_ID_field=None,
                  series_timeout=60, rpc_port=63210,
                  make_brik=False, polling_observer=False,
-                 rtp_physio_address='localhost:63212', **kwargs):
+                 rtp_ttl_physio_address='localhost:63212', **kwargs):
         """
         Parameters
         ----------
@@ -102,8 +102,8 @@ class RtpDicomMonitor:
         self.series_timeout = series_timeout
         self.make_brik = make_brik
         self.polling_observer = polling_observer
-        host, port = rtp_physio_address.split(':')
-        self.rtp_physio_address = (host, int(port))
+        host, port = rtp_ttl_physio_address.split(':')
+        self.rtp_ttl_physio_address = (host, int(port))
 
         self._dcmread_timeout = 3
         self._polling_timeout = 3
@@ -412,9 +412,9 @@ class RtpDicomMonitor:
         # Set physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
         if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
-            if call_rt_physio(self.rtp_physio_address, 'ping'):
-                call_rt_physio(self.rtp_physio_address, 'START_SCAN')
-                call_rt_physio(self.rtp_physio_address,
+            if call_rt_physio(self.rtp_ttl_physio_address, 'ping'):
+                call_rt_physio(self.rtp_ttl_physio_address, 'START_SCAN')
+                call_rt_physio(self.rtp_ttl_physio_address,
                                ('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
                 self._save_physio = True
 
@@ -432,8 +432,8 @@ class RtpDicomMonitor:
         if get_lock:
             try:
                 if self._save_physio and \
-                        call_rt_physio(self.rtp_physio_address, 'ping'):
-                    call_rt_physio(self.rtp_physio_address, 'END_SCAN')
+                        call_rt_physio(self.rtp_ttl_physio_address, 'ping'):
+                    call_rt_physio(self.rtp_ttl_physio_address, 'END_SCAN')
                     # Save physio data
                     if self._TR is not None:
                         series_duration = self._NVol * self._TR
@@ -444,7 +444,7 @@ class RtpDicomMonitor:
 
                     args = ('SAVE_PHYSIO_DATA', None, series_duration,
                             fname_fmt)
-                    call_rt_physio(self.rtp_physio_address, args, pkl=True)
+                    call_rt_physio(self.rtp_ttl_physio_address, args, pkl=True)
 
                     # Reset physio parameters
                     self._save_physio = False
@@ -558,8 +558,8 @@ if __name__ == '__main__':
                         help='Use Polling observer')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
-    parser.add_argument('--rtp_physio_address', default='localhost:63212',
-                        help='rtp_physio socket server address')
+    parser.add_argument('--rtp_ttl_physio_address', default='localhost:63212',
+                        help='rtp_ttl_physio socket server address')
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
@@ -573,7 +573,7 @@ if __name__ == '__main__':
     make_brik = args.make_brik
     polling_observer = args.polling_observer
     log_file = Path(args.log_file)
-    rtp_physio_address = args.rtp_physio_address
+    rtp_ttl_physio_address = args.rtp_ttl_physio_address
     debug = args.debug
 
     # Logger
@@ -589,7 +589,7 @@ if __name__ == '__main__':
         series_timeout=series_timeout,
         rpc_port=rpc_port, make_brik=make_brik,
         polling_observer=polling_observer,
-        rtp_physio_address=rtp_physio_address)
+        rtp_ttl_physio_address=rtp_ttl_physio_address)
 
     # Run mainloop
     try:
