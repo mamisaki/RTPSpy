@@ -11,7 +11,7 @@ RtpPhysio currently supports two types of signal recorders:
 In either case, the TTL signal is received via the [Numato 8 Channel USB GPIO Module](https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/) Module.  
 Additionally, for simulation purposes, a dummy device that reads signals from existing files (text files) can also be used.
 
-These devices are set by the device property of the RtpTTLPhysio class as device='Numato' for the Numato USB GPIO, device='GE' for the GE scanner device, and device='dummy' for the dummy device.
+These devices are set by the device property of the RtpPhysio class as device='Numato' for the Numato USB GPIO, device='GE' for the GE scanner device, and device='dummy' for the dummy device.
 
 ## GE scanner devices whose signals are sent via serial port
 Cardiogram and respiration signals from the GE scanner's pulse oximetry and respiration belt devices can be read in real-time via a serial port. The signals are encoded in bytestrings, and the RtpPhysio module decodes them to extract the signal values. There is a serial port on the scanner backend PC that can output the cardiogram and respiration signals. Please consult the vendor for details.
