@@ -19,7 +19,6 @@ log_*
 *.log
 *.error
 log/
-rtpspy/FastSurfer
 *.log
 *.npy
 .vscode/launch.json
