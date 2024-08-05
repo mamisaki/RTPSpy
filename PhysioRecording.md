@@ -22,7 +22,7 @@ To resolve this, we use the [Teyleten Robot Millivolt/Microvolt Voltage Amplifie
 To adjust the signal range, open the physiological signal monitor by running the rtpspy/rtp_physio.py script in the RTPSpy package.  
 ```
 conda activate RTPSpy
-~/RTPSpy/rtpspy.rpt_physio.py
+~/RTPSpy/rtpspy.rtp_physio.py
 ```
 Then, rotate the screws on the amplifier modules while monitoring the signal range. The upper screw is for level shifting, and the lower one is for signal amplification.
 
