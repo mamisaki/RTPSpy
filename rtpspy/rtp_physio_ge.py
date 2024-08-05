@@ -1427,7 +1427,7 @@ if __name__ == '__main__':
     debug = args.debug
 
     # Logger
-    logging.basicConfig(level=logging.INFO,
+    (level=logging.INFO,
                         filename=log_file, filemode='a',
                         format='%(name)s - %(levelname)s - %(message)s')
 

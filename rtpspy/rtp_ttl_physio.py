@@ -158,7 +158,7 @@ class NumatoGPIORecoding():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ttl_onset_que, ttl_offset_que, physio_que, sport,
-                 sample_freq=100, debug=False, sim_data=None):
+                 sample_freq=100):
         """ Initialize real-time physio recordign class
         Set parameter values and list of serial ports.
 
@@ -193,12 +193,6 @@ class NumatoGPIORecoding():
             else:
                 self.sig_sport = None
         self._sig_ser = None
-
-        self._dubug = debug
-        if debug:
-            self._sim_card, self._sim_resp = sim_data
-            self._sim_data_len = min(len(self._sim_card), len(self._sim_resp))
-            self._sim_data_pos = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # +++ getter and setter methods +++
@@ -335,23 +329,17 @@ class NumatoGPIORecoding():
             ttl_state = ttl
 
             if tstamp_physio is not None:
-                if not self._dummy:
-                    # Card
-                    try:
-                        card = float(port1.decode().split('\n\r')[1])
-                    except Exception:
-                        card = np.nan
+                # Card
+                try:
+                    card = float(port1.decode().split('\n\r')[1])
+                except Exception:
+                    card = np.nan
 
-                    # Resp
-                    try:
-                        resp = float(port2.decode().split('\n\r')[1])
-                    except Exception:
-                        resp = np.nan
-                else:
-                    card = self._sim_card[self._sim_data_pos]
-                    resp = self._sim_resp[self._sim_data_pos]
-                    self._sim_data_pos = (self._sim_data_pos + 1) % \
-                        self._sim_data_len
+                # Resp
+                try:
+                    resp = float(port2.decode().split('\n\r')[1])
+                except Exception:
+                    resp = np.nan
 
                 self._physio_que.put((tstamp_physio, card, resp))
 
@@ -368,16 +356,51 @@ class NumatoGPIORecoding():
 class DummyRecording():
     """ Dummy class of physio recording"""
     def __init__(self, ttl_onset_que, ttl_offset_que, physio_que,
-                 sim_data, sample_freq=40, **kwargs):
+                 sim_card_f=None, sim_resp_f=None, sample_freq=40, **kwargs):
+        self._logger = logging.getLogger('DummyRecording')
 
         # Set parameters
         self._ttl_onset_que = ttl_onset_que
         self._ttl_offset_que = ttl_offset_que
         self._physio_que = physio_que
         self._sample_freq = sample_freq
+        self._sim_card = None
+        self._sim_resp = None
+        sim_data_len = np.inf
 
-        self._sim_card, self._sim_resp = sim_data
-        self._sim_data_len = min(len(self._sim_card), len(self._sim_resp))
+        if sim_card_f is not None:
+            if not sim_card_f.is_file():
+                self._logger.error(
+                    f"Not found {sim_card_f} for card dummy signal.")
+            else:
+                try:
+                    self._sim_card = np.loadtxt(sim_card_f)
+                    sim_data_len = len(self._sim_card)
+                except Exception:
+                    self._logger.error(
+                        f"Error reading {sim_card_f}")
+
+        if sim_resp_f is not None:
+            if not sim_resp_f.is_file():
+                self._logger.error(
+                    f"Not found {sim_resp_f} for card dummy signal.")
+            else:
+                try:
+                    self._sim_resp = np.loadtxt(sim_resp_f)
+                    sim_data_len = min(sim_data_len, len(self._sim_resp))
+                except Exception:
+                    self._logger.error(
+                        f"Error reading {sim_resp_f}")
+
+        if not np.isinf(sim_data_len):
+            self._sim_data_len = sim_data_len
+            if self._sim_card is None:
+                self._sim_card = np.zeros(self._sim_data_len)
+            if self._sim_resp is None:
+                self._sim_resp = np.zeros(self._sim_data_len)
+        else:
+            self._sim_data_len = 2
+
         self._sim_data_pos = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -404,8 +427,16 @@ class DummyRecording():
             ttl_state = ttl
 
             if tstamp_physio is not None:
-                card = self._sim_card[self._sim_data_pos]
-                resp = self._sim_resp[self._sim_data_pos]
+                if self._sim_card is not None:
+                    card = self._sim_card[self._sim_data_pos]
+                else:
+                    card = 0
+
+                if self._sim_resp is not None:
+                    resp = self._sim_resp[self._sim_data_pos]
+                else:
+                    resp = 0
+
                 self._sim_data_pos = (self._sim_data_pos + 1) % \
                     self._sim_data_len
 
@@ -731,7 +762,8 @@ class RtpPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, buf_len_sec=1800, sport=None,
                  sample_freq=100, rpc_port=63212, save_ttl=True,
-                 device='Numato', debug=False, sim_data=None, **kwargs):
+                 device='Numato', debug=False, sim_card_f=None,
+                 sim_resp_f=None, **kwargs):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -780,14 +812,14 @@ class RtpPhysio(RTP):
         if device == 'Numato':
             self._recorder = NumatoGPIORecoding(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
-                sport, sample_freq=self.sample_freq,
-                debug=debug, sim_data=sim_data)
+                sport, sample_freq=self.sample_freq)
         elif device == 'GE':
             pass
-        elif device == 'Dummy':
+        elif device == 'dummy':
             self._recorder = DummyRecording(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
-                sim_data=sim_data, sample_freq=self.sample_freq)
+                sim_card_f=sim_card_f, sim_resp_f=sim_resp_f,
+                sample_freq=self.sample_freq)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
@@ -1302,10 +1334,14 @@ if __name__ == '__main__':
     # Parse arguments
     LOG_FILE = f'{Path(__file__).stem}.log'
     parser = argparse.ArgumentParser(description='RTP physio')
+    parser.add_argument('--device', default='Numato',
+                        help='Device type')
     parser.add_argument('--sample_freq', default=100,
                         help='sampling frequency (Hz)')
-    parser.add_argument('--log_file', default=LOG_FILE,
-                        help='Log file path')
+    parser.add_argument('--card_file',
+                        help='Cardiac signal file for dummy device')
+    parser.add_argument('--resp_file',
+                        help='Respiration signal file for dummy device')
     parser.add_argument('--rpc_port', default=63212,
                         help='RPC socket server port')
     parser.add_argument('--win_shape', default='450x450',
@@ -1315,7 +1351,10 @@ if __name__ == '__main__':
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
-    log_file = args.log_file
+    device = args.device
+    card_file = args.card_file
+    resp_file = args.resp_file
+    sample_freq = args.sample_freq
     rpc_port = args.rpc_port
     win_shape = args.win_shape
     win_shape = [int(v) for v in win_shape.split('x')]
@@ -1323,25 +1362,19 @@ if __name__ == '__main__':
     debug = args.debug
 
     # Logger
-    logging.basicConfig(level=logging.INFO,
-                        filename=log_file, filemode='a',
-                        format='%(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format='%(asctime)s.%(msecs)04d,%(name)s,%(message)s')
 
+    # Open app
     app = QtWidgets.QApplication(sys.argv)
 
-    # recorder
-    if debug:
-        test_dir = Path(__file__).absolute().parent.parent / 'tests'
-        card_f = test_dir / 'ECG.1D'
-        resp_f = test_dir / 'Resp.1D'
-        resp = np.loadtxt(resp_f)
-        card = np.loadtxt(card_f)
-        rtp_ttl_physio = RtpPhysio(
-            sample_freq=40, rpc_port=rpc_port,
-            device='Dummy', sim_data=(card, resp))
-    else:
-        rtp_ttl_physio = RtpPhysio(
-            sample_freq=100, rpc_port=rpc_port)
+    # Create RtpPhysio
+    rtp_ttl_physio = RtpPhysio(
+            sample_freq=sample_freq,
+            rpc_port=rpc_port,
+            device=device,
+            sim_data=(card_file, resp_file)
+            )
 
     rtp_ttl_physio.open_plot()
 
