@@ -1,20 +1,17 @@
 # RTPSpy ROI-NF application
-This is a boilerplate application with RTPSpy GUI. The application extracts the average signal in an ROI and sends the signal to an external application in real-time. The external application displays the received value on a psychopy window.
-* On Mac OSX, the GUI layout is a bit broken due to an incompatibility of PyQt.  
+This is a sample application using the RTPSpy GUI. The application extracts the average signal in a ROI and sends it in real time to an external application. The external application displays the received value in a Psychopy window.  
 
 ## Operations
-Here, we use test data to demonstrate the ROI-NF operations with simulating real-time fMRI.
+Here we use test data to demonstrate the ROI-NF operations with simulated real-time fMRI.
 
 ### 1. Start
-1. Open a console (Ubuntu console if you are working on the Windows WSL, or Terminal application on Max OSX).  
+1. Open a console.  
 2. Activate the RTPSpy env and run the boot script.  
 ```
 conda activate RTPSpy
 cd ~/RTPSpy/example/ROI-NF
 ./run_RTPSpyApp.py
 ```
-* On Mac OSX, if you run the 'run_RTPSpyApp.py' as a background job (with '&'), the process may be stacked at booting a PsychoPy application.
-
 
 3. The ROI-NF App window opens.  
 <img src="/example/ROI-NF/doc/initial.png" height=400>  
