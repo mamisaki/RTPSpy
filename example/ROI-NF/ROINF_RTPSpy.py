@@ -11,6 +11,9 @@ Run psychopy RTPSpy application
 from pathlib import Path
 import sys
 from platform import uname
+from datetime import datetime
+import argparse
+import logging
 
 import numpy as np
 from PyQt5 import QtWidgets
@@ -48,6 +51,31 @@ rtp_params = {'VOLREG': {'regmode': 'cubic'},
 
 # %% main =====================================================================
 if __name__ == '__main__':
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='ROI NF RTPSpy')
+    parser.add_argument('--debug',  action='store_true')
+    args = parser.parse_args()
+
+    # --- Set logging ---------------------------------------------------------
+    log_dir = Path('log')
+    if not log_dir.is_dir():
+        log_dir.mkdir()
+
+    dstr = datetime.now().strftime("%Y%m%dT%H%M%S")
+    log_file = log_dir / 'NFROI-RTPSpy_{dstr}.log'
+
+    if args.debug:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level, filename=log_file, filemode='a',
+        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S')
+
+    # --- Start application ---------------------------------------------------
     app = QtWidgets.QApplication(sys.argv)
 
     # Make RtpApp instance
@@ -55,7 +83,7 @@ if __name__ == '__main__':
 
     # Make GUI (RtpGUI) instance
     app_obj = {'ROI-NF': rtp_app}
-    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_file=log_file)
 
     # Keep RTP objects for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs

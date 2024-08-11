@@ -755,7 +755,7 @@ class RtpWatch(RTP):
         self.ui_dcmreadTimeout_dSpBx.setSingleStep(0.1)
         self.ui_dcmreadTimeout_dSpBx.setDecimals(3)
         self.ui_dcmreadTimeout_dSpBx.setSuffix(" seconds")
-        self.ui_dcmreadTimeout_dSpBx.setValue(self.read_timeout)
+        self.ui_dcmreadTimeout_dSpBx.setValue(self._read_timeout)
         self.ui_dcmreadTimeout_dSpBx.valueChanged.connect(
             lambda x: self.set_param(
                 "read_timeout", x, self.ui_dcmreadTimeout_dSpBx.setValue
