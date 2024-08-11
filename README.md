@@ -1,7 +1,7 @@
 # RTPSpy: fMRI Real-Time Processing System in Python
 
 > [!NOTE]
-> We are currently developing a new version of the library that will run in a container (i.e., Docker, Singularity, and Apptainer).  
+> We are currently developing a new version of the library that will run in a container (i.e., Docker, Singularity (Apptainer)).  
 > Some packages are under development and may not work outside of our environment.  
 > If you need help setting them up in your environment, please contact me at (mamisaki@gmail.com). I may be able to assist you in implementing the system for your environment.
 
