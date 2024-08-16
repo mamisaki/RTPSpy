@@ -23,6 +23,7 @@ dependencies:
   - python=3.10
   - pytorch
   - pytorch-cuda=12.1
+  - scikit-image
   - scikit-sparse
   - torchvision
   - watchdog

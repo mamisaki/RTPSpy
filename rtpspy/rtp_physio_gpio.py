@@ -70,7 +70,7 @@ mpl.rcParams['font.size'] = 8
 
 
 # %% call_rt_physio ===========================================================
-def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
+def call_rt_physio(data, pkl=False, get_return=False,
                    logger=None):
     """
     Parameters:
@@ -84,7 +84,11 @@ def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.connect(rtp_ttl_physio_address)
+        config_f = Path.home() / '.config' / 'rtpspy'
+        with open(config_f, "r") as fid:
+            rtpspy_config = json.load(fid)
+        port = rtpspy_config['RtpPhysioSocketServer_pot']
+        sock.connect(('localhost', port))
     except ConnectionRefusedError:
         time.sleep(1)
         if data == 'ping':
@@ -1154,8 +1158,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RT physio')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
-    parser.add_argument('--rpc_port', default=63212,
-                        help='RPC socket server port')
     parser.add_argument('--geometry', default='450x450+910+0',
                         help='Plot window position')
     parser.add_argument('--disable_close', action='store_true',
@@ -1164,7 +1166,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     log_file = args.log_file
-    rpc_port = args.rpc_port
     geometry = args.geometry
     disable_close = args.disable_close
     debug = args.debug
@@ -1198,7 +1199,7 @@ if __name__ == '__main__':
     recorder.start_recording()
 
     # Start RPC socket server
-    socekt_srv = RPCSocketServer(rpc_port, recorder.RPC_handler,
+    socekt_srv = RPCSocketServer(recorder.RPC_handler,
                                  socket_name='RtPhysioSocketServer')
 
     # DEBUG

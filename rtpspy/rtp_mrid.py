@@ -50,13 +50,12 @@ class RtpDcm2Nii:
     - The conversion process can also be triggered by a remote request issued
       by a real-time processing process if a scan is aborted before the
       NumberofTemporalPositions. A TCPServer thread in the class receives such
-      a request via a network socket at the 'rpc_port'.
+      a request via a network socket.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
-                 study_prefix='P', series_timeout=60, rpc_port=63210,
-                 make_brik=False, polling_observer=False,
-                 rtp_ttl_physio_address='localhost:63212', **kwargs):
+                 study_prefix='P', series_timeout=60,
+                 make_brik=False, polling_observer=False, **kwargs):
         """
         Parameters
         ----------
@@ -79,9 +78,6 @@ class RtpDcm2Nii:
         series_timeout : float
             Timeout period to consider as end of series to start conversion.
             The default is 60.
-        rpc_port : int
-            Port number to receive a remote request via a network socket.
-            The default is 63210.
         make_brik : bool
             Flag to create both BRIK and NIfTI files during DICOM conversion.
         polling_observer : bool, optional
@@ -96,11 +92,8 @@ class RtpDcm2Nii:
         self.watch_file_pattern = watch_file_pattern
         self.study_prefix = study_prefix
         self.series_timeout = series_timeout
-        self.rpc_port = rpc_port
         self.make_brik = make_brik
         self.polling_observer = polling_observer
-        host, port = rtp_ttl_physio_address.split(':')
-        self.rtp_ttl_physio_address = (host, int(port))
 
         self._dcmread_timeout = 3
         self._polling_timeout = 3
@@ -391,10 +384,9 @@ class RtpDcm2Nii:
         # Start physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
         if 'FMRI' in imageType:
-            if call_rt_physio(self.rtp_ttl_physio_address, 'ping'):
-                call_rt_physio(self.rtp_ttl_physio_address, 'START_SCAN')
-                call_rt_physio(self.rtp_ttl_physio_address,
-                               ('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
+            if call_rt_physio('ping'):
+                call_rt_physio('START_SCAN')
+                call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
             self._NVol = 0
 
         self._isRun_series = True
@@ -409,9 +401,8 @@ class RtpDcm2Nii:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._NVol > 1 and \
-                        call_rt_physio(self.rtp_ttl_physio_address, 'ping'):
-                    call_rt_physio(self.rtp_ttl_physio_address, 'END_SCAN')
+                if self._NVol > 1 and call_rt_physio('ping'):
+                    call_rt_physio('END_SCAN')
                     # Save physio data
                     if self._TR is not None:
                         series_duration = self._NVol * self._TR
@@ -422,7 +413,7 @@ class RtpDcm2Nii:
 
                     args = ('SAVE_PHYSIO_DATA', None, series_duration,
                             fname_fmt)
-                    call_rt_physio(self.rtp_ttl_physio_address, args, pkl=True)
+                    call_rt_physio(args, pkl=True)
 
                     # Reset physio parameters
                     self._NVol = 0
@@ -523,16 +514,12 @@ if __name__ == '__main__':
     parser.add_argument('--study_prefix', default='S', help='Study ID prefix')
     parser.add_argument('--series_timeout', default=10,
                         help='Timeout period to close a series')
-    parser.add_argument('--rpc_port', default=63210,
-                        help='RPC socket server port')
     parser.add_argument('--make_brik', action='store_true',
                         help='Make BRIK files')
     parser.add_argument('--polling_observer', action='store_true',
                         help='Use Polling observer')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
-    parser.add_argument('--rtp_ttl_physio_address', default='localhost:63212',
-                        help='rtp_ttl_physio socket server port')
 
     args = parser.parse_args()
     watch_dir = Path(args.watch_dir)
@@ -540,11 +527,9 @@ if __name__ == '__main__':
     watch_file_pattern = args.watch_file_pattern
     study_prefix = args.study_prefix
     series_timeout = args.series_timeout
-    rpc_port = args.rpc_port
     make_brik = args.make_brik
     polling_observer = args.polling_observer
     log_file = Path(args.log_file)
-    rtp_ttl_physio_address = args.rtp_ttl_physio_address
 
     # Logger
     logging.basicConfig(
@@ -556,12 +541,11 @@ if __name__ == '__main__':
     dcm2nii_serv = RtpDcm2Nii(
         watch_dir, work_root, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, series_timeout=series_timeout,
-        rpc_port=rpc_port, make_brik=make_brik,
-        polling_observer=polling_observer,
-        rtp_ttl_physio_address=rtp_ttl_physio_address)
+        make_brik=make_brik,
+        polling_observer=polling_observer)
 
     # Start RPC socket server
-    socekt_srv = RPCSocketServer(rpc_port, dcm2nii_serv.RPC_handler,
+    socekt_srv = RPCSocketServer(dcm2nii_serv.RPC_handler,
                                  socket_name='RtpDcm2NiiSocketServer')
 
     # Run mainloop

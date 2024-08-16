@@ -22,6 +22,7 @@ import argparse
 import warnings
 import socket
 from datetime import datetime
+import json
 
 import numpy as np
 import pandas as pd
@@ -48,7 +49,7 @@ mpl.rcParams['font.size'] = 8
 
 
 # %% call_rt_physio ===========================================================
-def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
+def call_rt_physio(data, pkl=False, get_return=False,
                    logger=None):
     """
     Parameters:
@@ -62,7 +63,11 @@ def call_rt_physio(rtp_ttl_physio_address, data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.connect(rtp_ttl_physio_address)
+        config_f = Path.home() / '.config' / 'rtpspy'
+        with open(config_f, "r") as fid:
+            rtpspy_config = json.load(fid)
+        port = rtpspy_config['RtpPhysioSocketServer_pot']
+        sock.connect(('localhost', port))
     except ConnectionRefusedError:
         time.sleep(1)
         if data == 'ping':
@@ -172,7 +177,7 @@ class NumatoGPIORecoding():
         buf_len_sec : float, optional
             Length (seconds) of signal recording buffer. The default is 1800s.
         """
-        self._logger = logging.getLogger('GPIORecorder')
+        self._logger = logging.getLogger('NumatoGPIORecoding')
 
         # Set parameters
         self._ttl_onset_que = ttl_onset_que
@@ -231,6 +236,10 @@ class NumatoGPIORecoding():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_sig_port(self):
 
+        if self._sig_sport is None:
+            self._logger.warning("There is no NumatoGPIORecoding device.")
+            return False
+
         # Check the current port and close if it opens
         if self._sig_ser is not None and self._sig_ser.is_open:
             self._sig_ser.close()
@@ -244,7 +253,7 @@ class NumatoGPIORecoding():
             self._sig_ser.write(b"gpio clear 0\r")
 
         except serial.serialutil.SerialException:
-            self._logger.error(f"Failed open {self._sig_sport}")
+            self._logger.error(f"Failed to open {self._sig_sport}")
             self._sig_ser = None
             return False
 
@@ -401,6 +410,37 @@ class DummyRecording():
         else:
             self._sim_data_len = 2
 
+        self._sim_data_pos = 0
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_sim_data(self, sim_card_f, sim_resp_f, sample_freq):
+
+        if not sim_card_f.is_file():
+            self._logger.error(
+                f"Not found {sim_card_f} for card dummy signal.")
+            return
+        else:
+            try:
+                self._sim_card = np.loadtxt(sim_card_f)
+                sim_data_len = len(self._sim_card)
+            except Exception:
+                self._logger.error(f"Error reading {sim_card_f}")
+                return
+
+        if not sim_resp_f.is_file():
+            self._logger.error(
+                f"Not found {sim_resp_f} for card dummy signal.")
+            return
+        else:
+            try:
+                self._sim_resp = np.loadtxt(sim_resp_f)
+                sim_data_len = min(sim_data_len, len(self._sim_resp))
+            except Exception:
+                self._logger.error(f"Error reading {sim_resp_f}")
+                return
+
+        self._sim_data_len = sim_data_len
+        self._sample_freq = sample_freq
         self._sim_data_pos = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -761,7 +801,7 @@ class RtpPhysio(RTP):
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, buf_len_sec=1800, sport=None,
-                 sample_freq=100, rpc_port=63212, save_ttl=True,
+                 sample_freq=100, save_ttl=True,
                  device='Numato', debug=False, sim_card_f=None,
                  sim_resp_f=None, **kwargs):
         """ Initialize real-time signal recording class
@@ -813,9 +853,13 @@ class RtpPhysio(RTP):
             self._recorder = NumatoGPIORecoding(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
                 sport, sample_freq=self.sample_freq)
+            if self._recorder._sig_sport is None:
+                self._recorder = None
+
         elif device == 'GE':
-            pass
-        elif device == 'dummy':
+            self._recorder = None
+
+        if device == 'Dummy' or self._recorder is None:
             self._recorder = DummyRecording(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
                 sim_card_f=sim_card_f, sim_resp_f=sim_resp_f,
@@ -826,7 +870,7 @@ class RtpPhysio(RTP):
         self._rec_proc_pipe = None
 
         # Start RPC socket server
-        self.socekt_srv = RPCSocketServer(rpc_port, self.RPC_handler,
+        self.socekt_srv = RPCSocketServer(self.RPC_handler,
                                           socket_name='RtpPhysioSocketServer')
 
         self._retrots = RtpRetroTS()
@@ -1322,6 +1366,7 @@ class RtpPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end(self):
         self.socekt_srv.shutdown()
+        self.stop_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -1342,8 +1387,6 @@ if __name__ == '__main__':
                         help='Cardiac signal file for dummy device')
     parser.add_argument('--resp_file',
                         help='Respiration signal file for dummy device')
-    parser.add_argument('--rpc_port', default=63212,
-                        help='RPC socket server port')
     parser.add_argument('--win_shape', default='450x450',
                         help='Plot window position')
     parser.add_argument('--disable_close', action='store_true',
@@ -1355,7 +1398,6 @@ if __name__ == '__main__':
     card_file = args.card_file
     resp_file = args.resp_file
     sample_freq = args.sample_freq
-    rpc_port = args.rpc_port
     win_shape = args.win_shape
     win_shape = [int(v) for v in win_shape.split('x')]
     disable_close = args.disable_close
@@ -1371,7 +1413,6 @@ if __name__ == '__main__':
     # Create RtpPhysio
     rtp_ttl_physio = RtpPhysio(
             sample_freq=sample_freq,
-            rpc_port=rpc_port,
             device=device,
             sim_data=(card_file, resp_file)
             )
