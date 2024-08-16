@@ -44,7 +44,9 @@ if __name__ == '__main__':
     # Set logging
     logging.basicConfig(
         stream=sys.stdout, level=logging.INFO,
-        format='%(asctime)s.%(msecs)04d,%(name)s,%(message)s')
+        format='%(asctime)s,[%(levelname)s],%(name)s,%(message)s')
+
+    logger = logging.getLogger('rtpspy_system_check')
 
     try:
         # --- Filenames -------------------------------------------------------
@@ -84,11 +86,11 @@ if __name__ == '__main__':
 
         # --- Make mask images ------------------------------------------------
         if torch.cuda.is_available():
-            print('GPU is utilized.')
+            logger.info('GPU is utilized.')
             no_FastSeg = False
             rtp_app.fastSeg_batch_size = 1  # Adjust the size according to GPU
         else:
-            print('GPU is not avilable.')
+            logger.info('GPU is not avilable.')
             no_FastSeg = True
 
         rtp_app.make_masks(
@@ -101,6 +103,7 @@ if __name__ == '__main__':
         # Set RTP_PHYSIO
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(ecg_f)
+        del rtp_app.rtp_objs['PHYSIO']
         rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
             sample_freq=40, device='Dummy', sim_data=(card, resp))
 
@@ -158,14 +161,14 @@ if __name__ == '__main__':
         rtp_app.end_run()
 
         # End
-        print('-' * 80)
-        print('End process')
-        print('RTPSpy system check finished successfully.')
-        print(f'See the processed data in {work_dir}/RTP')
+        logger.info('-' * 80)
+        logger.info('End process')
+        logger.info('RTPSpy system check finished.')
+        logger.info(f'See the processed data in {work_dir}/RTP')
 
     except Exception:
-        print('x' * 80)
-        print('RTPSpy system check failed.')
+        logger.error('x' * 80)
+        logger.error('RTPSpy system check failed.')
         exc_type, exc_obj, exc_tb = sys.exc_info()
         exc_type, exc_obj, exc_tb = sys.exc_info()
         traceback.print_exception(exc_type, exc_obj, exc_tb)

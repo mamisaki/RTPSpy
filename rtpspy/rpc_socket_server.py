@@ -21,6 +21,8 @@ import pickle
 import zlib
 import time
 import re
+from pathlib import Path
+import json
 
 
 #  %% =========================================================================
@@ -178,7 +180,7 @@ class RPCSocketServer:
     When the handler function returns a value, pass it back to the client.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, port, RPC_handler=print, socket_name='RPCSocketServer',
+    def __init__(self, RPC_handler=print, socket_name='RPCSocketServer',
                  allow_remote_access=False):
         self._socket_name = socket_name
         self._logger = logging.getLogger(self._socket_name)
@@ -192,7 +194,7 @@ class RPCSocketServer:
         socketserver.TCPServer.allow_reuse_address = True
         try:
             self._server = socketserver.TCPServer(
-                (host, port), RPCSocketServer._recvDataHandler)
+                (host, 0), RPCSocketServer._recvDataHandler)
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
@@ -201,9 +203,24 @@ class RPCSocketServer:
             self.server = None
             return
 
+        self.port = self._server.server_address[1]
         self._server._callback = RPC_handler
         self._server._cancel = False
         self._server.socket_name = self._socket_name
+
+        # Save the port number in rtpspy config file
+        config_f = Path.home() / '.config' / 'rtpspy'
+        if config_f.is_file():
+            with open(config_f, "r") as fid:
+                rtpspy_config = json.load(fid)
+        else:
+            if not config_f.parent.is_dir():
+                config_f.parent.mkdir()
+            rtpspy_config = {}
+
+        rtpspy_config[f"{socket_name}_port"] = self.port
+        with open(config_f, "w") as fid:
+            json.dump(rtpspy_config, fid)
 
         # Start the server on another thread.
         self._server_thread = Thread(

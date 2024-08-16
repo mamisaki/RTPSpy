@@ -3367,7 +3367,7 @@ if __name__ == '__main__':
 
     # --- Set logging ---------------------------------------------------------
     dstr = datetime.now().strftime("%Y%m%dT%H%M%S")
-    log_file = Path(f'log/RrpApp_{dstr}.log')
+    log_file = Path(f'log/RtpApp_{dstr}.log')
 
     if not log_file.parent.is_dir():
         log_file.parent.mkdir()
