@@ -21,8 +21,8 @@ log_*
 log/
 *.log
 *.npy
-.vscode/launch.json
+.vscode
 *.1D
 rtpspy/lib_RetroTS/*
 tests/work/rtp_ROI_signal.csv
-RTPSpy.egg-info/*
+RTPSpy.egg-info

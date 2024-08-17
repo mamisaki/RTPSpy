@@ -6,7 +6,7 @@ Real-time physiological signal recording class.
 
 Model class : NumatoGPIORecoding
 View class : TTLPhysioPlot
-Controler class: RtpPhysio
+Controler class: RtpTTLPhysio
 """
 
 
@@ -66,7 +66,7 @@ def call_rt_physio(data, pkl=False, get_return=False,
         config_f = Path.home() / '.config' / 'rtpspy'
         with open(config_f, "r") as fid:
             rtpspy_config = json.load(fid)
-        port = rtpspy_config['RtpPhysioSocketServer_pot']
+        port = rtpspy_config['RtpTTLPhysioSocketServer_pot']
         sock.connect(('localhost', port))
     except ConnectionRefusedError:
         time.sleep(1)
@@ -237,7 +237,7 @@ class NumatoGPIORecoding():
     def open_sig_port(self):
 
         if self._sig_sport is None:
-            self._logger.warning("There is no NumatoGPIORecoding device.")
+            self._logger.warning("There is no Numato GPIO device.")
             return False
 
         # Check the current port and close if it opens
@@ -292,9 +292,11 @@ class NumatoGPIORecoding():
                     self.sig_sport = port
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_signal_loop(self):
+    def read_signal_loop(self, cmd_pipe=None):
         if not self.open_sig_port():
             return
+
+        self._logger.debug('Start recording in read_signal_loop.')
 
         ttl_state = 0
         rec_interval = 1.0 / self._sample_freq
@@ -357,6 +359,13 @@ class NumatoGPIORecoding():
 
                 while next_rec-rec_delay < ct:
                     next_rec += rec_interval
+
+            if cmd_pipe is not None and cmd_pipe.poll():
+                cmd = cmd_pipe.recv()
+                self._logger.debug(f'Recieve {cmd} in read_signal_loop.')
+                if cmd == 'QUIT':
+                    cmd_pipe.send('END')
+                    break
 
             time.sleep(0.001)
 
@@ -444,7 +453,10 @@ class DummyRecording():
         self._sim_data_pos = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_signal_loop(self):
+    def read_signal_loop(self, cmd_pipe=None):
+
+        self._logger.debug('Start recording in read_signal_loop.')
+
         ttl_state = 0
         rec_interval = 1.0 / self._sample_freq
         rec_delay = 0
@@ -486,6 +498,13 @@ class DummyRecording():
 
                 while next_rec-rec_delay < ct:
                     next_rec += rec_interval
+
+            if cmd_pipe is not None and cmd_pipe.poll():
+                cmd = cmd_pipe.recv()
+                self._logger.debug(f'Recieve {cmd} in read_signal_loop.')
+                if cmd == 'QUIT':
+                    cmd_pipe.send('END')
+                    break
 
             time.sleep(0.01)
 
@@ -795,15 +814,14 @@ class TTLPhysioPlot(QtCore.QObject):
 
 
 # %% ==========================================================================
-class RtpPhysio(RTP):
+class RtpTTLPhysio(RTP):
     """
     Recording signals
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, buf_len_sec=1800, sport=None,
-                 sample_freq=100, save_ttl=True,
-                 device='Numato', debug=False, sim_card_f=None,
-                 sim_resp_f=None, **kwargs):
+    def __init__(self, device='Numato', sample_freq=100, buf_len_sec=1800,
+                 save_ttl=True, sport=None, sim_card_f=None, sim_resp_f=None,
+                 **kwargs):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -819,36 +837,60 @@ class RtpPhysio(RTP):
         super().__init__(**kwargs)
         del self.work_dir
 
-        self._logger = logging.getLogger('RtpPhysio')
         self.buf_len_sec = buf_len_sec
+        self.save_ttl = save_ttl
         self.sample_freq = sample_freq
         self.wait_ttl_on = False
         self.plot = None
-        self.save_ttl = save_ttl
+        self.sim_card_f = sim_card_f
+        self.sim_resp_f = sim_resp_f
+        self._recorder = None
 
-        # --- Initialize data array shared with plotting process ---
+        # Queues to retrieve recorded data from a recorder process
+        self._ttl_onset_que = Queue()
+        self._ttl_offset_que = Queue()
+        self._physio_que = Queue()
+
+        # Initializing recording process variables
+        self._rec_proc = None  # Signal recording process
+        self._rec_proc_pipe = None
+
+        # Scan onset mmap file for sharing among multiple processes
         mmap_f = Path('/dev/shm') / 'scan_onset'
         self._scan_onset = np.memmap(mmap_f, dtype=float, mode='w+',
                                      shape=(1,))
         self._scan_onset[:] = -1
 
+        # Prepare data buffer files for sharing among multiple processes
         self._rbuf_names = ['ttl_onset', 'ttl_offset',
                             'card', 'resp', 'tstamp']
         self._rbuf_lock = Lock()
-        self.buf_len = self.buf_len_sec * self.sample_freq
-
         self.data_mmap_files = {}
         for label in self._rbuf_names:
             self.data_mmap_files[label] = Path('/dev/shm') / label
-        self._rbuf = self.init_data_array(create=True)
 
-        # --- Queues to retrieve recorded data from a recorder process ---
-        self._ttl_onset_que = Queue()
-        self._ttl_offset_que = Queue()
-        self._physio_que = Queue()
+        # Start RPC socket server
+        self.socekt_srv = RPCSocketServer(
+            self.RPC_handler, socket_name='RtpTTLPhysioSocketServer')
 
-        # --- Create recorder ---
+        self._retrots = RtpRetroTS()
+
+        # Set device and start recording
+        self.reset_device(device, sport=sport)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def reset_device(self, device, sport=None):
+
+        # --- Initialize data array shared with plotting process ---
+        buf_len = self.buf_len_sec * self.sample_freq
+        self._rbuf = self.init_data_array(buf_len)
+
+        if self._recorder is not None:
+            self.stop_recording()
+
+        # --- Create recorder device ---
         self._device = device
+
         if device == 'Numato':
             self._recorder = NumatoGPIORecoding(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
@@ -860,38 +902,23 @@ class RtpPhysio(RTP):
             self._recorder = None
 
         if device == 'Dummy' or self._recorder is None:
+            self._device = 'Dummy'
             self._recorder = DummyRecording(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
-                sim_card_f=sim_card_f, sim_resp_f=sim_resp_f,
+                sim_card_f=self.sim_card_f, sim_resp_f=self.sim_resp_f,
                 sample_freq=self.sample_freq)
 
-        # Initializing recording process variables
-        self._rec_proc = None  # Signal recording process
-        self._rec_proc_pipe = None
-
-        # Start RPC socket server
-        self.socekt_srv = RPCSocketServer(self.RPC_handler,
-                                          socket_name='RtpPhysioSocketServer')
-
-        self._retrots = RtpRetroTS()
-
-        # Start recording
-        self.start_recording()
+        if self._recorder is not None:
+            self.start_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def init_data_array(self, create=False):
-        if create:
-            mode = 'w+'
-        else:
-            mode = 'r+'
-
+    def init_data_array(self, buf_len):
         rbuf = {}
         for label, mmap_f in self.data_mmap_files.items():
-            mmap_data = np.memmap(mmap_f, dtype=float, mode=mode,
-                                  shape=(self.buf_len,))
-            if create:
-                mmap_data[:] = np.nan
-                mmap_data.flush()
+            mmap_data = np.memmap(mmap_f, dtype=float, mode='w+',
+                                  shape=(buf_len,))
+            mmap_data[:] = np.nan
+            mmap_data.flush()
             rbuf[label] = RingBuffer(mmap_data)
 
         return rbuf
@@ -926,8 +953,10 @@ class RtpPhysio(RTP):
             return
 
         self._rec_proc_pipe.send('QUIT')
-        self._rec_proc.join(3)
-        if self.is_recording():
+        if self._rec_proc_pipe.poll(timeout=3):
+            self._rec_proc_pipe.recv()
+            self._rec_proc.join(3)
+        else:
             self._rec_proc.terminate()
         del self._rec_proc
         self._rec_proc = None
@@ -976,7 +1005,9 @@ class RtpPhysio(RTP):
         self.scan_onset = 0
 
         # Start reading process
-        _read_proc = Process(target=self._recorder.read_signal_loop)
+        _recoder_pipe, cmd_pipe_recorder = Pipe()
+        _read_proc = Process(target=self._recorder.read_signal_loop,
+                             kwargs={'cmd_pipe': cmd_pipe_recorder})
         _read_proc.start()
 
         # Que reading loop
@@ -984,6 +1015,11 @@ class RtpPhysio(RTP):
             if cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 if cmd == 'QUIT':
+                    self._logger.debug('Recieve QUIT in _run_recording.')
+                    _recoder_pipe.send('QUIT')
+                    if _recoder_pipe.poll(timeout=3):
+                        _recoder_pipe.recv()
+
                     break
 
             if not self._ttl_onset_que.empty():
@@ -1013,6 +1049,7 @@ class RtpPhysio(RTP):
 
         # --- end loop ---
         # Stop recording process
+        cmd_pipe.send('END')
         _read_proc.kill()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1321,8 +1358,9 @@ class RtpPhysio(RTP):
         """
         To return data other than str, pack_data() should be used.
         """
+        self._logger.debug(f"Process RPC {call}")
         if call == 'GET_RECORDING_PARMAS':
-            return pack_data((self.sample_freq, self._recorder.buf_len))
+            return pack_data((self.sample_freq, self._recorder.buf_len_sec))
 
         elif call == 'WAIT_TTL_ON':
             self.wait_ttl_on = True
@@ -1356,21 +1394,339 @@ class RtpPhysio(RTP):
                 conf = call[1]
                 self.set_config(conf)
 
-            # elif call[0] == 'GET_RETROTS':
-            #     args = call[1:]
-            #     return pack_data(self.get_retrots(*args))
-
         elif call == 'QUIT':
-            self.close()
+            self.end()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end(self):
-        self.socekt_srv.shutdown()
         self.stop_recording()
+        self.socekt_srv.shutdown()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
         self.end()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_param(self, params, reset_fn=None, echo=False):
+
+        reset_device = False
+        for attr, val in params.items():
+            if attr == 'device':
+                if self._device != val:
+                    reset_device = True
+
+            elif attr == 'sample_freq':
+                setattr(self, attr, val)
+                reset_device = True
+
+            elif attr == 'buf_len_sec':
+                setattr(self, attr, val)
+                reset_device = True
+
+            elif attr == 'save_ttl':
+                setattr(self, attr, val)
+
+            elif attr == 'sport':
+                setattr(self, attr, val)
+                reset_device = True
+
+            elif attr == 'sim_card_f':
+                setattr(self, attr, val)
+                if self._device == 'Dummy':
+                    reset_device = True
+
+            elif attr == 'sim_resp_f':
+                setattr(self, attr, val)
+                if self._device == 'Dummy':
+                    reset_device = True
+
+        if reset_device:
+            self.reset_device(self._device)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def ui_set_param(self):
+        """
+        When reset_fn is None, set_param is considered to be called from
+        load_parameters function.
+        """
+        return
+        ui_rows = []
+        self.ui_objs = []
+
+        # # enabled
+        # self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
+        # self.ui_enabled_rdb.setChecked(self.enabled)
+        # self.ui_enabled_rdb.toggled.connect(
+        #         lambda checked: self.set_param('enabled', checked,
+        #                                        self.ui_enabled_rdb.setChecked))
+        # ui_rows.append((self.ui_enabled_rdb, None))
+
+        # # mask_file
+        # var_lb = QtWidgets.QLabel("Mask :")
+        # self.ui_mask_cmbBx = QtWidgets.QComboBox()
+        # self.ui_mask_cmbBx.addItems(['external file',
+        #                              'initial volume of internal run'])
+        # self.ui_mask_cmbBx.activated.connect(
+        #         lambda idx:
+        #         self.set_param('mask_file',
+        #                        self.ui_mask_cmbBx.currentText(),
+        #                        self.ui_mask_cmbBx.setCurrentIndex))
+
+        # self.ui_mask_lnEd = QtWidgets.QLineEdit()
+        # self.ui_mask_lnEd.setReadOnly(True)
+        # self.ui_mask_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
+        #                      self.ui_mask_lnEd])
+
+        # if self.mask_file == 0:
+        #     self.ui_mask_cmbBx.setCurrentIndex(1)
+        #     self.ui_mask_lnEd.setText('zero-out initial received volume')
+        # else:
+        #     self.ui_mask_cmbBx.setCurrentIndex(0)
+        #     self.ui_mask_lnEd.setText(str(self.mask_file))
+
+        # mask_hLayout = QtWidgets.QHBoxLayout()
+        # mask_hLayout.addWidget(self.ui_mask_cmbBx)
+        # mask_hLayout.addWidget(self.ui_mask_lnEd)
+        # ui_rows.append((var_lb, mask_hLayout))
+
+        # # wait_num
+        # var_lb = QtWidgets.QLabel("Wait REGRESS until (volumes) :")
+        # self.ui_waitNum_cmbBx = QtWidgets.QComboBox()
+        # self.ui_waitNum_cmbBx.addItems(['number of regressors', 'set value'])
+        # self.ui_waitNum_cmbBx.activated.connect(
+        #         lambda idx:
+        #         self.set_param('wait_num',
+        #                        self.ui_waitNum_cmbBx.currentText(),
+        #                        self.ui_waitNum_cmbBx.setCurrentIndex))
+
+        # self.ui_waitNum_lb = QtWidgets.QLabel()
+        # regNum = self.get_reg_num()
+        # self.ui_waitNum_lb.setText(
+        #         f'Wait REGRESS until receiving {regNum} volumes')
+        # self.ui_objs.extend([var_lb, self.ui_waitNum_cmbBx,
+        #                      self.ui_waitNum_lb])
+
+        # wait_num_hLayout = QtWidgets.QHBoxLayout()
+        # wait_num_hLayout.addWidget(self.ui_waitNum_cmbBx)
+        # wait_num_hLayout.addWidget(self.ui_waitNum_lb)
+        # ui_rows.append((var_lb, wait_num_hLayout))
+
+        # # max_scan_length
+        # var_lb = QtWidgets.QLabel("Maximum scan length :")
+        # self.ui_maxLen_spBx = QtWidgets.QSpinBox()
+        # self.ui_maxLen_spBx.setMinimum(1)
+        # self.ui_maxLen_spBx.setMaximum(9999)
+        # self.ui_maxLen_spBx.setValue(self.max_scan_length)
+        # self.ui_maxLen_spBx.editingFinished.connect(
+        #         lambda: self.set_param('max_scan_length',
+        #                                self.ui_maxLen_spBx.value(),
+        #                                self.ui_maxLen_spBx.setValue))
+        # ui_rows.append((var_lb, self.ui_maxLen_spBx))
+        # self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
+
+        # # max_poly_order
+        # var_lb = QtWidgets.QLabel("Maximum polynomial order :\n"
+        #                           "regressors for slow fluctuation")
+        # self.ui_maxPoly_cmbBx = QtWidgets.QComboBox()
+        # self.ui_maxPoly_cmbBx.addItems(['auto', 'set'])
+        # self.ui_maxPoly_cmbBx.activated.connect(
+        #         lambda idx:
+        #         self.set_param('max_poly_order',
+        #                        self.ui_maxPoly_cmbBx.currentText(),
+        #                        self.ui_maxPoly_cmbBx.setCurrentIndex))
+
+        # self.ui_maxPoly_lb = QtWidgets.QLabel()
+        # self.ui_objs.extend([var_lb, self.ui_maxPoly_cmbBx,
+        #                      self.ui_maxPoly_lb])
+        # if np.isinf(self.max_poly_order):
+        #     self.ui_maxPoly_cmbBx.setCurrentIndex(0)
+        #     self.ui_maxPoly_lb.setText('Increase polynomial order ' +
+        #                                'with the scan length')
+        # else:
+        #     self.ui_maxPoly_cmbBx.setCurrentIndex(1)
+        #     self.ui_maxPoly_lb.setText('Increase polynomial order ' +
+        #                                'with the scan length' +
+        #                                f' up to {self.max_poly_order}')
+
+        # maxPoly_hLayout = QtWidgets.QHBoxLayout()
+        # maxPoly_hLayout.addWidget(self.ui_maxPoly_cmbBx)
+        # maxPoly_hLayout.addWidget(self.ui_maxPoly_lb)
+        # ui_rows.append((var_lb, maxPoly_hLayout))
+
+        # # mot_reg
+        # var_lb = QtWidgets.QLabel("Motion regressor :")
+        # self.ui_motReg_cmbBx = QtWidgets.QComboBox()
+        # self.ui_motReg_cmbBx.addItems(
+        #         ['None', '6 motions (yaw, pitch, roll, dS, dL, dP)',
+        #          '12 motions (6 motions and their temporal derivatives)',
+        #          '6 motion derivatives'])
+        # ci = {'None': 0, 'mot6': 1, 'mot12': 2, 'dmot6': 3}[self.mot_reg]
+        # self.ui_motReg_cmbBx.setCurrentIndex(ci)
+        # self.ui_motReg_cmbBx.currentIndexChanged.connect(
+        #         lambda idx:
+        #         self.set_param('mot_reg',
+        #                        self.ui_motReg_cmbBx.currentText(),
+        #                        self.ui_motReg_cmbBx.setCurrentIndex))
+        # ui_rows.append((var_lb, self.ui_motReg_cmbBx))
+        # self.ui_objs.extend([var_lb, self.ui_motReg_cmbBx])
+
+        # # GS ROI regressor
+        # self.ui_GS_reg_chb = QtWidgets.QCheckBox("Regress global signal :")
+        # self.ui_GS_reg_chb.setChecked(self.GS_reg)
+        # self.ui_GS_reg_chb.stateChanged.connect(
+        #         lambda state: self.set_param('GS_reg', state > 0))
+
+        # GSmask_hBLayout = QtWidgets.QHBoxLayout()
+        # self.ui_GS_mask_lnEd = QtWidgets.QLineEdit()
+        # self.ui_GS_mask_lnEd.setText(str(self.GS_mask))
+        # self.ui_GS_mask_lnEd.setReadOnly(True)
+        # self.ui_GS_mask_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # GSmask_hBLayout.addWidget(self.ui_GS_mask_lnEd)
+
+        # self.ui_GSmask_btn = QtWidgets.QPushButton('Set')
+        # self.ui_GSmask_btn.clicked.connect(
+        #         lambda: self.set_param(
+        #                 'GS_mask',
+        #                 Path(self.ui_GS_mask_lnEd.text()).parent,
+        #                 self.ui_GS_mask_lnEd.setText))
+        # GSmask_hBLayout.addWidget(self.ui_GSmask_btn)
+
+        # self.ui_objs.extend([self.ui_GS_reg_chb, self.ui_GS_mask_lnEd,
+        #                      self.ui_GSmask_btn])
+        # ui_rows.append((self.ui_GS_reg_chb, GSmask_hBLayout))
+
+        # # WM ROI regressor
+        # self.ui_WM_reg_chb = QtWidgets.QCheckBox("Regress WM signal :")
+        # self.ui_WM_reg_chb.setChecked(self.WM_reg)
+        # self.ui_WM_reg_chb.stateChanged.connect(
+        #         lambda state: self.set_param('WM_reg', state > 0))
+
+        # WMmask_hBLayout = QtWidgets.QHBoxLayout()
+        # self.ui_WM_mask_lnEd = QtWidgets.QLineEdit()
+        # self.ui_WM_mask_lnEd.setText(str(self.WM_mask))
+        # self.ui_WM_mask_lnEd.setReadOnly(True)
+        # self.ui_WM_mask_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # WMmask_hBLayout.addWidget(self.ui_WM_mask_lnEd)
+
+        # self.ui_WMmask_btn = QtWidgets.QPushButton('Set')
+        # self.ui_WMmask_btn.clicked.connect(
+        #         lambda: self.set_param(
+        #                 'WM_mask',
+        #                 Path(self.ui_WM_mask_lnEd.text()).parent,
+        #                 self.ui_WM_mask_lnEd.setText))
+        # WMmask_hBLayout.addWidget(self.ui_WMmask_btn)
+
+        # self.ui_objs.extend([self.ui_WM_reg_chb, self.ui_WM_mask_lnEd,
+        #                      self.ui_WMmask_btn])
+        # ui_rows.append((self.ui_WM_reg_chb, WMmask_hBLayout))
+
+        # # Vent ROI regressor
+        # self.ui_Vent_reg_chb = QtWidgets.QCheckBox("Regress Vent signal :")
+        # self.ui_Vent_reg_chb.setChecked(self.Vent_reg)
+        # self.ui_Vent_reg_chb.stateChanged.connect(
+        #         lambda state: self.set_param('Vent_reg', state > 0))
+
+        # Ventmask_hBLayout = QtWidgets.QHBoxLayout()
+
+        # self.ui_Vent_mask_lnEd = QtWidgets.QLineEdit()
+        # self.ui_Vent_mask_lnEd.setText(str(self.Vent_mask))
+        # self.ui_Vent_mask_lnEd.setReadOnly(True)
+        # self.ui_Vent_mask_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # Ventmask_hBLayout.addWidget(self.ui_Vent_mask_lnEd)
+
+        # self.ui_Ventmask_btn = QtWidgets.QPushButton('Set')
+        # self.ui_Ventmask_btn.clicked.connect(
+        #         lambda: self.set_param(
+        #                 'Vent_mask',
+        #                 Path(self.ui_Vent_mask_lnEd.text()).parent,
+        #                 self.ui_Vent_mask_lnEd.setText))
+        # Ventmask_hBLayout.addWidget(self.ui_Ventmask_btn)
+
+        # self.ui_objs.extend([self.ui_Vent_reg_chb, self.ui_Vent_mask_lnEd,
+        #                      self.ui_Ventmask_btn])
+        # ui_rows.append((self.ui_Vent_reg_chb, Ventmask_hBLayout))
+
+        # # phys_reg
+        # var_lb = QtWidgets.QLabel("RICOR regressor :")
+        # self.ui_physReg_cmbBx = QtWidgets.QComboBox()
+        # self.ui_physReg_cmbBx.addItems(
+        #         ['None', '8 RICOR (4 Resp and 4 Card)']
+        #         )
+        # ci = {'None': 0, 'RICOR8': 1, 'RVT5': 2,
+        #       'RVT+RICOR13': 3}[self.phys_reg]
+        # self.ui_physReg_cmbBx.setCurrentIndex(ci)
+        # self.ui_physReg_cmbBx.currentIndexChanged.connect(
+        #         lambda idx:
+        #         self.set_param('phys_reg',
+        #                        self.ui_physReg_cmbBx.currentText(),
+        #                        self.ui_physReg_cmbBx.setCurrentIndex))
+        # ui_rows.append((var_lb, self.ui_physReg_cmbBx))
+        # self.ui_objs.extend([var_lb, self.ui_physReg_cmbBx])
+
+        # # desMtx
+        # var_lb = QtWidgets.QLabel("Design matrix :")
+
+        # desMtx_hBLayout = QtWidgets.QHBoxLayout()
+        # self.ui_loadDesMtx_btn = QtWidgets.QPushButton('Set')
+        # self.ui_loadDesMtx_btn.clicked.connect(
+        #         lambda: self.set_param('desMtx_f', 'set'))
+        # desMtx_hBLayout.addWidget(self.ui_loadDesMtx_btn)
+
+        # self.ui_showDesMtx_btn = QtWidgets.QPushButton()
+        # self.ui_showDesMtx_btn.clicked.connect(
+        #         lambda: self.set_param('showDesMtx'))
+        # desMtx_hBLayout.addWidget(self.ui_showDesMtx_btn)
+
+        # self.ui_objs.extend([var_lb, self.ui_loadDesMtx_btn,
+        #                      self.ui_showDesMtx_btn])
+        # ui_rows.append((var_lb, desMtx_hBLayout))
+        # self.ui_showDesMtx_btn.setText('Show desing matrix')
+        # if self.desMtx_read is None:
+        #     self.ui_showDesMtx_btn.setEnabled(False)
+        # else:
+        #     self.ui_showDesMtx_btn.setEnabled(True)
+
+        # # --- Checkbox row ------------------------------------------------
+        # # Restrocpective process
+        # self.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
+        # self.ui_retroProc_chb.setChecked(self.reg_retro_proc)
+        # self.ui_retroProc_chb.stateChanged.connect(
+        #         lambda state: setattr(self, 'reg_retro_proc', state > 0))
+        # self.ui_objs.append(self.ui_retroProc_chb)
+
+        # # Save
+        # self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
+        # self.ui_saveProc_chb.setChecked(self.save_proc)
+        # self.ui_saveProc_chb.stateChanged.connect(
+        #         lambda state: setattr(self, 'save_proc', state > 0))
+        # self.ui_objs.append(self.ui_saveProc_chb)
+
+        # chb_hLayout = QtWidgets.QHBoxLayout()
+        # chb_hLayout.addStretch()
+        # chb_hLayout.addWidget(self.ui_saveProc_chb)
+        # ui_rows.append((self.ui_retroProc_chb, chb_hLayout))
+
+        return ui_rows
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_params(self):
+        all_opts = super().get_params()
+        incld_opts = ('device', 'sample_freq', 'buf_len_sec',
+                      'save_ttl')
+        sel_opts = {}
+        for k, v in all_opts.items():
+            if k not in incld_opts:
+                continue
+            if isinstance(v, Path):
+                v = str(v)
+            sel_opts[k] = v
+
+        return sel_opts
 
 
 # %% main =====================================================================
@@ -1410,8 +1766,8 @@ if __name__ == '__main__':
     # Open app
     app = QtWidgets.QApplication(sys.argv)
 
-    # Create RtpPhysio
-    rtp_ttl_physio = RtpPhysio(
+    # Create RtpTTLPhysio
+    rtp_ttl_physio = RtpTTLPhysio(
             sample_freq=sample_freq,
             device=device,
             sim_data=(card_file, resp_file)

@@ -65,6 +65,8 @@ class RTP(object):
         self.enabled = True
 
         self._logger = logging.getLogger(self.__class__.__name__)
+        self._log_level = logging.getLevelName(
+            self._logger.getEffectiveLevel())
         self._proc_ready = False
 
         self._std_out = sys.stdout

@@ -257,7 +257,7 @@ class RtpRegress(RTP):
 
         if self.phys_reg != 'None':
             if self.rtp_physio is None:
-                errmsg = 'RtpPhysio object is not set.'
+                errmsg = 'RtpTTLPhysio object is not set.'
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 self._proc_ready = False
@@ -549,8 +549,7 @@ class RtpRegress(RTP):
 
                 vi0 = vol_idx - (Resids.shape[0]-1)
                 vilast = vol_idx - 1
-                msg = f"Regression is done for {vi0}-{vilast}"
-                msg += ", retrospectively."
+                msg = f"Retrospective Regression for {vi0}-{vilast}."
                 self._logger.info(msg)
 
                 # Save filename template
@@ -623,7 +622,7 @@ class RtpRegress(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Regression is done for {f};tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Regression;{f};tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
@@ -1803,7 +1802,7 @@ if __name__ == '__main__':
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_ttl_physio import RtpPhysio
+    from rtpspy.rtp_ttl_physio import RtpTTLPhysio
 
     # RtpTshift
     rtp_tshift = RtpTshift()
@@ -1821,8 +1820,8 @@ if __name__ == '__main__':
     rtp_smooth = RtpSmooth(blur_fwhm=6)
     rtp_smooth.set_param('mask_file', mask_data_f)
 
-    # Set RtpPhysio
-    rtp_physio = RtpPhysio(
+    # Set RtpTTLPhysio
+    rtp_physio = RtpTTLPhysio(
         sample_freq=40, device='Dummy', sim_card_f=ecg_f, sim_resp_f=resp_f)
 
     # RtpRegress

@@ -18,7 +18,6 @@ import nibabel as nib
 import torch
 
 from rtpspy import RtpApp
-from rtpspy import RtpPhysio
 
 
 # %% main =====================================================================
@@ -36,6 +35,11 @@ if __name__ == '__main__':
     overwrite = not args.preserve
     debug = args.debug
 
+    if debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+
     # -------------------------------------------------------------------------
     print("=" * 80)
     print("Test RTPSpy installation")
@@ -43,7 +47,7 @@ if __name__ == '__main__':
 
     # Set logging
     logging.basicConfig(
-        stream=sys.stdout, level=logging.INFO,
+        stream=sys.stdout, level=log_level,
         format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
         datefmt='%Y-%m-%dT%H:%M:%S')
 
@@ -101,13 +105,13 @@ if __name__ == '__main__':
             Vent_template=Vent_template_f, overwrite=overwrite)
 
         # --- Set up RTP ------------------------------------------------------
-        # Set RtpPhysio
-        del rtp_app.rtp_objs['PHYSIO']
-        rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
-            sample_freq=40, device='Dummy', sim_card_f=ecg_f,
-            sim_resp_f=resp_f)
+        # Set RtpTTLPhysio
+        rtp_app.rtp_objs['TTLPHYSIO'].set_param(
+            {'device': 'Dummy', 'sample_freq': 40,
+             'sim_card_f': ecg_f, 'sim_resp_f': resp_f})
+
         # Wait for the rtp_physio to start recording
-        while rtp_app.rtp_objs['PHYSIO'].scan_onset < 0:
+        while rtp_app.rtp_objs['TTLPHYSIO'].scan_onset < 0:
             time.sleep(0.1)
 
         # RTP parameters
@@ -162,6 +166,7 @@ if __name__ == '__main__':
             time.sleep(TR)
 
         rtp_app.end_run()
+        rtp_app.rtp_objs['TTLPHYSIO'].end()
 
         # End
         logger.info('-' * 80)
