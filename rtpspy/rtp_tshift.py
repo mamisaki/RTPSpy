@@ -153,7 +153,7 @@ class RtpTshift(RTP):
                 # log message
                 fname = Path(self.pre_fmri_img.get_filename()).name
                 fname = fname.replace('.nii.gz', '')
-                msg = f"#{vol_idx}, "
+                msg = f"#{vol_idx};"
                 msg += f"Retrospective slice-timing correction;{fname}"
                 self._logger.info(msg)
 

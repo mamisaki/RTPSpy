@@ -81,7 +81,8 @@ class RTP_SIM(RtpApp):
             # Log message
             if self._verb:
                 f = Path(fmri_img.get_filename()).name
-                msg = f"#{vol_idx+1};tstamp={tstamp}"
+                msg = f"#{vol_idx+1}"
+                msg += f";tstamp={tstamp}"
                 msg += f";ROI signal extraction;{f}"
                 if pre_proc_time is not None:
                     msg += f';took {proc_delay:.4f}s'

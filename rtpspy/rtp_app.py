@@ -1911,7 +1911,8 @@ class RtpApp(RTP):
             # physio_port = self.simPhysPort.split()[0]
             # recording_rate_ms = \
             #     1000 / self.rtp_objs['TTLPHYSIO'].effective_sample_freq
-            # samples_to_average = self.rtp_objs['TTLPHYSIO'].samples_to_average
+            # samples_to_average = \
+            # self.rtp_objs['TTLPHYSIO'].samples_to_average
 
             # recv_physio_port = re.search(r'slave:(.+)\)',
             #                              self.simPhysPort).groups()[0]
@@ -1924,7 +1925,8 @@ class RtpApp(RTP):
 
             # # Change port
             # self.rtp_objs['TTLPHYSIO'].update_port_list()
-            # self.rtp_objs['TTLPHYSIO'].set_param('ser_port', recv_physio_port)
+            # self.rtp_objs['TTLPHYSIO'].set_param('ser_port',
+            # recv_physio_port)
 
             # self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
             #                         recording_rate_ms, samples_to_average)

@@ -15,7 +15,6 @@ import sys
 import time
 import re
 import traceback
-import logging
 import shutil
 import argparse
 
@@ -258,8 +257,9 @@ class RtpWatch(RTP):
                 t_interval = self._proc_time[-1] - self._proc_time[-2]
             else:
                 t_interval = -1
-            msg = f"#{self._vol_num};tstamp={tstamp}"
-            msg += f";Read {f};took {proc_delay:.4f}s"
+            msg = f"#{self._vol_num};Read file;{f}"
+            msg += f";tstamp={tstamp}"
+            msg += f";took {proc_delay:.4f}s"
             msg += f";interval {t_interval:.4f}s"
             self._logger.info(msg)
 
