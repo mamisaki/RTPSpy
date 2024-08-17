@@ -6,7 +6,7 @@ Real-time physiological signal recording class.
 
 Model class : GENumatoRecoding
 View class : TTLPhysioPlot
-Controler class: RtpPhysio
+Controler class: RtpTTLPhysio
 """
 
 
@@ -65,7 +65,7 @@ def call_rt_physio(data, pkl=False, get_return=False, logger=None):
         config_f = Path.home() / '.config' / 'rtpspy'
         with open(config_f, "r") as fid:
             rtpspy_config = json.load(fid)
-        port = rtpspy_config['RtpPhysioSocketServer_pot']
+        port = rtpspy_config['RtpTTLPhysioSocketServer_pot']
         sock.connect(('localhost', port))
 
     except ConnectionRefusedError:
@@ -837,7 +837,7 @@ class TTLPhysioPlot(QtCore.QObject):
 
 
 # %% ==========================================================================
-class RtpPhysio(RTP):
+class RtpTTLPhysio(RTP):
     """
     Recording signals
     """
@@ -860,7 +860,7 @@ class RtpPhysio(RTP):
         super().__init__(**kwargs)
         del self.work_dir
 
-        self._logger = logging.getLogger('RtpPhysio')
+        self._logger = logging.getLogger('RtpTTLPhysio')
         self.buf_len_sec = buf_len_sec
         self.sample_freq = sample_freq
         self.wait_ttl_on = False
@@ -899,7 +899,7 @@ class RtpPhysio(RTP):
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(self.RPC_handler,
-                                          socket_name='RtpPhysioSocketServer')
+                                          socket_name='RtpTTLPhysioSocketServer')
 
         self._retrots = RtpRetroTS()
 
@@ -1441,10 +1441,10 @@ if __name__ == '__main__':
         resp_f = test_dir / 'Resp_100Hz_ser-12.1D'
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(card_f)
-        rtp_ttl_physio = RtpPhysio(
+        rtp_ttl_physio = RtpTTLPhysio(
             sample_freq=100, debug=True, sim_data=(card, resp))
     else:
-        rtp_ttl_physio = RtpPhysio(
+        rtp_ttl_physio = RtpTTLPhysio(
             sample_freq=100)
 
     rtp_ttl_physio.open_plot()

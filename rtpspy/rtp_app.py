@@ -42,7 +42,7 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
-    from .rtp_ttl_physio import RtpPhysio
+    from .rtp_ttl_physio import RtpTTLPhysio
     from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
@@ -50,7 +50,7 @@ try:
 except Exception:
     # For DEBUG environment
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
-                        RtpRegress, RtpPhysio, RtpImgProc)
+                        RtpRegress, RtpTTLPhysio, RtpImgProc)
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
                                    DlgProgressBar, excepthook, load_parameters,
                                    save_parameters)
@@ -184,13 +184,13 @@ class RtpApp(RTP):
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
-        rtp_objs['PHYSIO'] = RtpPhysio()
+        rtp_objs['TTLPHYSIO'] = RtpTTLPhysio()
         rtp_objs['WATCH'] = RtpWatch()
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
         rtp_objs['REGRESS'] = RtpRegress(
-            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['PHYSIO'])
+            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['TTLPHYSIO'])
 
         self.rtp_objs = rtp_objs
 
@@ -290,7 +290,7 @@ class RtpApp(RTP):
                 # Online saving in a file
                 with open(self.sig_save_file, 'a') as save_fd:
                     print(val_str, file=save_fd)
-                self._logger.info(f"Write data '{val_str}'")
+                self._logger.info(f"Write ROI data '{val_str}'")
 
             # --- Post procress -----------------------------------------------
             tstamp = time.time()
@@ -302,10 +302,10 @@ class RtpApp(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};ROI signal extraction is done for {f}"
+            msg = f"#{vol_idx+1};ROI signal extraction;{f}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s)"
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Update signal plot
@@ -957,7 +957,7 @@ class RtpApp(RTP):
                                 pobj.volreg = self.rtp_objs['VOLREG']
 
                         if pobj.phys_reg != 'None':
-                            pobj.rtp_physio = self.rtp_objs['PHYSIO']
+                            pobj.rtp_physio = self.rtp_objs['TTLPHYSIO']
 
                         if pobj.GS_reg:
                             if Path(self.GSR_mask).is_file():
@@ -1159,17 +1159,17 @@ class RtpApp(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            if 'PHYSIO' in self.rtp_objs and \
-                    self.rtp_objs['PHYSIO'] is not None:
-                self.rtp_objs['PHYSIO'].scan_onset = 0
-                self.rtp_objs['PHYSIO'].wait_ttl_on = True
+            if 'TTLPHYSIO' in self.rtp_objs and \
+                    self.rtp_objs['TTLPHYSIO'] is not None:
+                self.rtp_objs['TTLPHYSIO'].scan_onset = 0
+                self.rtp_objs['TTLPHYSIO'].wait_ttl_on = True
             self._scanning = False
             self._wait_start = True
 
             # Run wait_onset thread
             self.th_wait_onset = QtCore.QThread()
             self.wait_onset = RtpApp.WAIT_ONSET(
-                    self, self.rtp_objs['PHYSIO'], self.extApp_sock)
+                    self, self.rtp_objs['TTLPHYSIO'], self.extApp_sock)
             self.wait_onset.moveToThread(self.th_wait_onset)
             self.th_wait_onset.started.connect(self.wait_onset.run)
             self.wait_onset.finished.connect(self.th_wait_onset.quit)
@@ -1195,7 +1195,7 @@ class RtpApp(RTP):
         self._scanning = True
         self._wait_start = False
 
-        self.rtp_objs['PHYSIO'].scan_onset = self.scan_onset
+        self.rtp_objs['TTLPHYSIO'].scan_onset = self.scan_onset
 
         if self.extApp_sock is not None:
             # Send message to self.extApp_sock
@@ -1321,7 +1321,7 @@ class RtpApp(RTP):
                 # Get the root and last processes
                 root_proc = None
                 for rtp, obj in self.rtp_objs.items():
-                    if rtp in ('PHYSIO'):
+                    if rtp in ('TTLPHYSIO'):
                         continue
                     if obj.enabled:
                         if root_proc is None:
@@ -1910,8 +1910,8 @@ class RtpApp(RTP):
             # resp_src = self.simRespData
             # physio_port = self.simPhysPort.split()[0]
             # recording_rate_ms = \
-            #     1000 / self.rtp_objs['PHYSIO'].effective_sample_freq
-            # samples_to_average = self.rtp_objs['PHYSIO'].samples_to_average
+            #     1000 / self.rtp_objs['TTLPHYSIO'].effective_sample_freq
+            # samples_to_average = self.rtp_objs['TTLPHYSIO'].samples_to_average
 
             # recv_physio_port = re.search(r'slave:(.+)\)',
             #                              self.simPhysPort).groups()[0]
@@ -1923,8 +1923,8 @@ class RtpApp(RTP):
             #     self.rtp_objs['EXTSIG'].stop_recording()
 
             # # Change port
-            # self.rtp_objs['PHYSIO'].update_port_list()
-            # self.rtp_objs['PHYSIO'].set_param('ser_port', recv_physio_port)
+            # self.rtp_objs['TTLPHYSIO'].update_port_list()
+            # self.rtp_objs['TTLPHYSIO'].set_param('ser_port', recv_physio_port)
 
             # self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
             #                         recording_rate_ms, samples_to_average)
@@ -1934,11 +1934,11 @@ class RtpApp(RTP):
             #     self.main_win.chbRecSignal.setCheckState(2)
             #     self.main_win.chbShowExtSig.setCheckState(2)
             # else:
-            #     self.rtp_objs['PHYSIO'].start_recording()
-            #     self.rtp_objs['PHYSIO'].open_signal_plot()
+            #     self.rtp_objs['TTLPHYSIO'].start_recording()
+            #     self.rtp_objs['TTLPHYSIO'].open_signal_plot()
 
-            # if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
-            #     for ui in self.rtp_objs['PHYSIO'].ui_objs:
+            # if hasattr(self.rtp_objs['TTLPHYSIO'], 'ui_objs'):
+            #     for ui in self.rtp_objs['TTLPHYSIO'].ui_objs:
             #         ui.setEnabled(False)
 
             # run_physio = True
@@ -3302,10 +3302,10 @@ class RtpApp(RTP):
 
 #     watch_file_pattern = r'nr_\d+.*\.nii'
 
-#     # Set RTP_PHYSIO to RtpPhysioDummy
-#     # from rtpspy import RtpPhysioDummy
+#     # Set RTP_PHYSIO to RtpTTLPhysioDummy
+#     # from rtpspy import RtpTTLPhysioDummy
 #     # sample_freq = 40
-#     # rtp_app.rtp_objs['PHYSIO'] = RtpPhysioDummy(
+#     # rtp_app.rtp_objs['TTLPHYSIO'] = RtpTTLPhysioDummy(
 #     #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
 
 #     # RTP parameters

@@ -90,7 +90,6 @@ class RtpWatch(RTP):
             Timeout (second) for polling watch_dir.
         """
         super().__init__(**kwargs)  # call __init__() in RTP base class
-        self._logger = logging.getLogger("RtpWatch")
 
         # Initialize parameters
         self.watch_dir = watch_dir

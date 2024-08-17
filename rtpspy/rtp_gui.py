@@ -171,7 +171,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                         lambda x: self.show_mot_chk(x))
 
         # Show Physio
-        if 'PHYSIO' in rtp_objs:
+        if 'TTLPHYSIO' in rtp_objs:
             self.chbShowPhysio = QtWidgets.QCheckBox('Show physio',
                                                      self.mainWidget)
             self.chbShowPhysio.setCheckState(0)
@@ -561,8 +561,8 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_physio_chk(self, state):
-        if 'PHYSIO' not in self.rtp_objs or \
-                not self.rtp_objs['PHYSIO'].is_recording():
+        if 'TTLPHYSIO' not in self.rtp_objs or \
+                not self.rtp_objs['TTLPHYSIO'].is_recording():
             if state != 0:
                 if hasattr(self, 'chbShowPhysio'):
                     self.chbShowPhysio.blockSignals(True)
@@ -570,7 +570,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                     self.chbShowPhysio.blockSignals(False)
 
         if state > 0:
-            self.rtp_objs['PHYSIO'].open_plot(
+            self.rtp_objs['TTLPHYSIO'].open_plot(
                 main_win=self, win_shape=(450, 450), plot_len_sec=10,
                 disable_close=False)
             if hasattr(self, 'chbShowPhysio'):
@@ -578,7 +578,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                 self.chbShowPhysio.setCheckState(2)
                 self.chbShowPhysio.blockSignals(False)
         else:
-            self.rtp_objs['PHYSIO'].close_plot()
+            self.rtp_objs['TTLPHYSIO'].close_plot()
             if hasattr(self, 'chbShowPhysio'):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(0)
@@ -656,11 +656,11 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return
 
         # Stop physio
-        if 'PHYSIO' in self.rtp_objs and \
-                self.rtp_objs['PHYSIO'] is not None and \
-                self.rtp_objs['PHYSIO'].is_recording():
-            self.rtp_objs['PHYSIO'].stop_recording()
-            del self.rtp_objs['PHYSIO']
+        if 'TTLPHYSIO' in self.rtp_objs and \
+                self.rtp_objs['TTLPHYSIO'] is not None and \
+                self.rtp_objs['TTLPHYSIO'].is_recording():
+            self.rtp_objs['TTLPHYSIO'].stop_recording()
+            del self.rtp_objs['TTLPHYSIO']
 
         # Move logfile to work_dir
         cpfnames = {}
