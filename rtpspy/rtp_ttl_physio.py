@@ -830,7 +830,7 @@ class RtpPhysio(RTP):
         mmap_f = Path('/dev/shm') / 'scan_onset'
         self._scan_onset = np.memmap(mmap_f, dtype=float, mode='w+',
                                      shape=(1,))
-        self._scan_onset[:] = 0
+        self._scan_onset[:] = -1
 
         self._rbuf_names = ['ttl_onset', 'ttl_offset',
                             'card', 'resp', 'tstamp']

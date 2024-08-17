@@ -541,7 +541,7 @@ class rtMRISim(RTP):
 if __name__ == '__main__':
     import pty
 
-    test_dir = Path(__file__).resolve().parent.parent / 'test'
+    test_dir = Path(__file__).resolve().parent.parent / 'tests'
 
     # MRI files
     mri_src = test_dir / 'func_epi.nii.gz'
@@ -554,7 +554,7 @@ if __name__ == '__main__':
     ecg_src = test_dir / 'ECG.1D'
     resp_src = test_dir / 'Resp.1D'
 
-    # Set psuedo serial port for simulating physio recording
+    # Set Dummy serial port for simulating physio recording
     master, slave = pty.openpty()
     s_name = os.ttyname(slave)
     try:

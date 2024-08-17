@@ -359,7 +359,7 @@ class RtpTshift(RTP):
         if len(notset_params):
             errmsg = ', '.join(notset_params)
             errmsg += ' has not been read from the sample.'
-            self._logger.error(errmsg)
+            self._logger.warning(errmsg)
             self.err_popup(errmsg)
 
         # set interpolation weight
@@ -719,7 +719,7 @@ class RtpTshift(RTP):
 if __name__ == '__main__':
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Load test data
     testdata_f = test_dir / 'func_epi.nii.gz'

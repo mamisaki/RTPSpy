@@ -473,7 +473,7 @@ class RtpSmooth(RTP):
 if __name__ == '__main__':
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Load test data
     testdata_f = test_dir / 'func_epi.nii.gz'

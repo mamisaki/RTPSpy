@@ -13,6 +13,7 @@ import sys
 import time
 import re
 import traceback
+import logging
 
 import numpy as np
 import nibabel as nib
@@ -555,7 +556,11 @@ class RtpRegress(RTP):
                 # Save filename template
                 save_name_temp = Path(fmri_img.get_filename()).name
                 save_name_temp = 'regRes.' + save_name_temp
-                dstr = re.search(f"0*{vol_idx+1}", save_name_temp).group()
+                ma = re.search(f"0*{vol_idx+1}", save_name_temp)
+                if ma is not None:
+                    dstr = ma.group()
+                else:
+                    dstr = None
 
                 # Data space
                 vol_data = np.zeros_like(self.maskV, dtype=np.float32)
@@ -569,9 +574,14 @@ class RtpRegress(RTP):
                     # temporay nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
-                    dstr_i0 = f"{vi+1}"
-                    dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
-                    save_name = save_name_temp.replace(dstr, dstr_i)
+                    if dstr is not None:
+                        dstr_i0 = f"{vi+1}"
+                        dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
+                        save_name = save_name_temp.replace(dstr, dstr_i)
+                    else:
+                        save_name = save_name_temp.replace(
+                            '.nii', f"_{vi+1:04d}.nii")
+
                     retro_fmri_img.set_filename(save_name)
 
                     # Run the next process
@@ -1762,15 +1772,22 @@ class RtpRegress(RTP):
 
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
+
+    # Set logging
+    logging.basicConfig(
+        stream=sys.stdout, level=logging.INFO,
+        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S')
+
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Set test data files
     testdata_f = test_dir / 'func_epi.nii.gz'
-    mask_data_f = test_dir / 'RTP_mask.nii.gz'
     ecg_f = test_dir / 'ECG.1D'
     resp_f = test_dir / 'Resp.1D'
+    mask_data_f = test_dir / 'work' / 'RTP' / 'RTP_mask.nii.gz'
 
     # Load test data
     assert testdata_f.is_file()
@@ -1782,29 +1799,31 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP instances and set parameters
+    # --- Create RTP instances and set parameters ---
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_retrots import RtpRetroTS
+    from rtpspy.rtp_ttl_physio import RtpPhysio
+
     # RtpTshift
     rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
     rtp_tshift.ignore_init = 3
     rtp_tshift.ref_time = 0
-    rtp_tshift.slice_timing_from_sample(testdata_f)
+    rtp_tshift.set_from_sample(testdata_f)
 
     # RtpVolreg
     rtp_volreg = RtpVolreg(regmode='cubic')
     refname = str(testdata_f) + '[0]'
     rtp_volreg.set_ref_vol(refname)
+
     # RtpSmooth
     rtp_smooth = RtpSmooth(blur_fwhm=6)
     rtp_smooth.set_param('mask_file', mask_data_f)
 
-    # RTP_RETOTS and RTP_PHYSIO
-    sample_freq = 40
-    rtp_retrots = RtpRetroTS()
+    # Set RtpPhysio
+    rtp_physio = RtpPhysio(
+        sample_freq=40, device='Dummy', sim_card_f=ecg_f, sim_resp_f=resp_f)
 
     # RtpRegress
     rtp_regress = RtpRegress()
@@ -1815,18 +1834,20 @@ if __name__ == '__main__':
     rtp_regress.mot_reg = 'mot12'
     rtp_regress.volreg = rtp_volreg
     rtp_regress.phys_reg = 'RICOR8'
-    rtp_regress.rtp_retrots = rtp_retrots
     rtp_regress.tshift = 0.0
     rtp_regress.GS_reg = True
-    rtp_regress.GS_mask = test_dir / "GSR_mask.nii.gz"
+    rtp_regress.GS_mask = test_dir / 'work' / 'RTP' / 'GSR_mask.nii.gz'
     rtp_regress.WM_reg = True
-    rtp_regress.WM_mask = test_dir / "anat_mprage_WM_al_func.nii.gz"
+    rtp_regress.WM_mask = test_dir / 'work' / 'RTP' / \
+        'anat_mprage_WM_al_func.nii.gz'
     rtp_regress.Vent_reg = True
-    rtp_regress.Vent_mask = test_dir / "anat_mprage_Vent_al_func.nii.gz"
+    rtp_regress.Vent_mask = test_dir / 'work' / 'RTP' / \
+        'anat_mprage_Vent_al_func.nii.gz'
     rtp_regress.mask_src_proc = rtp_volreg
     rtp_regress.wait_num = 45
     rtp_regress.set_param('mask_file', mask_data_f)
     rtp_regress.onGPU = True
+    rtp_regress.rtp_physio = rtp_physio
 
     # Save processed files
     rtp_tshift.work_dir = work_dir
@@ -1845,14 +1866,21 @@ if __name__ == '__main__':
     rtp_smooth.next_proc = rtp_regress
     rtp_tshift.end_reset()
 
+    # Wait for the rtp_physio to start recording
+    while rtp_regress.rtp_physio.scan_onset < 0:
+        time.sleep(0.1)
+
     # Run
     N_vols = img.shape[-1]
+    TR = float(img.header.get_zooms()[3])
+    rtp_regress.rtp_physio.scan_onset = time.time()
     for ii in range(N_vols):
-        save_filename = f"test_nr_{ii:04d}.nii.gz"
+        save_filename = f"test_nr_{ii+1:04d}.nii.gz"
         fmri_img = nib.Nifti1Image(img_data[:, :, :, ii], affine=img.affine)
         fmri_img.set_filename(save_filename)
         st = time.time()
         rtp_tshift.do_proc(fmri_img, ii, st)  # run rtp_tshift -> rtp_regress
+        time.sleep(TR)
 
     proc_delay = rtp_regress.proc_delay
     rtp_tshift.end_reset()  # Reset propagetes to the chained processes

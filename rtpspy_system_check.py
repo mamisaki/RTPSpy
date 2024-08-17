@@ -44,7 +44,8 @@ if __name__ == '__main__':
     # Set logging
     logging.basicConfig(
         stream=sys.stdout, level=logging.INFO,
-        format='%(asctime)s,[%(levelname)s],%(name)s,%(message)s')
+        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S')
 
     logger = logging.getLogger('rtpspy_system_check')
 
@@ -100,12 +101,14 @@ if __name__ == '__main__':
             Vent_template=Vent_template_f, overwrite=overwrite)
 
         # --- Set up RTP ------------------------------------------------------
-        # Set RTP_PHYSIO
-        resp = np.loadtxt(resp_f)
-        card = np.loadtxt(ecg_f)
+        # Set RtpPhysio
         del rtp_app.rtp_objs['PHYSIO']
         rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
-            sample_freq=40, device='Dummy', sim_data=(card, resp))
+            sample_freq=40, device='Dummy', sim_card_f=ecg_f,
+            sim_resp_f=resp_f)
+        # Wait for the rtp_physio to start recording
+        while rtp_app.rtp_objs['PHYSIO'].scan_onset < 0:
+            time.sleep(0.1)
 
         # RTP parameters
         rtp_app.func_param_ref = Path(testdata_f)
