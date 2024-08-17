@@ -549,7 +549,7 @@ class RtpRegress(RTP):
 
                 vi0 = vol_idx - (Resids.shape[0]-1)
                 vilast = vol_idx - 1
-                msg = f"Retrospective Regression for {vi0}-{vilast}."
+                msg = f"Retrospective regression for {vi0}-{vilast}"
                 self._logger.info(msg)
 
                 # Save filename template
@@ -622,7 +622,8 @@ class RtpRegress(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Regression;{f};tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Regression;{f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)

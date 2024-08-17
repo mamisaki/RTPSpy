@@ -123,7 +123,8 @@ class RtpSmooth(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Smoothing;{f};tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Smoothing;{f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
