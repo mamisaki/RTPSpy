@@ -77,7 +77,8 @@ pip install -e ~/RTPSpy
 
 ### (Linux, WSL) Add user to the dialout group to access the serial port
 > [!TIP]
-> Serial (USB) port access is required to record physiological signals using a USB GPIO device.
+> Serial (USB) port access is required to record physiological signals using a USB GPIO device.  
+> For details, see [Cardiogram, Respiration, and Scan Timing TTL Signal Recording](./PhysioRecording.md).   
 ```
 sudo usermod -a -G dialout $USER
 ```
