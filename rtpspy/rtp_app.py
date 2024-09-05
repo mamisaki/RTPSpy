@@ -73,6 +73,8 @@ class RtpApp(RTP):
         """
         super(RtpApp, self).__init__(**kwargs)
 
+        self._logger.debug('### Initialize RtpApp ###')
+
         # --- Initialize parameters -------------------------------------------
         self.work_dir = work_dir
 
@@ -211,6 +213,8 @@ class RtpApp(RTP):
             if 'APP' in default_rtp_params:
                 for attr, val in default_rtp_params['APP'].items():
                     self.set_param(attr, val)
+                    
+        self._logger.debug('### Complete RtpApp initialization ###')
 
     # --- Override these functions for a custom application -------------------
     #  ready_proc, do_proc, end_reset, end_proc
