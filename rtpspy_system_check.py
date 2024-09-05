@@ -25,13 +25,15 @@ if __name__ == '__main__':
 
     # Parse arguments
     parser = argparse.ArgumentParser(description='rtp_system_check')
-    parser.add_argument('--TR', default=2.0)
+    parser.add_argument('--log_file',
+                        help="Write log to specified file," +
+                        " instead of console.")
     parser.add_argument('--preserve',  action='store_true',
-                        help="Keep existing processd mask")
+                        help="Keep existing processd mask files")
     parser.add_argument('--debug',  action='store_true')
 
     args = parser.parse_args()
-    TR = args.TR
+    log_file = args.log_file
     overwrite = not args.preserve
     debug = args.debug
 
@@ -46,10 +48,16 @@ if __name__ == '__main__':
     sys.stdout.flush()
 
     # Set logging
-    logging.basicConfig(
-        stream=sys.stdout, level=log_level,
-        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
-        datefmt='%Y-%m-%dT%H:%M:%S')
+    if log_file is None:
+        logging.basicConfig(
+            stream=sys.stdout, level=log_level,
+            format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+            datefmt='%Y-%m-%dT%H:%M:%S')
+    else:
+        logging.basicConfig(
+            filename=log_file, level=log_level,
+            format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+            datefmt='%Y-%m-%dT%H:%M:%S')
 
     logger = logging.getLogger('rtpspy_system_check')
 
@@ -90,6 +98,7 @@ if __name__ == '__main__':
         rtp_app = RtpApp(work_dir=work_dir)
 
         # --- Make mask images ------------------------------------------------
+        logger.debug('### Start creating mask images ###')
         if torch.cuda.is_available():
             logger.info('GPU is utilized.')
             no_FastSeg = False
@@ -104,7 +113,10 @@ if __name__ == '__main__':
             no_FastSeg=no_FastSeg, WM_template=WM_template_f,
             Vent_template=Vent_template_f, overwrite=overwrite)
 
+        logger.debug('### End creating mask images ###')
+
         # --- Set up RTP ------------------------------------------------------
+        logger.debug('### Start preparing the dummy physio recorder ###')
         # Set RtpTTLPhysio
         rtp_app.rtp_objs['TTLPHYSIO'].set_param(
             {'device': 'Dummy', 'sample_freq': 40,
@@ -114,7 +126,10 @@ if __name__ == '__main__':
         while rtp_app.rtp_objs['TTLPHYSIO'].scan_onset < 0:
             time.sleep(0.1)
 
+        logger.debug('### End preparing the dummy physio recorder ###')
+
         # RTP parameters
+        logger.debug('### Start RTP setup ###')
         rtp_app.func_param_ref = Path(testdata_f)
         rtp_params = {'WATCH': {'watch_dir': watch_dir,
                                 'watch_file_pattern': r'nr_\d+.*\.nii',
@@ -125,7 +140,7 @@ if __name__ == '__main__':
                       'REGRESS': {'mot_reg': 'mot12',
                                   'GS_reg': True, 'WM_reg': True,
                                   'Vent_reg': True, 'phys_reg': 'RICOR8',
-                                  'wait_num': 40}}
+                                  'wait_num': 30}}
 
         # RTP setup
         rtp_app.RTP_setup(rtp_params=rtp_params)
@@ -134,9 +149,13 @@ if __name__ == '__main__':
         # Ready to run the pipeline
         proc_chain = rtp_app.ready_to_run()
 
+        logger.debug('### End RTP setup ###')
+
         # --- Simulate scan (Copy data volume-by-volume) ----------------------
+        logger.debug('### Start simulating real-time fMRI imaging ###')
         # Load data
         img = nib.load(testdata_f)
+        TR = img.header.get_zooms()[3]
         fmri_data = np.asanyarray(img.dataobj)
         N_vols = img.shape[-1]
 
@@ -147,11 +166,10 @@ if __name__ == '__main__':
         rtp_app.manual_start()
         scan_onset_time = rtp_app.scan_onset
 
-        next_tr = TR
         for ii in range(N_vols):
-            next_tr = (ii+1)*2.0
+            next_tr = (ii+1)*TR
             while time.time() - scan_onset_time < next_tr:
-                # Wait ofr next TR
+                # Wait for next TR
                 time.sleep(0.001)
 
             # Copy volume file to watch_dir
@@ -163,9 +181,11 @@ if __name__ == '__main__':
             if debug:
                 proc_chain.do_proc(save_filename)
 
-            time.sleep(TR)
+        logger.debug('### End simulating real-time fMRI imaging ###')
 
+        logger.debug('### Close RTP ###')
         rtp_app.end_run()
+        logger.debug('### Close dummy physio recorder ###')
         rtp_app.rtp_objs['TTLPHYSIO'].end()
 
         # End
