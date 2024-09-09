@@ -26,3 +26,5 @@ log/
 rtpspy/lib_RetroTS/*
 tests/work/rtp_ROI_signal.csv
 RTPSpy.egg-info
+afni_module/libmri.a
+afni_module/librtp.so
