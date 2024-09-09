@@ -28,13 +28,13 @@ if __name__ == '__main__':
     parser.add_argument('--log_file',
                         help="Write log to specified file," +
                         " instead of console.")
-    parser.add_argument('--preserve',  action='store_true',
+    parser.add_argument('--keep_masks',  action='store_true',
                         help="Keep existing processd mask files")
     parser.add_argument('--debug',  action='store_true')
 
     args = parser.parse_args()
     log_file = args.log_file
-    overwrite = not args.preserve
+    overwrite = not args.keep_masks
     debug = args.debug
 
     if debug:
@@ -48,16 +48,14 @@ if __name__ == '__main__':
     sys.stdout.flush()
 
     # Set logging
+    fmt = '%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s'
+    datefmt = '%Y-%m-%dT%H:%M:%S'
     if log_file is None:
         logging.basicConfig(
-            stream=sys.stdout, level=log_level,
-            format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
-            datefmt='%Y-%m-%dT%H:%M:%S')
+            stream=sys.stdout, level=log_level, format=fmt, datefmt=datefmt)
     else:
         logging.basicConfig(
-            filename=log_file, level=log_level,
-            format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
-            datefmt='%Y-%m-%dT%H:%M:%S')
+            filename=log_file, level=log_level, format=fmt, datefmt=datefmt)
 
     logger = logging.getLogger('rtpspy_system_check')
 

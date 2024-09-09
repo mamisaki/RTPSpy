@@ -176,6 +176,8 @@ class RTP(object):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val, echo=True):
+        self._logger.debug(f"set_param: {attr} = {val}")
+
         setattr(self, attr, val)
         if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
