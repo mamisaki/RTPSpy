@@ -2,7 +2,7 @@
 
 MAKE = make
 
-RTPSRC = librtp.c rtp_retrots.c
+RTPSRC = librtp.c
 CC     = /usr/bin/gcc -O2 -DDARWIN -m64 -Wcomment -Wformat -DUSE_TRACING -DHAVE_XDBE \
 	 -DDONT_USE_MCW_MALLOC
 
@@ -27,7 +27,7 @@ F2CLIB =  $(CONDAENV)/lib/libf2c.a
 
 librtp.dylib: $(RTPSRC)
 	$(RM) $@
-	$(CC) -shared -o librtp.dylib $(RTPSRC) libmri.a libfftw3.a $(INFLAGS) $(F2CLIB) \
+	$(CC) -shared -o librtp.dylib $(RTPSRC) libmri.a $(INFLAGS) $(F2CLIB) \
 	-lz -lexpat -lXt -lstdc++ $(LFLAGS) -target x86_64-apple-darwin
 
 clean:
