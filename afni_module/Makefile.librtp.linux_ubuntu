@@ -2,7 +2,7 @@
 
 MAKE = make
 
-RTPSRC = librtp.c rtp_retrots.c
+RTPSRC = librtp.c
 CC     = gcc -O3 -m64 -fPIC -DREAD_WRITE_64
 
 RM = /bin/rm -f
@@ -25,7 +25,7 @@ libmri.a:
 librtp.so: libmri.a $(RTPSRC)
 	$(RM) $@
 	$(CC) -shared -o librtp.so $(RTPSRC) libmri.a $(INFLAGS) $(F2CLIB) \
-	-lz -lexpat -lXt -lfftw3 $(LFLAGS)
+	-lz -lexpat -lXt $(LFLAGS)
 
 install: librtp.so
 	install -m 0755 librtp.so ../rtpspy/librtp.so
