@@ -312,6 +312,8 @@ class LANF(RtpApp):
 
         super().set_param(attr, val, reset_fn, echo)
 
+        self._logger.debug(f"set_param: {attr} = {val}")
+
         if attr == 'ROI_orig':
             if Path(self.ROI_orig).is_file():
                 self.ui_NFROI_lnEd.setText(str(self.ROI_orig))

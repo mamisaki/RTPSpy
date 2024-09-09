@@ -213,7 +213,7 @@ class RtpApp(RTP):
             if 'APP' in default_rtp_params:
                 for attr, val in default_rtp_params['APP'].items():
                     self.set_param(attr, val)
-                    
+
         self._logger.debug('### Complete RtpApp initialization ###')
 
     # --- Override these functions for a custom application -------------------
@@ -948,8 +948,9 @@ class RtpApp(RTP):
                                     return -1
 
                     elif proc == 'REGRESS':
-                        pobj.TR = self.rtp_objs['TSHIFT'].TR
-                        pobj.tshift = self.rtp_objs['TSHIFT'].ref_time
+                        pobj.set_param('TR', self.rtp_objs['TSHIFT'].TR)
+                        pobj.set_param('tshift',
+                                       self.rtp_objs['TSHIFT'].ref_time)
                         pobj.set_param('mask_file', self.RTP_mask)
                         if pobj.mot_reg != 'None':
                             if not self.rtp_objs['VOLREG'].enabled:
@@ -958,10 +959,12 @@ class RtpApp(RTP):
                                 errmsg += 'Motion regressor is set to None.'
                                 self.rtp_objs['VOLREG'].errmsg(errmsg)
                             else:
-                                pobj.volreg = self.rtp_objs['VOLREG']
+                                pobj.set_param('volreg',
+                                               self.rtp_objs['VOLREG'])
 
                         if pobj.phys_reg != 'None':
-                            pobj.rtp_physio = self.rtp_objs['TTLPHYSIO']
+                            pobj.set_param('rtp_physio',
+                                           self.rtp_objs['TTLPHYSIO'])
 
                         if pobj.GS_reg:
                             if Path(self.GSR_mask).is_file():
@@ -1062,6 +1065,8 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
         """ Ready running the process """
+        self._logger.debug('ready_to_run')
+
         #  --- Disable ui to block parameters change --------------------------
         if self.enable_RTP > 0 and self.main_win is not None:
             self.ui_setEnabled(False)
@@ -1095,11 +1100,14 @@ class RtpApp(RTP):
                     elif proc == 'REGRESS':
                         if pobj.GS_reg or pobj.WM_reg or pobj.Vent_reg:
                             if self.rtp_objs['VOLREG'].enabled:
-                                pobj.mask_src_proc = self.rtp_objs['VOLREG']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['VOLREG'])
                             elif self.rtp_objs['TSHIFT'].enabled:
-                                pobj.mask_src_proc = self.rtp_objs['TSHIFT']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['TSHIFT'])
                             else:
-                                pobj.mask_src_proc = self.rtp_objs['WATCH']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['WATCH'])
 
                         self.max_watch_wait = max(pobj.wait_num * 0.5,
                                                   self.max_watch_wait)
@@ -2228,6 +2236,7 @@ class RtpApp(RTP):
         When reset_fn is None, set_param is considered to be called from
         load_parameters function.
         """
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         if attr == 'enable_RTP':
             if reset_fn is None and hasattr(self, 'ui_enableRTP_chb'):

@@ -271,6 +271,7 @@ class RtpSmooth(RTP):
         When reset_fn is None, set_param is considered to be called from
         load_parameters function.
         """
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         # -- check value --
         if attr == 'enabled':

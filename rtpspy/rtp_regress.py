@@ -1037,6 +1037,8 @@ class RtpRegress(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
+        self._logger.debug(f"set_param: {attr} = {val}")
+
         # -- check value --
         if attr == 'enabled':
             if hasattr(self, 'ui_enabled_rdb'):

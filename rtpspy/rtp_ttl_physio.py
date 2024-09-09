@@ -1408,9 +1408,10 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, params, reset_fn=None, echo=False):
-
         reset_device = False
         for attr, val in params.items():
+            self._logger.debug(f"set_param: {attr} = {val}")
+
             if attr == 'device':
                 if self._device != val:
                     reset_device = True

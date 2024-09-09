@@ -16,10 +16,20 @@ INFLAGS  = $(IFLAGS) -I$(AFNI_SRC)/nifti/nifti2 -I$(AFNI_SRC)/nifti/niftilib \
 LFLAGS = -L. -L/usr/lib/x86_64-linux-gnu
 F2CLIB = /usr/lib/x86_64-linux-gnu/libf2c.a
 
-librtp.so: $(RTPSRC)
+all: install
+
+libmri.a:
+	@(cd afni/src && make -f Makefile.linux_ubuntu_16_64 libmri.a)
+	cp afni/src/libmri.a ./libmri.a
+
+librtp.so: libmri.a $(RTPSRC)
 	$(RM) $@
 	$(CC) -shared -o librtp.so $(RTPSRC) libmri.a $(INFLAGS) $(F2CLIB) \
 	-lz -lexpat -lXt -lfftw3 $(LFLAGS)
 
+install: librtp.so
+	install -m 0755 librtp.so ../rtpspy/librtp.so
+
 clean:
-	$(RM) librtp.so
+	$(RM) librtp.so libmri.a
+	@(cd afni/src && make -f Makefile.linux_ubuntu_16_64 cleanest)
