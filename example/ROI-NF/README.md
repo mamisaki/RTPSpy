@@ -1,35 +1,33 @@
 # RTPSpy ROI-NF application
-This is a sample application using the RTPSpy GUI. The application extracts the average signal in a ROI and sends it in real time to an external application. The external application displays the received value in a Psychopy window.  
+This is an example application using the RTPSpy GUI. The application extracts the average signal in a ROI and sends it in real time to an external application. The external application displays the received value in a Psychopy window.    
 
 ## Operations
 Here we use test data to demonstrate the ROI-NF operations with simulated real-time fMRI.
 
 ### 1. Start
-1. Open a console.  
-2. Activate the RTPSpy env and run the boot script.  
+Run the following in a console.  
 ```
-conda activate RTPSpy
 cd ~/RTPSpy/example/ROI-NF
-./run_RTPSpyApp.py
+./boot_ROINF_RTPSpy.sh
 ```
 
 3. The ROI-NF App window opens.  
 <img src="/example/ROI-NF/doc/initial.png" height=400>  
 
-If this is not the first time, you will be asked, 'Load the previous settings?'  
-The application automatically saves the previous settings at the exit and can be loaded the next time. Press 'Yes' if you want to retrieve the previous settings.  
+If this is not the first time, you will be asked 'Load previous settings?'  
+The application automatically saves the previous settings when you exit and they can be loaded the next time. Press 'Yes' if you want to load the previous settings. 
 <img src="/example/ROI-NF/doc/load_settings.png" height=100>  
 
 ### 2. Set the Watching and Woking directories.  
-The first thing you should do is to set the Watching and Woking directories at the top of the window.  
-The watching directory is the place where the fMRI image will be made in real-time during the scan. This place is also used to copy image files to simulate the real-time image reconstruction in a simulation.  
-The working directory is the place where all processed images and files are saved.  
+The first thing you should do is set up the Watching and Working directories at the top of the window.  
+The 'rtfMRI watching' directory is where the fMRI images (e.g. DICOM files) are transferred in real time during the scan. This is also where image files are copied to simulate real-time image reconstruction in a simulation.  
+The working directory is where all processed images and other files are stored.  
 
-For the demonstration, let's make the directories, 'watch' and 'work' in the test folder and set them with the 'Set' button.  
+For the demonstration, let's create the 'watch' and 'work' directories in the test folder and set them using the 'Set' button.  
 <img src="/example/ROI-NF/doc/SetWatch.png"  width=400>  
 
 ### 3. Scan anatomy and reference function images to make the mask images.  
-Start MRI scan for taking anatomical and reference functional images.  
+Start the MRI scan to acquire anatomical (T1w) and reference functional images.  
 For the demonstration, we will use sample images in the 'RTPSpy/test' directory.  
 
 #### Set files for 'Anatomy image' and 'Base function image'.  
