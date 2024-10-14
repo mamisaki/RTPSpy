@@ -48,13 +48,14 @@ class RtpDicomMonitor:
       'self.series_timeout' seconds.
     - The conversion process can also be triggered by a remote request issued
       by a real-time processing process if a scan is aborted before the
-      NumberofTemporalPositions. A TCPServer thread in the class receives such
-      a request via a network socket.
+      NumberofTemporalPositions. A TCPServer thread receives such a request via
+      a network socket.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
-                 study_prefix='P', study_ID_field=None,
-                 series_timeout=60, make_brik=False, polling_observer=False,
+    def __init__(self, watch_dir, work_root, ftype='SiemensXADicom',
+                 watch_file_pattern=r'.+\.dcm',
+                 study_prefix='', study_ID_field=None,
+                 series_timeout=20, make_brik=False, polling_observer=False,
                  **kwargs):
         """
         Parameters
@@ -103,7 +104,8 @@ class RtpDicomMonitor:
         self._polling_timeout = 3
 
         # Prepare a DicomConverter
-        self.dcm_converter = DicomConverter(study_prefix=study_prefix)
+        self.dcm_converter = DicomConverter(
+            ftype=ftype, study_prefix=study_prefix)
 
         # Intialize session parameters
         self._current_study = -1
@@ -381,8 +383,7 @@ class RtpDicomMonitor:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_series(self, dcm):
         if self._study_dir is None:
-            studyID = self.dcm_converter.make_study_id(dcm, self.study_prefix)
-            self.init_study(self, studyID)
+            self.init_study(self, dcm)
 
         self._logger.info(
             '-' * 6 + f" Create a new series {dcm.SeriesNumber} ---\n#" +
@@ -405,11 +406,13 @@ class RtpDicomMonitor:
 
         # Set physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
-        if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
-            if call_rt_physio('ping'):
-                call_rt_physio('START_SCAN')
-                call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
-                self._save_physio = True
+        if ftype == 'SiemensXADicom':
+            if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
+                if call_rt_physio('ping'):
+                    call_rt_physio('START_SCAN')
+                    call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR),
+                                    pkl=True)
+                    self._save_physio = True
 
         self._NVol = 0
         self._isRun_series = True
@@ -481,15 +484,31 @@ class RtpDicomMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RPC_handler(self, call):
-        if call == 'CLOSE_SERIES':
+        if 'CLOSE_SERIES' in call:
             self.end_series()
 
-        elif call == 'GET_SERIES_NAME':
+        elif 'GET_SERIES_NAME' in call:
             if self._study_dir is None or self._series_nr is None:
                 return 'None'.encode('utf-8')
 
             retstr = f"{str(self._study_dir)}/ser-{int(self._series_nr):02d}"
             return retstr.encode('utf-8')
+
+        elif 'SET_WATCH_DIR' in call:
+            self.watch_dir = Path(call.split(';')[1])
+            self.stop_watching()
+            self.start_watching(callback=self.do_proc)
+
+        elif call == 'SET_WATCH_FILEPAT':
+            self.watch_file_pattern = call.split(';')[1]
+            self.stop_watching()
+            self.start_watching(callback=self.do_proc)
+
+        elif 'SET_WORK_ROOT' in call:
+            self.work_root = call.split(';')[1]
+
+        elif call == 'SET_WATCH_FTYPE':
+            self.dcm_converter.ftype = call.split(';')[1]
 
         elif call == 'QUIT':
             self._cancel = True
@@ -538,7 +557,9 @@ if __name__ == '__main__':
                         help='Converted data output directory root')
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
-    parser.add_argument('--study_prefix', default='S', help='Study ID prefix')
+    parser.add_argument('--ftype', default='SiemensXADicom',
+                        help='DICOM file type')
+    parser.add_argument('--study_prefix', help='Study ID prefix')
     parser.add_argument('--study_ID_field', help='Study ID DICOM field')
     parser.add_argument('--series_timeout', default=10,
                         help='Timeout period to close a series')
@@ -554,6 +575,7 @@ if __name__ == '__main__':
     watch_dir = Path(args.watch_dir)
     work_root = Path(args.work_root)
     watch_file_pattern = args.watch_file_pattern
+    ftype = args.ftype
     study_prefix = args.study_prefix
     study_ID_field = args.study_ID_field
     series_timeout = args.series_timeout
@@ -570,7 +592,7 @@ if __name__ == '__main__':
 
     # Create the server
     rtp_dicom_monitor = RtpDicomMonitor(
-        watch_dir, work_root, watch_file_pattern=watch_file_pattern,
+        watch_dir, work_root, ftype, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, study_ID_field=study_ID_field,
         series_timeout=series_timeout, make_brik=make_brik,
         polling_observer=polling_observer)

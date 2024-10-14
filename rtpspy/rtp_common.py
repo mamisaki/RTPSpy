@@ -452,6 +452,8 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
                         errmsg += f" = {str(val)}"
                         sys.stderr.write(errmsg)
 
+        return props
+
     except Exception:
         exc_type, exc_obj, exc_tb = sys.exc_info()
         errmsg = ''.join(
