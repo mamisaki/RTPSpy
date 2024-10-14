@@ -63,24 +63,23 @@ class ROINF(RtpApp):
 
             if self.extApp_sock is None:
                 # Error: Socket is not opened.
-                self.errmsg('No socket to an external app.', no_pop=True)
+                self._logger.error('No socket to an external app.')
 
             else:
                 # Send data to an external application via socket.
                 # Message format should be;
                 # "NF {time},{volume_index},{signal_value}(,{signal_value}...)"
                 try:
-                    scan_onset = self.rtp_objs['EXTSIG'].scan_onset
+                    scan_onset = self.rtp_objs['TTLPHYSIO'].scan_onset
                     val_str = f"{time.time()-scan_onset:.4f},"
                     val_str += f"{vol_idx},{mean_sig:.6f}"
                     msg = f"NF {val_str};"
 
                     self.send_extApp(msg.encode(), no_err_pop=True)
-                    if self._verb:
-                        self.logmsg(f"Sent '{msg}' to an external app")
+                    self._logger.info(f"Sent '{msg}' to an external app")
 
                 except Exception as e:
-                    self.errmsg(str(e), no_pop=True)
+                    self._logger.error(str(e))
 
             # --- Post procress -----------------------------------------------
             # Record the processing time
@@ -92,13 +91,12 @@ class ROINF(RtpApp):
                     self.proc_delay.append(proc_delay)
 
             # Log message
-            if self._verb:
-                f = Path(fmri_img.get_filename()).name
-                msg = f"#{vol_idx+1};ROI signal extraction;{f}"
-                msg += f";tstamp={tstamp}"
-                if pre_proc_time is not None:
-                    msg += f';took {proc_delay:.4f}s'
-                self.logmsg(msg)
+            f = Path(fmri_img.get_filename()).name
+            msg = f"#{vol_idx+1};ROI signal extraction;{f}"
+            msg += f";tstamp={tstamp}"
+            if pre_proc_time is not None:
+                msg += f';took {proc_delay:.4f}s'
+            self._logger.info(msg)
 
             # Update the signal plot
             self._plt_xi.append(vol_idx+1)
@@ -108,7 +106,8 @@ class ROINF(RtpApp):
             errmsg = '{}, {}:{}'.format(
                     exc_type, exc_tb.tb_frame.f_code.co_filename,
                     exc_tb.tb_lineno)
-            self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
+            errmsg = str(e) + '\n' + errmsg
+            self._logger.error(errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
@@ -118,5 +117,4 @@ class ROINF(RtpApp):
         if self.send_extApp('READY;'.encode()):
             recv = self.recv_extApp(timeout=3)
             if recv is not None:
-                if self._verb:
-                    self.logmsg(f"Recv {recv.decode()}")
+                self._logger.debug(f"Recv {recv.decode()}")

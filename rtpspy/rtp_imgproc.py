@@ -366,38 +366,39 @@ class RtpImgProc(RTP):
             # Make FastSeg instance
             fastSeg = FastSeg()
 
-            # Prepare files (Convert BRIK to NIfTI)
-            in_f, prefix = fastSeg.prep_files(anat_orig,
-                                              work_dir / out_prefix)
-            subj_dir = prefix
-
-            # Spawn the process
             st = time.time()
-            proc, fsSeg_mgz = fastSeg.run_seg_only(
-                in_f, prefix, self.fastSeg_batch_size)
 
-            assert proc.returncode is None or proc.returncode == 0, \
-                'Failed at FastSeg.\n'
-
-            # Wait for the process to finish with showing the progress.
-            ret = self._show_proc_progress(
-                proc, progress_bar, msgTxt='FastSeg image segnemtation',
-                ETA=self.proc_times['FastSeg'], total_ETA=total_ETA)
-
-            if ret != 0:
-                return None
-
-            # make_seg_images
-            def show_proc_progress(proc):
+            def show_proc_progress(proc, ETA):
                 return self._show_proc_progress(
                     proc, progress_bar, msgTxt='FastSeg image segmentation',
+                    ETA=ETA,
                     total_ETA=total_ETA)
 
+            # Prepare files (Convert BRIK to NIfTI and bias_correction)
+            bias_correction = ('N4BCOR.nii' not in anat_orig.name)
+            in_f, prefix = fastSeg.prep_files(
+                anat_orig,
+                bias_correction=bias_correction,
+                prefix=(work_dir / out_prefix),
+                show_proc_progress=show_proc_progress,
+                ETA=None)
+            if in_f is None:
+                return None
+
+            # run segmentation
+            fsSeg_mgz = fastSeg.run_seg_only(
+                in_f, prefix, self.fastSeg_batch_size,
+                show_proc_progress=show_proc_progress,
+                ETA=self.proc_times['FastSeg'])
+            if fsSeg_mgz is None:
+                return None
+            subj_dir = fsSeg_mgz.parent.parent
+
+            # make_seg_images
             out_fs = fastSeg.make_seg_images(
                 in_f, fsSeg_mgz, prefix,
                 segs=['Brain', 'WM', 'Vent', 'aseg'],
                 show_proc_progress=show_proc_progress)
-
             if out_fs is None:
                 return None
 

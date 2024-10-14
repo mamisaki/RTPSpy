@@ -142,7 +142,7 @@ class RtpApp(RTP):
         self.chk_run_timer = QtCore.QTimer()
         self.chk_run_timer.setSingleShot(True)
         self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
-        self.max_watch_wait = 20  # seconds
+        self.max_watch_wait = 5  # seconds
 
         # Simulation data
         self.simEnabled = False
@@ -342,8 +342,9 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_dcm2nii(self):
         # Select dicom directory
+        watch_dir = self.rtp_objs['WATCH'].watch_dir
         dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_win, 'Select dicom file directory', str(self.work_dir))
+            self.main_win, 'Select dicom file directory', str(watch_dir))
 
         if dcm_dir == '':
             return
@@ -351,10 +352,9 @@ class RtpApp(RTP):
         out_dir = Path(self.work_dir).absolute()
         if out_dir == '':
             out_dir = './'
-        ses = out_dir.name.replace('_', '')
 
-        cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
-        cmd += f" -i y -z o -w 0 -o {out_dir} {dcm_dir}"
+        cmd = "dcm2niix -f sub-%n_ses-%t_ser-%s_desc-%d"
+        cmd += f" -i n -z o -w 0 -o {out_dir} {dcm_dir}"
         try:
             # progress dialog
             msgBox = QtWidgets.QMessageBox(self.main_win)
@@ -369,14 +369,24 @@ class RtpApp(RTP):
             proc = subprocess.Popen(
                 shlex.split(cmd), stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE)
-
-            msgBox.accept()
+            while proc.poll() is None:
+                QtWidgets.QApplication.processEvents()
+                time.sleep(0.5)
 
             stdout, stderr = proc.communicate()
             ostr = '\n'.join([stdout.decode(), stderr.decode()])
+
+            # Copy dicoms
+            src_dir = dcm_dir
+            dst_dir = out_dir / 'dicom'
+            cmd = f"rsync -auvz {src_dir}/ {dst_dir}/"
+            subprocess.check_call(shlex.split(cmd), stdout=subprocess.DEVNULL)
+
+            msgBox.accept()
             QtWidgets.QMessageBox.information(
                 self.main_win, 'dcm2niix', ostr,
                 QtWidgets.QMessageBox.Ok)
+
         except Exception as e:
             try:
                 msgBox.accept()
@@ -567,9 +577,7 @@ class RtpApp(RTP):
 
         st0 = time.time()  # start time
         OK = True
-        RTP_dir = self.work_dir / 'RTP'
-        if not RTP_dir.is_dir():
-            RTP_dir.mkdir()
+        work_dir = self.work_dir
 
         try:
             # --- Check image space -------------------------------------------
@@ -587,12 +595,12 @@ class RtpApp(RTP):
                 pass
 
             # Deoblique self.anat_orig
-            anat_orig = RTP_dir / Path(self.anat_orig).name
+            anat_orig = work_dir / Path(self.anat_orig).name
             improc.copy_deoblique(self.anat_orig, anat_orig,
                                   progress_bar=progress_bar)
 
             # --- 0. Copy func_orig to RTP_dir as vr_base_* ------------------
-            if Path(func_orig).parent != RTP_dir or \
+            if Path(func_orig).parent != work_dir or \
                     not Path(func_orig).stem.startswith('vr_base_') or \
                     overwrite:
                 src_f = func_orig
@@ -621,7 +629,7 @@ class RtpApp(RTP):
                 if not src_save_fname.startswith('vr_base_'):
                     src_save_fname = 'vr_base_' + src_save_fname
 
-                dst_f = RTP_dir / f'{src_save_fname}.nii.gz'
+                dst_f = work_dir / f'{src_save_fname}.nii.gz'
                 if src_f != dst_f and (not dst_f.is_file() or overwrite):
                     src_img = improc.load_image(src_f, vidx=vidx)
                     if src_img is None:
@@ -641,9 +649,10 @@ class RtpApp(RTP):
                 # If a json file exists, copy it as well
                 json_f = Path(src_f).parent / (src_f_stem + '.json')
                 if json_f.is_file():
-                    dst_json_f = RTP_dir / (src_f_stem + '.json')
+                    dst_json_f = work_dir / (src_f_stem + '.json')
                     if not dst_json_f.is_file() or overwrite:
-                        shutil.copy(json_f, dst_json_f)
+                        if json_f != dst_json_f:
+                            shutil.copy(json_f, dst_json_f)
                 else:
                     # Save TR and slice timing
                     header = nib.load(src_f).header
@@ -677,7 +686,7 @@ class RtpApp(RTP):
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
                 seg_files = improc.run_fast_seg(
-                    RTP_dir, anat_orig, total_ETA,
+                    work_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, overwrite=overwrite)
                 assert seg_files is not None
 
@@ -690,7 +699,7 @@ class RtpApp(RTP):
                 # --- 1. 3dSkullStrip -----------------------------------------
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
-                    RTP_dir, anat_orig, total_ETA,
+                    work_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert brain_anat_orig is not None, "skullStrip failed.\n"
@@ -700,7 +709,7 @@ class RtpApp(RTP):
 
             # --- 2. Align anatomy to function --------------------------------
             alAnat = improc.align_anat2epi(
-                RTP_dir, self.brain_anat_orig, self.func_orig, total_ETA,
+                work_dir, self.brain_anat_orig, self.func_orig, total_ETA,
                 progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert alAnat is not None, "align_anat2epi failed.\n"
@@ -709,12 +718,12 @@ class RtpApp(RTP):
             self.set_param('alAnat', alAnat)
 
             alAnat_f_stem = self.alAnat.stem.replace('.nii', '')
-            aff1D_f = RTP_dir / (alAnat_f_stem + '_mat.aff12.1D')
+            aff1D_f = work_dir / (alAnat_f_stem + '_mat.aff12.1D')
             assert aff1D_f.is_file()
 
             # --- 3. Make RTP and GSR masks -----------------------------------
             mask_files = improc.make_RTP_GSR_masks(
-                RTP_dir, self.func_orig, total_ETA, ref_vi=0,
+                work_dir, self.func_orig, total_ETA, ref_vi=0,
                 alAnat=self.alAnat, progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert mask_files is not None
@@ -726,7 +735,7 @@ class RtpApp(RTP):
             if Path(self.template).is_file():
                 if Path(self.ROI_template).is_file() or no_FastSeg:
                     warp_params = improc.warp_template(
-                        RTP_dir, self.alAnat, self.template,
+                        work_dir, self.alAnat, self.template,
                         total_ETA, progress_bar=progress_bar, ask_cmd=ask_cmd,
                         overwrite=overwrite)
             else:
@@ -736,7 +745,7 @@ class RtpApp(RTP):
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
-                    RTP_dir, self.func_orig, self.ROI_template,
+                    work_dir, self.func_orig, self.ROI_template,
                     total_ETA, warp_params, interpolator=self.ROI_resample,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
@@ -753,7 +762,7 @@ class RtpApp(RTP):
                             roi_f = self.Vent_template
 
                         warped_f = improc.ants_warp_resample(
-                            RTP_dir, self.alAnat, roi_f, total_ETA,
+                            work_dir, self.alAnat, roi_f, total_ETA,
                             warp_params, interpolator='nearestNeighbor',
                             progress_bar=progress_bar, ask_cmd=ask_cmd,
                             overwrite=overwrite)
@@ -782,7 +791,7 @@ class RtpApp(RTP):
                         aff1D_f = None
 
                     seg_al_f = improc.resample_segmasks(
-                        RTP_dir, seg_anat_f, segname, erode, self.func_orig,
+                        work_dir, seg_anat_f, segname, erode, self.func_orig,
                         total_ETA, aff1D_f, progress_bar=progress_bar,
                         ask_cmd=ask_cmd, overwrite=overwrite)
                     assert seg_al_f is not None
@@ -1367,15 +1376,17 @@ class RtpApp(RTP):
         return save_fnames
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def check_onAFNI(self, base, ovl):
-        work_dir = Path(self.work_dir) / 'RTP'
+    def check_onAFNI(self, base=None, ovl=None):
+        work_dir = Path(self.work_dir)
 
         # Set underlay and overlay image file
+        base_img = None
         if base == 'anat':
             base_img = self.alAnat
         elif base == 'func':
             base_img = self.func_orig
 
+        ovl_img = None
         if ovl == 'func':
             ovl_img = self.func_orig
         elif ovl == 'wm':
@@ -1389,31 +1400,6 @@ class RtpApp(RTP):
         elif ovl == 'GSRmask':
             ovl_img = self.GSR_mask
 
-        if not Path(base_img).is_file() or not Path(ovl_img).is_file():
-            return
-
-        # Get volume shape to adjust window size
-        baseWinSize = 480  # height of axial image window
-        bimg = nib.load(base_img)
-        vsize = np.diag(bimg.affine)[:3]
-        if np.any(vsize == 0):
-            vsize = np.abs([r[np.argmax(np.abs(r))]
-                            for r in bimg.affine[:3, :3]])
-        vshape = bimg.shape[:3] * vsize
-        wh_ax = np.abs([int(baseWinSize*vshape[0]//vshape[1]), baseWinSize])
-        wh_sg = np.abs([baseWinSize, int(baseWinSize*vshape[2]//vshape[1])])
-        wh_cr = np.abs([int(baseWinSize*vshape[0]//vshape[1]),
-                        int(baseWinSize*vshape[2]//vshape[1])])
-
-        # Get cursor position
-        if ovl in ['roi', 'wm', 'vent', 'mask']:
-            ovl_v = nib.load(ovl_img).get_fdata()
-            if ovl_v.ndim > 3:
-                ovl_v = ovl_v[:, :, :, 0]
-            ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
-            ijk = np.concatenate([ijk, [1]])
-            xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
-
         # Check if afni is ready
         cmd0 = "afni"
         pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
@@ -1423,39 +1409,68 @@ class RtpApp(RTP):
                  if "pgrep -af 'afni" not in ll and 'RTafni' not in ll and
                  len(ll) > 0]
         if len(procs) == 0:
+            # Boot AFNI
             rt = (work_dir == self.rtp_objs['WATCH'].watch_dir)
             boot_afni(main_win=self.main_win, boot_dir=work_dir, rt=rt,
                       TRUSTHOST=self.AFNIRT_TRUSTHOST)
 
-        # Run plugout_drive to drive afni
-        le = 800  # left end
-        tp = 500  # top
-        cmd = 'plugout_drive'
-        cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
-        cmd += " -com 'RESCAN_THIS'"
-        cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
-        cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
-        cmd += " -com 'SEE_OVERLAY +'"
-        cmd += " -com 'OPEN_WINDOW A.axialimage"
-        cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
-        cmd += " -com 'OPEN_WINDOW A.sagittalimage"
-        if le+wh_ax[0]+wh_sg[0]+wh_cr[0]-100 > 1920:
-            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp-100}"
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]-50}"
-            cmd += f"+{wh_sg[1]+tp-100} opacity=6'"
-        else:
-            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp}"
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]+wh_sg[0]-100}"
-            cmd += f"+{tp} opacity=6'"
+        if base_img is not None:
+            # Get volume shape to adjust window size
+            baseWinSize = 480  # height of axial image window
+            bimg = nib.load(base_img)
+            vsize = np.diag(bimg.affine)[:3]
+            if np.any(vsize == 0):
+                vsize = np.abs([r[np.argmax(np.abs(r))]
+                                for r in bimg.affine[:3, :3]])
+            vshape = bimg.shape[:3] * vsize
+            wh_ax = np.abs(
+                [int(baseWinSize*vshape[0]//vshape[1]), baseWinSize])
+            wh_sg = np.abs(
+                [baseWinSize, int(baseWinSize*vshape[2]//vshape[1])])
+            wh_cr = np.abs(
+                [int(baseWinSize*vshape[0]//vshape[1]),
+                 int(baseWinSize*vshape[2]//vshape[1])])
 
-        if ovl in ['roi', 'wm', 'vent', 'mask']:
-            cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
-        cmd += " -quit"
-        subprocess.run(cmd, shell=True)
+            # Get cursor position
+            if ovl in ['roi', 'wm', 'vent', 'mask']:
+                ovl_v = nib.load(ovl_img).get_fdata()
+                if ovl_v.ndim > 3:
+                    ovl_v = ovl_v[:, :, :, 0]
+                ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
+                ijk = np.concatenate([ijk, [1]])
+                xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
+
+            # Run plugout_drive to drive afni
+            le = 800  # left end
+            tp = 500  # top
+            cmd = 'plugout_drive'
+            cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
+            cmd += " -com 'RESCAN_THIS'"
+            cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
+            if ovl_img is not None:
+                cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
+                cmd += " -com 'SEE_OVERLAY +'"
+            cmd += " -com 'OPEN_WINDOW A.axialimage"
+            cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.sagittalimage"
+            if le+wh_ax[0]+wh_sg[0]+wh_cr[0]-100 > 1920:
+                cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp-100}"
+                cmd += " opacity=6'"
+                cmd += " -com 'OPEN_WINDOW A.coronalimage"
+                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]-50}"
+                cmd += f"+{wh_sg[1]+tp-100} opacity=6'"
+            else:
+                cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp}"
+                cmd += " opacity=6'"
+                cmd += " -com 'OPEN_WINDOW A.coronalimage"
+                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}"
+                cmd += f"+{le+wh_ax[0]+wh_sg[0]-100}"
+                cmd += f"+{tp} opacity=6'"
+
+            if ovl in ['roi', 'wm', 'vent', 'mask']:
+                cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
+            cmd += " -quit"
+            subprocess.run(cmd, shell=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def delete_file(self, attr, keepfile=False):
@@ -2173,7 +2188,7 @@ class RtpApp(RTP):
         except BrokenPipeError:
             self.extApp_sock = None
             errmsg = 'No connection to external app.'
-            self._logger.error(errmsg)
+            self._logger.debug(errmsg)
             if not no_err_pop:
                 self.err_popup(errmsg)
             return False
@@ -2706,42 +2721,48 @@ class RtpApp(RTP):
         self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
         self.ui_objs.append(self.ui_ChkMask_grpBx)
 
+        self.ui_openAFNI_btn = \
+            QtWidgets.QPushButton('Open AFNI')
+        self.ui_openAFNI_btn.clicked.connect(
+                lambda: self.check_onAFNI())
+        ChkMask_gLayout.addWidget(self.ui_openAFNI_btn, 0, 0)
+
         self.ui_chkFuncAnat_btn = \
             QtWidgets.QPushButton('func-anat align')
         self.ui_chkFuncAnat_btn.clicked.connect(
                 lambda: self.check_onAFNI('anat', 'func'))
-        ChkMask_gLayout.addWidget(self.ui_chkFuncAnat_btn, 0, 0)
+        ChkMask_gLayout.addWidget(self.ui_chkFuncAnat_btn, 0, 1)
 
         self.ui_chkROIFunc_btn = QtWidgets.QPushButton('ROI on function')
         self.ui_chkROIFunc_btn.clicked.connect(
                 lambda: self.check_onAFNI('func', 'roi'))
-        ChkMask_gLayout.addWidget(self.ui_chkROIFunc_btn, 0, 1)
+        ChkMask_gLayout.addWidget(self.ui_chkROIFunc_btn, 0, 2)
 
         self.ui_chkROIAnat_btn = QtWidgets.QPushButton('ROI on anatomy')
         self.ui_chkROIAnat_btn.clicked.connect(
                 lambda: self.check_onAFNI('anat', 'roi'))
-        ChkMask_gLayout.addWidget(self.ui_chkROIAnat_btn, 0, 2)
+        ChkMask_gLayout.addWidget(self.ui_chkROIAnat_btn, 0, 3)
 
         self.ui_chkWMFunc_btn = QtWidgets.QPushButton('WM on anatomy')
         self.ui_chkWMFunc_btn.clicked.connect(
                 lambda: self.check_onAFNI('anat', 'wm'))
-        ChkMask_gLayout.addWidget(self.ui_chkWMFunc_btn, 0, 3)
+        ChkMask_gLayout.addWidget(self.ui_chkWMFunc_btn, 1, 0)
 
         self.ui_chkVentFunc_btn = \
             QtWidgets.QPushButton('Vent on anatomy')
         self.ui_chkVentFunc_btn.clicked.connect(
                 lambda: self.check_onAFNI('anat', 'vent'))
-        ChkMask_gLayout.addWidget(self.ui_chkVentFunc_btn, 0, 4)
+        ChkMask_gLayout.addWidget(self.ui_chkVentFunc_btn, 1, 1)
 
         self.ui_chkGSRmask_btn = QtWidgets.QPushButton('GSR mask')
         self.ui_chkGSRmask_btn.clicked.connect(
                 lambda: self.check_onAFNI('func', 'GSRmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 0, 5)
+        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 1, 2)
 
         self.ui_chkRTPmask_btn = QtWidgets.QPushButton('RTP mask')
         self.ui_chkRTPmask_btn.clicked.connect(
                 lambda: self.check_onAFNI('func', 'RTPmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 0, 6)
+        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 1, 3)
 
         # --- Template tab ----------------------------------------------------
         self.ui_templateTab = QtWidgets.QWidget()
