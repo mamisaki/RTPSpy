@@ -36,10 +36,7 @@ class DicomReader():
 
                 manufacturer = dcm.Manufacturer.lower()
                 if 'siemens' in manufacturer:
-                    if 'XA' in dcm.SoftwareVersions.upper():
-                        scan_info = self.read_siemensXA30_dicom_info(dcm)
-                    else:
-                        scan_info = self.read_mosaic_dicom_info(dcm)
+                    scan_info = self.read_siemens_dicom_info(dcm)
                 elif 'GE' in manufacturer:
                     scan_info = self.read_ge_dicom_info(dcm)
                 else:
@@ -291,162 +288,18 @@ class DicomReader():
         return scan_info
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_mosaic_dicom_info(self, dcm):
+    def read_siemens_dicom_info(self, dcm):
         scan_info = {}
         try:
             scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
             date = datetime.strptime(dcm.StudyDate, '%Y%m%d')
             scan_info['Scan date'] = date.strftime('%a %b %d %Y')
             scan_info['ContentTime'] = dcm.ContentTime
-            scan_info['AcquisitionTime'] = dcm.AcquisitionTime
+            if hasattr(dcm, 'AcquisitionTime'):
+                scan_info['AcquisitionTime'] = dcm.AcquisitionTime
+            elif hasattr(dcm, 'AcquisitionDateTime'):
+                scan_info['AcquisitionTime'] = dcm.AcquisitionDateTime[8:]
             scan_info['SeriesDescription'] = dcm.SeriesDescription
-
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
-            msg = f"Failed to read DICOM info: {errstr}"
-            self.logger.error(msg)
-            scan_info = None
-
-        return scan_info
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_siemensXA30_dicom_info(self, dcm):
-        scan_info = {}
-        try:
-            scan_info['Series Information'] = f"scan_{dcm.SeriesNumber}"
-            if 'AcquisitionDateTime' in dcm:
-                acqdtime = dcm.AcquisitionDateTime
-            elif 'SeriesDate' in dcm and 'SeriesTime' in dcm:
-                acqdtime = dcm.SeriesDate + dcm.SeriesTime
-            else:
-                acqdtime = None
-
-            if acqdtime is not None:
-                if '.' in acqdtime:
-                    tfmt = '%Y%m%d%H%M%S.%f'
-                else:
-                    tfmt = '%Y%m%d%H%M%S'
-                acqdtime = datetime.strptime(acqdtime, tfmt)
-                scan_info['Scan date'] = acqdtime.strftime('%a %b %d %Y')
-                scan_info['Scan started'] = acqdtime.strftime('%H:%M:%S')
-
-            dateTime = datetime.strptime(dcm.StudyDate+dcm.StudyTime,
-                                         '%Y%m%d%H%M%S.%f')
-            scan_info['StudyDateTime'] = dateTime.isoformat()
-
-            scan_info['ContentTime'] = dcm.ContentTime
-            StationName = dcm.StationName
-            if 'ManufacturerModelName' in dcm:
-                ModelName = dcm.ManufacturerModelName.replace(' ', '_')
-            else:
-                ModelName = ''
-            scan_info['Scanner'] = f"{StationName}_{ModelName}"
-            if hasattr(dcm, 'StudyID'):
-                scan_info['StudyID'] = dcm.StudyID
-
-            scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
-            scan_info['Protocol'] = dcm.ProtocolName
-            scan_info['PatientName'] = dcm.PatientName
-            scan_info['PatientID'] = dcm.PatientID
-            scan_info['StudyDescription'] = dcm.StudyDescription
-            scan_info['Series De'] = dcm.SeriesDescription
-            if hasattr(dcm, 'OperatorsName'):
-                scan_info['Operator'] = dcm.OperatorsName
-            if 'SequenceName' in dcm:
-                scan_info['Pulse Sequence Name'] = dcm.SequenceName
-            elif 'PulseSequenceName' in dcm:
-                scan_info['Pulse Sequence Name'] = dcm.PulseSequenceName
-            scan_info['Protocol Name'] = dcm.ProtocolName
-
-            if 'Columns' in dcm and 'Rows' in dcm:
-                scan_info['Xres'] = dcm.Columns
-                scan_info['Yres'] = dcm.Rows
-            scan_info['ImageType'] = '\\'.join(dcm.ImageType)
-            if 'NumberOfFrames' in dcm:
-                scan_info['Nr of slices'] = int(dcm.NumberOfFrames)
-            if 'SpacingBetweenSlices' in dcm:
-                scan_info['Slice Thickness'] = float(dcm.SpacingBetweenSlices)
-            elif 'SliceThickness' in dcm:
-                scan_info['Slice Thickness'] = float(dcm.SliceThickness)
-
-            # Calculate FOV
-            if 'PixelSpacing' in dcm:
-                PixelSpacing = dcm.PixelSpacing
-            elif (0x5200, 0x9230) in dcm:
-                PixelSpacing = dcm[(0x5200, 0x9230)
-                                   ][0].PixelMeasuresSequence[0].PixelSpacing
-            else:
-                PixelSpacing = None
-            if PixelSpacing is not None:
-                FOV = [scan_info['Xres'] * PixelSpacing[0],
-                       scan_info['Yres'] * PixelSpacing[1]]
-                scan_info['FOV'] = FOV
-
-            if 'SharedFunctionalGroupsSequence' in dcm:
-                if 'MRTimingAndRelatedParametersSequence' in \
-                        dcm.SharedFunctionalGroupsSequence[0]:
-                    MRTiming = dcm.SharedFunctionalGroupsSequence[
-                        0].MRTimingAndRelatedParametersSequence[0]
-            else:
-                MRTiming = None
-
-            if 'RepetitionTime' in dcm:
-                scan_info['TR'] = float(dcm.RepetitionTime)
-            elif MRTiming is not None:
-                scan_info['TR'] = float(MRTiming.RepetitionTime)
-
-            if 'EchoTime' in dcm:
-                scan_info['TE'] = float(dcm.EchoTime)
-            elif (0x5200, 0x9230) in dcm:
-                scan_info['TE'] = float(
-                    dcm[(0x5200, 0x9230)
-                        ][0].MREchoSequence[0].EffectiveEchoTime)
-
-            if 'EchoTrainLength' in dcm:
-                scan_info['EchoTrainLength'] = int(dcm.EchoTrainLength)
-            elif MRTiming is not None:
-                scan_info['EchoTrainLength'] = int(MRTiming.EchoTrainLength)
-
-            if 'FlipAngle' in dcm:
-                scan_info['FA'] = float(dcm.FlipAngle)
-            elif MRTiming is not None:
-                scan_info['FA'] = float(MRTiming.FlipAngle)
-
-            if hasattr(dcm, 'InversionTime'):
-                scan_info['TI'] = float(dcm.InversionTime)
-            if 'AcquisitionDuration' in dcm:
-                scan_info['Acquisition Duration'] = dcm.AcquisitionDuration
-
-            # Parallel acquisition
-            if 'SharedFunctionalGroupsSequence' in dcm:
-                if 'MRModifierSequence' in \
-                        dcm.SharedFunctionalGroupsSequence[0]:
-                    MRModifierSequence = dcm.SharedFunctionalGroupsSequence[
-                        0].MRModifierSequence[0]
-                    if 'ParallelAcquisition' in MRModifierSequence:
-                        scan_info['Parallel Acquisition'] = \
-                            MRModifierSequence.ParallelAcquisition
-                        if scan_info['Parallel Acquisition'] != 'NO':
-                            scan_info['Parallel Acquisition Technique'] = \
-                                MRModifierSequence.ParallelAcquisitionTechnique
-                            scan_info['Parallel Reduction Factor In-plane'] = \
-                                MRModifierSequence.ParallelReductionFactorInPlane
-
-            # Get slice timing
-            if 'NumberOfFrames' in dcm:
-                acq_times = []
-                for frame in dcm.PerFrameFunctionalGroupsSequence:
-                    acq_time = frame.FrameContentSequence[
-                        0].FrameAcquisitionDateTime
-                    acq_times.append(
-                        datetime.strptime(acq_time, '%Y%m%d%H%M%S.%f'))
-
-                slice_timing = [dt.microseconds/1000000 for dt
-                                in np.array(acq_times) - np.min(acq_times)]
-                if len(np.unique(slice_timing)) > 1:
-                    scan_info['Slice Timing'] = slice_timing
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()

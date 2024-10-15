@@ -69,6 +69,9 @@ class RtMRISimulator():
                     at = datetime.strptime(dtstr, '%a %b %d %Y %H%M%S.%f')
                     acq_times[ii] = at
 
+                if len(ser) == 0:
+                    return
+
                 # sort with content_time
                 t_order = np.argsort(list(content_times.values())).ravel()
                 sidx = np.array(list(content_times.keys()))[list(t_order)]
@@ -89,7 +92,10 @@ class RtMRISimulator():
             series = []
             level += 1
             for dd in sess_dirs:
-                data, ct, ft, at, ser = read_dir(dd, dicom_file_pat, level)
+                ret = read_dir(dd, dicom_file_pat, level)
+                if ret is None:
+                    continue
+                data, ct, ft, at, ser = ret
                 if len(data):
                     read_data.extend(data)
                     ctimes.extend(ct)
@@ -112,8 +118,11 @@ class RtMRISimulator():
             series = saved_data['series']
         else:
             level = 0
-            src_data, ctimes, ftimes, atimes, series = \
-                read_dir(test_data_dir, dicom_file_pat, level)
+            ret = read_dir(test_data_dir, dicom_file_pat, level)
+            if ret is None:
+                return
+
+            src_data, ctimes, ftimes, atimes, series = ret
 
             # Sort by ctimes
             src_data = [f.relative_to(test_data_dir.parent) for f in src_data]
@@ -305,6 +314,10 @@ class RtMRISimulator():
             if sel_session not in src_data:
                 read_data = self.read_test_data(test_data_dir / sel_session,
                                                 dicom_file_pat[1:])
+                if read_data is None:
+                    print(f'No source data in {test_data_dir / sel_session}')
+                    continue
+
                 src_data[sel_session] = read_data[0]
                 dctimes[sel_session] = read_data[1]
                 dftimes[sel_session] = read_data[2]
