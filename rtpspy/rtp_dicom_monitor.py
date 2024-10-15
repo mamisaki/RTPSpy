@@ -55,7 +55,7 @@ class RtpDicomMonitor:
     def __init__(self, watch_dir, work_root, ftype='SiemensXADicom',
                  watch_file_pattern=r'.+\.dcm',
                  study_prefix='', study_ID_field=None,
-                 series_timeout=20, make_brik=False, polling_observer=False,
+                 series_timeout=10, make_brik=False, polling_observer=False,
                  **kwargs):
         """
         Parameters
