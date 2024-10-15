@@ -1052,13 +1052,6 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _is_running_dcm2nii(self):
         # Check if dcm2niix is in progress
-        tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
-        if len(tmp_dcm):
-            errmsg = 'DICOM to NIfTI conversion is still in progress.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
-            return True
-
         try:
             ostr = subprocess.check_output(shlex.split('pgrep -f dcm2niix'))
             if len(ostr.decode().rstrip()):
