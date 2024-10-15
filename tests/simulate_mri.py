@@ -461,6 +461,8 @@ class RtMRISimulator():
                     st = time.time()
                     cp_dtime = dtime - np.min(dtime)
 
+                cp_dtime = [dt.total_seconds() for dt in cp_dtime]
+
                 ttl_t = 0
                 TR = np.diff(cp_dtime).mean()
                 for ii, src_f in enumerate(src_data):
