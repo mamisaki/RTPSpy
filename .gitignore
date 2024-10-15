@@ -14,7 +14,7 @@ afni_module/afni
 rtpspy/FastSurfer
 tests/watch/*
 tests/work/*
-tests/dicom*
+tests/dicom/*
 log_*
 *.log
 *.error
