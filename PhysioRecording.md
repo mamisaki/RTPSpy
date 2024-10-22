@@ -27,6 +27,6 @@ RtpTTLPhysio can receive these signals using the analog input channels of the [N
 To adjust the signal range, open the physiological signal monitor by running the rtpspy/rtp_ttl_physio.py script in the RTPSpy package.  
 ```
 conda activate RTPSpy
-~/RTPSpy/rtpspy.rtp_ttl_physio.py
+~/RTPSpy/rtpspy/rtp_ttl_physio.py
 ```
 Then, rotate the screws on the amplifier modules while monitoring the signal range. The upper screw is for level shifting, and the lower one is for signal amplification.
