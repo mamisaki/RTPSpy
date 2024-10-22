@@ -90,6 +90,9 @@ You may need to reboot the system.
 conda activate RTPSpy
 ~/RTPSpy/rtpspy_system_check.py
 ```
+> [!TIP]
+> If you encounter an error related to librtp.so (or librtp.dylib on OSX), you may need to compile the librtp library from the source.  
+> Refer to [Compile librtp library](./Compilelibrtp.md) to do it.
 
 ## Usage
 Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full) for usage information about the library.
