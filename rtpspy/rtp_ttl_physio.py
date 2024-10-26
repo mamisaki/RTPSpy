@@ -15,6 +15,7 @@ from pathlib import Path
 import time
 import sys
 import traceback
+import multiprocessing as mp
 from multiprocessing import Process, Lock, Queue, Pipe
 import re
 import logging
@@ -23,6 +24,7 @@ import warnings
 import socket
 from datetime import datetime
 import json
+import platform
 
 import numpy as np
 import pandas as pd
@@ -856,7 +858,15 @@ class RtpTTLPhysio(RTP):
         self._rec_proc_pipe = None
 
         # Scan onset mmap file for sharing among multiple processes
-        mmap_f = Path('/dev/shm') / 'scan_onset'
+        if Path('/dev/shm').is_dir():
+            mmap_dir = Path('/dev/shm')
+        else:
+            config_dir = Path.home() / '.RTPSpy'
+            if not config_dir.is_dir():
+                config_dir.mkdir()
+            mmap_dir = config_dir
+
+        mmap_f = mmap_dir / 'scan_onset'
         self._scan_onset = np.memmap(mmap_f, dtype=float, mode='w+',
                                      shape=(1,))
         self._scan_onset[:] = -1
@@ -867,7 +877,7 @@ class RtpTTLPhysio(RTP):
         self._rbuf_lock = Lock()
         self.data_mmap_files = {}
         for label in self._rbuf_names:
-            self.data_mmap_files[label] = Path('/dev/shm') / label
+            self.data_mmap_files[label] = mmap_dir / label
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
@@ -937,8 +947,17 @@ class RtpTTLPhysio(RTP):
     def start_recording(self, restart=False):
         """ Start recording loop in a separate process """
         self._rec_proc_pipe, cmd_pipe = Pipe()
-        self._rec_proc = Process(target=self._run_recording,
-                                 args=(cmd_pipe, self._rbuf_lock))
+        os_name = platform.system()
+        if os_name == 'Linux':
+            self._rec_proc = Process(target=self._run_recording,
+                                     args=(cmd_pipe, self._rbuf_lock))
+        elif os_name == 'Darwin':
+            ctx = mp.get_context('fork')
+            self._rec_proc = ctx.Process(target=self._run_recording,
+                                         args=(cmd_pipe, self._rbuf_lock))
+        else:
+            assert False
+
         self._rec_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
