@@ -1,0 +1,57 @@
+# This Makefile works on Mac OS 13.
+
+#  brew install
+#    libpng jpeg expat freetype fontconfig openmotif libomp
+#    libxt gsl glib pkg-config gcc@13 autoconf mesa mesa-glu libxpm
+#	 netpbm libiconv expat
+
+RTPSRC = librtp.c
+AFNI_SRC = afni/src
+USE_ZLIB  = -DHAVE_ZLIB
+
+CEXTRA = -m64 -Wall -Wno-deprecated-declarations -Wcomment -Wformat -DUSE_TRACING \
+	-DHAVE_XDBE -DDONT_USE_MCW_MALLOC $(LESSTIF_DEFS)
+
+LOCAL_CC_PATH ?= /opt/homebrew/bin/gcc-13
+
+CCMIN  = $(LOCAL_CC_PATH) -arch arm64 -DDARWIN -DARM_M1
+CC     = $(CCMIN) -O1 $(CEXTRA)
+
+# here it's just homebrew's standard install directories for the ARM
+BREWI = /opt/homebrew/include
+BREWL = /opt/homebrew/lib
+
+# these are homebrew's install library and include files
+# repeats definitions BREWI and BREWL above but 
+# separating for now in case OMP goes back to a separate directory
+BREWLIBDIR = /opt/homebrew/lib
+BREWINCDIR = /opt/homebrew/include
+
+CONDAENV = ${HOME}/miniconda3/envs/RTPSpy
+IFLAGS = -I. -I$(BREWINCDIR) $(XROOT_I) -I/usr/include
+LFLAGS = -L. -L$(BREWLIBDIR) $(XROOT_L) -L/usr/lib
+INFLAGS  = $(IFLAGS) -I$(AFNI_SRC)  -I $(CONDAENV)/include -I$(AFNI_SRC)/nifti/nifti2 \
+	-I$(AFNI_SRC)/nifti/niftilib -I$(AFNI_SRC)/nifti/nifticdf -I$(AFNI_SRC)/nifti/znzlib \
+	-I$(AFNI_SRC)/3DEdge/src -I$(AFNI_SRC)/rickr -I$(AFNI_SRC)/niml $(USE_ZLIB) \
+
+F2CLIB =  $(CONDAENV)/lib/libf2c.a
+
+RM = /bin/rm -f
+
+all: install
+
+libmri.a:
+	@(cd afni/src && make -f Makefile.macos_13_ARM libmri.a)
+	cp afni/src/libmri.a ./libmri.a
+
+librtp.dylib: libmri.a $(RTPSRC)
+	$(RM) $@
+	$(CC) -shared -fPIC -o librtp.dylib $(RTPSRC) libmri.a $(INFLAGS) $(F2CLIB) \
+	-lexpat -lXt -lz $(LFLAGS) 
+
+install: librtp.dylib
+	install -m 0755 librtp.dylib ../rtpspy/librtp.dylib
+
+clean:
+	$(RM) librtp.dylib libmri.a
+	@(cd afni/src && make -f Makefile.macos_13_ARM cleanest)
