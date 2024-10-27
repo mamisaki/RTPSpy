@@ -97,7 +97,7 @@ if __name__ == '__main__':
 
         # --- Make mask images ------------------------------------------------
         logger.debug('### Start creating mask images ###')
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() or torch.backends.mps.is_available():
             logger.info('GPU is utilized.')
             no_FastSeg = False
             rtp_app.fastSeg_batch_size = 1  # Adjust the size according to GPU
