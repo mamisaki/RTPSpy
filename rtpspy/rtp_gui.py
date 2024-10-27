@@ -47,7 +47,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         winTitle : str, optional
             WIndow title. The default is 'RTPSpy'.
         onGPU : bool, optional
-            Flag to use GPU. The default is given by torch.cuda.is_available().
+            Flag to use GPU. The default is given by torch.cuda.is_available()
+            or torch.backends.mps.is_available().
 
         """
         QtWidgets.QMainWindow.__init__(self)
