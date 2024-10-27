@@ -111,8 +111,17 @@ To run the example application, users need to install the PsychoPy package in a 
 ```
 conda create -n psychopy python=3.10
 conda activate psychopy
+```
+
+### For macOS
+```
+pip install -f https://extras.wxpython.org/wxPython4/extras/mac/ wxPython
+```
+
+```
 pip install psychopy
 ```
+
 On WSL, you also need to set up an X server application. The instructions for AFNI installation on WSL describe this setup, so I assume you have already completed it.
 
 #### ROI-NF (example/ROI-NF)
