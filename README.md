@@ -111,14 +111,7 @@ To run the example application, users need to install the PsychoPy package in a 
 ```
 conda create -n psychopy python=3.10
 conda activate psychopy
-```
-
-### For macOS
-```
 conda install conda-forge::wxpython
-```
-
-```
 pip install psychopy
 ```
 
