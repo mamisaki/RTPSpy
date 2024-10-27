@@ -115,7 +115,7 @@ conda activate psychopy
 
 ### For macOS
 ```
-pip install -f https://extras.wxpython.org/wxPython4/extras/mac/ wxPython
+conda install conda-forge::wxpython
 ```
 
 ```
