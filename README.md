@@ -49,7 +49,9 @@ sudo apt install git
 Install Homebrew following the instructions at https://brew.sh/  
 Then, install the required tools and libraries by entering the command below:
 ```
-brew install git gcc fftw openmotif
+brew install git libpng jpeg expat freetype fontconfig openmotif libomp \
+     libxt gsl glib pkg-config gcc@13 autoconf mesa mesa-glu libxpm \
+     netpbm libiconv expat
 ```
 
 ### GPU
