@@ -25,7 +25,8 @@ try:
 except Exception:
     from rtpspy.rtp_common import save_parameters, load_parameters
 
-GPU_available = torch.cuda.is_available()
+GPU_available = torch.backends.mps.is_available() or \
+    torch.backends.mps.is_available()
 
 
 # %% RtpGUI class =============================================================
@@ -46,7 +47,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         winTitle : str, optional
             WIndow title. The default is 'RTPSpy'.
         onGPU : bool, optional
-            Flag to use GPU. The default is given by torch.cuda.is_available().
+            Flag to use GPU. The default is given by torch.cuda.is_available()
+            or torch.backends.mps.is_available().
 
         """
         QtWidgets.QMainWindow.__init__(self)
@@ -180,7 +182,11 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # GPU
         if self.GPU_available:
-            dev_name = torch.cuda.get_device_name(torch.cuda.current_device())
+            if torch.cuda.is_available():
+                dev_name = torch.cuda.get_device_name(
+                    torch.cuda.current_device())
+            elif torch.backends.mps.is_available():
+                dev_name = torch.device("mps")
             self.chbUseGPU = QtWidgets.QCheckBox(f'Use GPU\n{dev_name}',
                                                  self.mainWidget)
             self.chbUseGPU.setCheckState(onGPU * 2)

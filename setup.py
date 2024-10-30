@@ -13,5 +13,5 @@ setup(
                  'License :: OSI Approved :: GNU GPLv3',
                  'Operating System :: Linux'],
     python_requires='>=3.10',
-    scripts=['rtpspy/fastSeg.py', 'rtpspy/ants_run.py']
+    scripts=['rtpspy/ants_run.py']
 )

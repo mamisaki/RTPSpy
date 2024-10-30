@@ -15,6 +15,7 @@ from pathlib import Path
 import time
 import sys
 import traceback
+import multiprocessing as mp
 from multiprocessing import Process, Lock, Queue, Pipe
 import re
 import logging
@@ -23,6 +24,7 @@ import warnings
 import socket
 from datetime import datetime
 import json
+import platform
 
 import numpy as np
 import pandas as pd
@@ -102,47 +104,57 @@ class RingBuffer:
     """ Ring buffer """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, data_buffer=None, max_size=None):
+    def __init__(self, data_buffer=None, max_size=None, cpos_buf=None):
         """_summary_
         Args:
             max_size (int): buffer size (number of elements)
         """
+        self._logger = logging.getLogger('RingBuffer')
+
         if data_buffer is None:
             assert max_size
             self._max_size = max_size
             self._data = np.array(max_size)
+            self._cpos = [0]
         else:
             self._data = data_buffer
             self._max_size = len(data_buffer)
-        self._cpos = 0
+            self._cpos = cpos_buf
+            self._cpos[0] = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def append(self, x):
         """ Append an element """
         try:
-            self._data[self._cpos] = x
-            self._cpos = (self._cpos+1) % self._max_size
+            cpos = self._cpos[0]
+            self._data[cpos] = x
+            self._cpos[:] = (cpos+1) % self._max_size
+            if isinstance(self._data, np.memmap):
+                self._data.flush()
+                self._cpos.flush()
+
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
-            sys.stderr.write(errstr)
+            self._logger.error(errstr)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get(self):
         """ return list of elements in correct order """
         try:
-            if self._cpos == 0:
+            cpos = self._cpos[0]
+            if cpos == 0:
                 return self._data
             else:
                 data = self._data
-                return np.concatenate([data[self._cpos:], data[:self._cpos]])
+                return np.concatenate([data[cpos:], data[:cpos]])
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errstr = ''.join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
-            sys.stderr.write(errstr)
+            self._logger.error(errstr)
             return None
 
 
@@ -417,7 +429,9 @@ class DummyRecording():
             if self._sim_resp is None:
                 self._sim_resp = np.zeros(self._sim_data_len)
         else:
-            self._sim_data_len = 2
+            self._sim_card = np.ones(1)
+            self._sim_resp = np.ones(1)
+            self._sim_data_len = 1
 
         self._sim_data_pos = 0
 
@@ -482,12 +496,12 @@ class DummyRecording():
                 if self._sim_card is not None:
                     card = self._sim_card[self._sim_data_pos]
                 else:
-                    card = 0
+                    card = 1
 
                 if self._sim_resp is not None:
                     resp = self._sim_resp[self._sim_data_pos]
                 else:
-                    resp = 0
+                    resp = 1
 
                 self._sim_data_pos = (self._sim_data_pos + 1) % \
                     self._sim_data_len
@@ -520,12 +534,12 @@ class TTLPhysioPlot(QtCore.QObject):
                  plot_len_sec=10, disable_close=False):
         super().__init__()
 
+        self._logger = logging.getLogger('TTLPhysioPlot')
         self.recorder = recorder
         self.main_win = main_win
         self.plot_len_sec = plot_len_sec
         self.disable_close = disable_close
         self.is_scanning = False
-
         self._cancel = False
 
         # Initialize figure
@@ -618,7 +632,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 card = plt_data['card']
                 resp = plt_data['resp']
                 tstamp = plt_data['tstamp']
-
+                
                 card[tstamp == 0] = 0
                 resp[tstamp == 0] = 0
                 zero_t = time.time() - np.max(self._ln_ttl[0].get_xdata())
@@ -786,7 +800,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 errmsg = ''.join(
                     traceback.format_exception(exc_type, exc_obj, exc_tb))
-                print(f"!!!Error:{errmsg}")
+                self._logger.error(errmsg)
 
         self.end_thread()
 
@@ -856,7 +870,15 @@ class RtpTTLPhysio(RTP):
         self._rec_proc_pipe = None
 
         # Scan onset mmap file for sharing among multiple processes
-        mmap_f = Path('/dev/shm') / 'scan_onset'
+        if Path('/dev/shm').is_dir():
+            mmap_dir = Path('/dev/shm')
+        else:
+            config_dir = Path.home() / '.RTPSpy'
+            if not config_dir.is_dir():
+                config_dir.mkdir()
+            mmap_dir = config_dir
+
+        mmap_f = mmap_dir / 'scan_onset'
         self._scan_onset = np.memmap(mmap_f, dtype=float, mode='w+',
                                      shape=(1,))
         self._scan_onset[:] = -1
@@ -867,7 +889,7 @@ class RtpTTLPhysio(RTP):
         self._rbuf_lock = Lock()
         self.data_mmap_files = {}
         for label in self._rbuf_names:
-            self.data_mmap_files[label] = Path('/dev/shm') / label
+            self.data_mmap_files[label] = mmap_dir / label
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
@@ -915,11 +937,26 @@ class RtpTTLPhysio(RTP):
     def init_data_array(self, buf_len):
         rbuf = {}
         for label, mmap_f in self.data_mmap_files.items():
+            if mmap_f.is_file():
+                mmap_f.unlink()
             mmap_data = np.memmap(mmap_f, dtype=float, mode='w+',
                                   shape=(buf_len,))
             mmap_data[:] = np.nan
+            if label == 'tstamp':
+                mmap_data[:] = 0
             mmap_data.flush()
-            rbuf[label] = RingBuffer(mmap_data)
+            cpos_mmap_f = mmap_f.parent / (mmap_f.name + '_cpos')
+            if cpos_mmap_f.is_file():
+                cpos_mmap_f.unlink()
+            cpos_buf = np.memmap(cpos_mmap_f, dtype=np.int64, mode='w+',
+                                  shape=(1,))
+            cpos_buf[0] = 0
+            cpos_buf.flush()
+            rbuf[label] = RingBuffer(
+                data_buffer=mmap_data,
+                max_size=buf_len,
+                cpos_buf=cpos_buf
+                )
 
         return rbuf
 
@@ -937,8 +974,17 @@ class RtpTTLPhysio(RTP):
     def start_recording(self, restart=False):
         """ Start recording loop in a separate process """
         self._rec_proc_pipe, cmd_pipe = Pipe()
-        self._rec_proc = Process(target=self._run_recording,
-                                 args=(cmd_pipe, self._rbuf_lock))
+        os_name = platform.system()
+        if os_name == 'Linux':
+            self._rec_proc = Process(target=self._run_recording,
+                                     args=(cmd_pipe, self._rbuf_lock))
+        elif os_name == 'Darwin':
+            ctx = mp.get_context('fork')
+            self._rec_proc = ctx.Process(target=self._run_recording,
+                                         args=(cmd_pipe, self._rbuf_lock))
+        else:
+            assert False
+
         self._rec_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -966,7 +1012,7 @@ class RtpTTLPhysio(RTP):
                   disable_close=False):
         if self.plot is None:
             self.plot = TTLPhysioPlot(
-                self, main_win, win_shape=win_shape,
+                self, main_win, win_shape=win_shape, 
                 plot_len_sec=plot_len_sec, disable_close=disable_close)
 
         self.plot.show()
@@ -1070,9 +1116,11 @@ class RtpTTLPhysio(RTP):
         ttl_onset = ttl_onset[~np.isnan(ttl_onset)]
         ttl_offset = ttl_offset[~np.isnan(ttl_offset)]
 
-        card = card[~np.isnan(tstamp)]
-        resp = resp[~np.isnan(tstamp)]
-        tstamp = tstamp[~np.isnan(tstamp)]
+        tmask = (~np.isnan(tstamp) & ~np.isnan(card) & ~np.isnan(resp) &
+                 (tstamp > 0))
+        card = card[tmask]
+        resp = resp[tmask]
+        tstamp = tstamp[tmask]
         if len(tstamp) == 0:
             return None
 
@@ -1081,12 +1129,17 @@ class RtpTTLPhysio(RTP):
         card = card[sidx]
         resp = resp[sidx]
         tstamp = tstamp[sidx]
-
         ttl_onset = np.sort(ttl_onset)
         ttl_offset = np.sort(ttl_offset)
 
+        # Show actual sampling frequency
+        self._logger.debug(
+            "Actual physio sampling rate: "
+            f"{1/np.mean(np.diff(tstamp)):.2f}Hz")
+
         data = {'ttl_onset': ttl_onset, 'ttl_offset': ttl_offset,
                 'card': card, 'resp': resp, 'tstamp': tstamp}
+
         return data
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1175,7 +1228,8 @@ class RtpTTLPhysio(RTP):
                 f = interp1d(tstamp, save_resp, bounds_error=False)
                 save_resp = f(ti)
             except Exception:
-                print(f"tstamp = {tstamp}")
+                self._logger.error(
+                    f"Failed in resampling for tstamp = {tstamp}")
 
         # Set filename
         card_fname = Path(str(fname_fmt).format(f'Card_{self.sample_freq}Hz'))
@@ -1761,11 +1815,12 @@ if __name__ == '__main__':
     debug = args.debug
 
     # Logger
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+    logging.basicConfig(level=logging.DEBUG, stream=sys.stdout,
                         format='%(asctime)s.%(msecs)04d,%(name)s,%(message)s')
 
     # Open app
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
 
     # Create RtpTTLPhysio
     rtp_ttl_physio = RtpTTLPhysio(

@@ -105,7 +105,7 @@ class RtpApp(RTP):
         self._isReadyRun = False
 
         # mask creation parameter
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() or torch.backends.mps.is_available():
             self.no_FastSeg = False
             self.fastSeg_batch_size = 1
             # total_memory = torch.cuda.get_device_properties(0).total_memory

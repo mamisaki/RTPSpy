@@ -49,7 +49,9 @@ sudo apt install git
 Install Homebrew following the instructions at https://brew.sh/  
 Then, install the required tools and libraries by entering the command below:
 ```
-brew install git gcc fftw openmotif
+brew install git libpng jpeg expat freetype fontconfig openmotif libomp \
+     libxt gsl glib pkg-config gcc@13 autoconf mesa mesa-glu libxpm \
+     netpbm libiconv expat
 ```
 
 ### GPU
@@ -90,6 +92,9 @@ You may need to reboot the system.
 conda activate RTPSpy
 ~/RTPSpy/rtpspy_system_check.py
 ```
+> [!TIP]
+> If you encounter an error related to librtp.so (or librtp.dylib on OSX), you may need to compile the librtp library from the source.  
+> Refer to [Compile librtp library](./Compilelibrtp.md) to do it.
 
 ## Usage
 Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full) for usage information about the library.
@@ -104,10 +109,12 @@ The GUI application serves as just an example of library usage. However, users m
 
 To run the example application, users need to install the PsychoPy package in a conda environment named psychopy, as indicated below:
 ```
-conda create -n psychopy python=3.8
+conda create -n psychopy python=3.10
 conda activate psychopy
+conda install conda-forge::wxpython
 pip install psychopy
 ```
+
 On WSL, you also need to set up an X server application. The instructions for AFNI installation on WSL describe this setup, so I assume you have already completed it.
 
 #### ROI-NF (example/ROI-NF)
