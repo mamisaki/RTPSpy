@@ -16,7 +16,7 @@ XROOT_L = -L$(XROOT)/lib
 
 LPYTHON     = -L${HOME}/anaconda3/lib/python3.8/config-3.8-darwin
 
-CONDAENV = ${HOME}/anaconda3/envs/RTPSpy/
+CONDAENV = ${HOME}/moniconda3/envs/RTPSpy/
 IFLAGS = -I. $(XROOT_I) -I/usr/local/include -I/usr/include -I $(CONDAENV)/include -I $(AFNI_SRC)
 INFLAGS  = $(IFLAGS) -I$(AFNI_SRC)/nifti/nifti2 -I$(AFNI_SRC)/nifti/niftilib \
 	-I$(AFNI_SRC)/nifti/nifticdf -I$(AFNI_SRC)/nifti/znzlib -I$(AFNI_SRC)/3DEdge/src \

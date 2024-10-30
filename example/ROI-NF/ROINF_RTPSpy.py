@@ -31,8 +31,6 @@ this_dir = Path(__file__).absolute().parent
 if 'Microsoft' in uname().release:
     cmd_path = r'/mnt/c/Program\ Files/PsychoPy3/pythonw.exe '
     cmd_path += str(this_dir / 'NF_psypy.py')
-elif sys.platform == 'darwin':
-    cmd_path = f"{this_dir / 'NF_psypy.py'}"
 else:
     cmd_path = f"{this_dir / 'boot_psychopy.sh'} {this_dir / 'NF_psypy.py'}"
 extApp_cmd = f"{cmd_path} --screen 0 --size 640 480 --pos 0 0"
@@ -82,6 +80,7 @@ if __name__ == '__main__':
 
     # --- Start application ---------------------------------------------------
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
 
     # Make RtpApp instance
     rtp_app = ROINF(default_rtp_params=rtp_params)

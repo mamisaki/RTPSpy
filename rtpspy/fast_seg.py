@@ -9,21 +9,26 @@ Anatomical image segmentation for real-time fMRI processing using FastSurfer
 
 
 # %% import ===================================================================
-import numpy as np
+import os
 from pathlib import Path
 import subprocess
 import shlex
 import shutil
 
+import numpy as np
 import torch
-import nibabel as nib
 import ants
 
 # Debug
 if '__file__' not in locals():
     __file__ = 'this.py'
 
-no_cuda = (not torch.cuda.is_available())
+if torch.cuda.is_available():
+    DEVICE = 'cuda'
+elif torch.backends.mps.is_available():
+    DEVICE = 'mps'
+else:
+    DEVICE = 'cpu'
 
 
 # %%
@@ -131,7 +136,7 @@ class FastSeg:
             fastsurfer_dir = Path(__file__).absolute().parent / 'FastSurfer'
 
         self.fastsurfer_dir = Path(fastsurfer_dir)
-        self.run_cmd = self.fastsurfer_dir / 'run_fastsurfer.sh'
+        self.run_cmd = 'run_fastsurfer.sh'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self, in_f, bias_correction=False, prefix=None, batch_size=1,
@@ -252,20 +257,23 @@ class FastSeg:
 
         # Run
         work_dir = Path(prefix).parent
-        cmd = f"./{self.run_cmd.relative_to(self.fastsurfer_dir)}"
+        cmd = f"./{self.run_cmd}"
         cmd += f" --t1 {in_f} --sd {work_dir}"
         cmd += f" --sid {Path(prefix).name} --seg_only --no_biasfield"
         if not seg_cereb:
             cmd += " --no_cereb"
         cmd += f" --batch {batch_size}"
-        if no_cuda:
-            cmd += ' --no_cuda'
+        cmd += f' --device {DEVICE}'
+        env = os.environ
+        env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
+        env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
         if show_proc_progress is not None:
             proc = subprocess.Popen(
                 shlex.split(cmd), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                cwd=self.fastsurfer_dir)
+                cwd=Path(__file__).absolute().parent,
+                env=env)
             assert proc.returncode is None or proc.returncode == 0, \
                 'Failed at run_seg_only.\n'
             ret = show_proc_progress(proc, ETA)

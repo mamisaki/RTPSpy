@@ -26,7 +26,7 @@ try:
 except Exception:
     from rtpspy.rtp_common import RTP, MatplotlibWindow
 
-gpu_available = torch.cuda.is_available()
+gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
 
 # %% lstsq_SVDsolver ==========================================================
@@ -164,7 +164,7 @@ class RtpRegress(RTP):
             the length of desMtx.
         onGPU : bool, optional
             Run REGRESS on GPU when available. The default is the output of
-            torch.cuda.is_available().
+            torch.cuda.is_available() or torch.backends.mps.is_available().
         reg_retro_proc : bool, optional
             Flag to retroactively process the volumes before starting regress.
             Default is True.
@@ -231,8 +231,10 @@ class RtpRegress(RTP):
         if _onGPU:
             if torch.cuda.is_available():
                 self.device = 'cuda'
+            elif torch.backends.mps.is_available():
+                self.device = 'mps'
             else:
-                errmsg = "CUDA device is not available."
+                errmsg = "GPU is not available."
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 self.device = 'cpu'
@@ -404,7 +406,7 @@ class RtpRegress(RTP):
                     self.YMtx = self.YMtx.to(self.device)
                 except Exception as e:
                     self._logger.error(str(e))
-                    if self.device == 'cuda':
+                    if self.device != 'cpu':
                         errmsg = "Failed to keep GPU memory for Y."
                         self._logger.error(errmsg)
                         self.err_popup(errmsg)
