@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 import platform
 import shutil
+import json
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,7 @@ class RTMRISimulator():
         self._serEnd_event = threading.Event()
 
         self.create_widget()
+        self.load_properties()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def create_widget(self):
@@ -95,7 +97,7 @@ class RTMRISimulator():
         self.imageSrc_entry.config(state="readonly")
         row_i += 1
 
-        # --- Create a listbox to display series ---
+        # --- Listbox to display series ---
         # Create a dropdown list of image folders
         imageFolder_label = tk.Label(
             self.root_win, text="Select data folder", font=self.font)
@@ -113,14 +115,14 @@ class RTMRISimulator():
         row_i += 1
 
         self.series_label = tk.Label(
-            self.root_win, text="Series list: Doubleclick an item to start",
+            self.root_win, text="Series list: Doubleclick a series to start",
             font=self.font)
         self.series_label.grid(
             row=row_i, column=0, columnspan=3, padx=10, pady=0, sticky='sw')
         row_i += 1
 
         self.series_listbox = tk.Listbox(
-            self.root_win, width=50, height=15, font=self.font)
+            self.root_win, width=50, height=10, font=self.font)
         self.series_listbox.grid(
             row=row_i, column=0, columnspan=10, padx=10, pady=5,
             sticky='ew')
@@ -129,7 +131,7 @@ class RTMRISimulator():
         # Bind double-click event on the listbox
         self.series_listbox.bind("<Double-1>", self.run_series)
 
-        # --- Create mode select buttons ---
+        # --- Mode select buttons ---
         # Create radio buttons to select a mode
         runMode_frame = tk.Frame(self.root_win)
         runMode_frame.grid(
@@ -167,14 +169,72 @@ class RTMRISimulator():
             command=self.cancel_ongoing_process)
         self.stop_button.grid(row=0, column=4, padx=10, pady=5, sticky="ew")
 
-        # # --- Create a log field ---
+        # --- Physio files ---
+        physio_separator = ttk.Separator(self.root_win, orient="horizontal")
+        physio_separator.grid(row=row_i, column=0, columnspan=2, sticky="ew",
+                              pady=10)
+        row_i += 1
+
+        card_button = tk.Button(
+            self.root_win, text="Set Cardiac file", font=self.font,
+            command=self.set_card_file
+            )
+        card_button.grid(row=row_i, column=0, padx=10, pady=5)
+
+        self.card_entry = tk.Entry(
+            self.root_win, width=30, font=self.font
+            )
+        self.card_entry.grid(row=row_i, column=1, padx=10, pady=5,
+                             sticky='ew')
+        self.card_entry.config(state="readonly")
+        row_i += 1
+
+        resp_button = tk.Button(
+            self.root_win, text="Set Respiration file", font=self.font,
+            command=self.set_resp_file
+            )
+        resp_button.grid(row=row_i, column=0, padx=10, pady=5)
+
+        self.resp_entry = tk.Entry(
+            self.root_win, width=30, font=self.font
+            )
+        self.resp_entry.grid(row=row_i, column=1, padx=10, pady=5,
+                             sticky='ew')
+        self.resp_entry.config(state="readonly")
+        row_i += 1
+
+        physioCtrl_frame = tk.Frame(self.root_win)
+        physioCtrl_frame.grid(
+            row=row_i, column=0, columnspan=2, padx=10, pady=5, sticky='e')
+        row_i += 1
+
+        physioStart_button = tk.Button(
+            physioCtrl_frame, text="Start physio", font=self.font,
+            command=self.start_physio
+            )
+        physioStart_button.grid(
+            row=0, column=0, padx=10, pady=5, sticky="ew")
+
+        physioStop_button = tk.Button(
+            physioCtrl_frame, text="Stop physio", font=self.font,
+            command=self.stop_physio
+            )
+        physioStop_button.grid(
+            row=0, column=2, padx=10, pady=5, sticky="ew")
+
+        physio_separator2 = ttk.Separator(self.root_win, orient="horizontal")
+        physio_separator2.grid(row=row_i, column=0, columnspan=2, sticky="ew",
+                               pady=10)
+        row_i += 1
+
+        # --- Log field ---
         self.log_display = scrolledtext.ScrolledText(
             self.root_win, height=10, width=50,
             font=self.font)
         self.log_display.grid(
             row=row_i, column=0, columnspan=2, padx=10, pady=5,
             sticky="nsew")
-        self.log_display.tag_configure("error", foreground="red")
+        self.log_display.tag_configure("ERROR", foreground="red")
 
         self.root_win.grid_rowconfigure(row_i, weight=1)
         self.root_win.grid_columnconfigure(1, weight=1)
@@ -190,7 +250,7 @@ class RTMRISimulator():
                     f"[{datetime.isoformat(datetime.now())}]:" + add_line
 
             if 'ERROR' in log_line:
-                self.log_display.insert(tk.END, add_line, "error")
+                self.log_display.insert(tk.END, add_line, "ERROR")
             else:
                 self.log_display.insert(tk.END, add_line)
 
@@ -199,10 +259,15 @@ class RTMRISimulator():
         self.log_display.update()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_export_dir(self):
-        dir_path = filedialog.askdirectory()
+    def set_export_dir(self, dir_path=None):
         if dir_path is None:
-            return
+            dir_path = filedialog.askdirectory()
+            if dir_path is None:
+                return
+        else:
+            if not Path(dir_path).is_dir():
+                self.log(f"[ERROR] Not found {dir_path}")
+                return
 
         self.RTMRIexport_entry.config(state="normal")
         self.RTMRIexport_entry.delete(0, tk.END)
@@ -221,16 +286,21 @@ class RTMRISimulator():
             errmsg = "Error in the file pattern"
             errmsg += f"{file_pat} is not a valid regular expression."
             messagebox.showerror(errmsg)
-            self.log(f"ERROR: {errmsg}")
+            self.log(f"[ERROR]{errmsg}")
 
             self.imageFilePat_entry.delete(0, tk.END)
             self.imageFilePat_entry.insert(0, self.image_file_pat)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_image_src(self):
-        dir_path = filedialog.askdirectory()
+    def set_image_src(self, dir_path=None):
         if dir_path is None:
-            return
+            dir_path = filedialog.askdirectory()
+            if dir_path is None:
+                return
+        else:
+            if not Path(dir_path).is_dir():
+                self.log(f"[ERROR]Not found {dir_path}")
+                return
 
         # Set imageSrc_entry
         self.imageSrc_entry.config(state="normal")
@@ -283,8 +353,11 @@ class RTMRISimulator():
 
         # Set imageFolder_dropdown
         img_folders = ['Select image folder ...']
-        img_folders += [str(Path(pp).relative_to(self.image_src))
-                        for pp in self.image_files.Path.unique()]
+        for pp in self.image_files.Path.unique():
+            folder_path = str(Path(pp).relative_to(self.image_src))
+            if folder_path == '.':
+                folder_path += f'[{Path(pp).name}]'
+            img_folders.append(folder_path)
         self.imageFolder_dropdown['values'] = img_folders
         self.imageFolder_dropdown.set(img_folders[0])
         self.log("Found directories\n" + '\n'.join(img_folders[1:]))
@@ -337,17 +410,17 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_series_list(self, event):
-
+        folder_path = self.imageFolder_dropdown.get().split('[')[0]
         image_folder = str(
-            Path(self.image_src) / self.imageFolder_dropdown.get())
+            Path(self.image_src) / folder_path)
         try:
             assert Path(image_folder).is_dir()
         except Exception:
             self.log(
-                f"ERROR:{self.imageFolder_dropdown.get()} is not a directory")
+                f"[ERROR]{self.imageFolder_dropdown.get()} is not a directory")
             return
 
-        self.log(f"Select folder {self.imageFolder_dropdown.get()}")
+        self.log(f"Select folder {image_folder}")
 
         # --- Open progress bar dialog ---
         # Create a new Toplevel window for the progress dialog
@@ -373,11 +446,14 @@ class RTMRISimulator():
 
         # --- Get file info ---
         file_list = self.image_files[self.image_files.Path == image_folder]
+        file_list = file_list.sort_values('File')
+
         progress_bar['maximum'] = len(file_list)
-        for idx, row in file_list.iterrows():
+        excld_idx = []
+        for ii, (idx, row) in enumerate(file_list.iterrows()):
             self.root_win.update_idletasks()
             progress_dialog.update()
-            progress_bar['value'] = idx
+            progress_bar['value'] = ii
 
             if pd.notna(row.Series) and pd.notna(row.Atime):
                 continue
@@ -387,12 +463,15 @@ class RTMRISimulator():
                 dcm = pydicom.dcmread(img_file)
 
                 if hasattr(dcm, 'StudyDescription'):
+                    file_list.loc[idx, 'Study'] = dcm.StudyDescription
                     self.image_files.loc[idx, 'Study'] = dcm.StudyDescription
 
                 if hasattr(dcm, 'SeriesNumber'):
+                    file_list.loc[idx, 'Series'] = dcm.SeriesNumber
                     self.image_files.loc[idx, 'Series'] = dcm.SeriesNumber
 
                 if hasattr(dcm, 'SeriesDescription'):
+                    file_list.loc[idx, 'Desc'] = dcm.SeriesDescription
                     self.image_files.loc[idx, 'Desc'] = dcm.SeriesDescription
 
                 if hasattr(dcm, 'StudyDate') and \
@@ -400,6 +479,8 @@ class RTMRISimulator():
                     date = dcm.StudyDate
                     atime = date + dcm.AcquisitionTime
                     at = datetime.strptime(atime, '%Y%m%d%H%M%S.%f')
+                    file_list.loc[idx, 'Atime'] = \
+                        pd.to_datetime(at, errors='coerce')
                     self.image_files.loc[idx, 'Atime'] = \
                         pd.to_datetime(at, errors='coerce')
 
@@ -407,6 +488,8 @@ class RTMRISimulator():
                     atime = dcm.AcquisitionDateTime
                     date = atime[:8]
                     at = datetime.strptime(atime, '%Y%m%d%H%M%S.%f')
+                    file_list.loc[idx, 'Atime'] = \
+                        pd.to_datetime(at, errors='coerce')
                     self.image_files.loc[idx, 'Atime'] = \
                         pd.to_datetime(at, errors='coerce')
                 else:
@@ -415,14 +498,19 @@ class RTMRISimulator():
                 if hasattr(dcm, 'ContentTime') and date is not None:
                     ctime = date + dcm.ContentTime
                     ct = datetime.strptime(ctime, '%Y%m%d%H%M%S.%f')
+                    file_list.loc[idx, 'Ctime'] = \
+                        pd.to_datetime(ct, errors='coerce')
                     self.image_files.loc[idx, 'Ctime'] = \
                         pd.to_datetime(ct, errors='coerce')
 
             except Exception:
+                self.log(f"[ERROR]Could not read {img_file} as dicom.")
+                excld_idx.append(idx)
                 continue
 
         # --- Get series list ---
-        file_list = self.image_files[self.image_files.Path == image_folder]
+        file_list = file_list.drop(excld_idx)
+        file_list = file_list[pd.notna(file_list.Atime)]
         self.file_list = file_list.sort_values('Atime').reset_index(drop=True)
 
         # Find series divisions
@@ -443,6 +531,8 @@ class RTMRISimulator():
             sel_idx = np.arange(sstart, send, dtype=int)
             self.file_list.loc[sel_idx, 'Run_idx'] = ri
             ser_nums = np.unique(self.file_list.iloc[sel_idx, :].Series)
+            if np.any(pd.notna(ser_nums)):
+                ser_nums = ser_nums[pd.notna(ser_nums)]
             ser_label = f'Ser {ser_nums.astype(int)} (N={len(sel_idx)})'
             for sn in ser_nums:
                 ser_label += f"; {self.file_list.Desc[sel_idx[0]]}"
@@ -450,7 +540,6 @@ class RTMRISimulator():
             sstart = send
 
         # Refresh series_listbox
-        self.series_listbox.config(height=len(series_list))
         self.series_listbox.delete(0, tk.END)
         for item in series_list:
             self.series_listbox.insert(tk.END, item)
@@ -492,8 +581,7 @@ class RTMRISimulator():
         # Confirm another copy_thread is not running
         if self._copy_thread is not None:
             self._serEnd_event.set()
-            while self._copy_thread.is_alive():
-                time.sleep(0.1)
+            self._copy_thread.join(timeout=3)
 
         # Start copy file thread
         self._copy_thread = threading.Thread(
@@ -536,7 +624,7 @@ class RTMRISimulator():
                     time.sleep(0.001)
             elif run_mode == 'File':
                 pass
-                # Wait for a button press
+                # TODO: Wait for a button press
 
             shutil.copy(src_f, dst_f)
             self.log(f"Copy {row.File}")
@@ -552,52 +640,78 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def cancel_ongoing_process(self):
-        self._serEnd_event.set()
-        # if self._copy_thread is not None:
-        #     while self._copy_thread.is_alive():
-        #         self.root_win.update()
-        #         time.sleep(0.1)
-        #     self._copy_thread = None
+        if not self._serEnd_event.is_set():
+            self._serEnd_event.set()
+            if self._copy_thread is not None:
+                self._copy_thread.join(timeout=3)
+            self._copy_thread = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
         self.root_win.mainloop()
 
+    def set_card_file(self, file=None):
+        pass
+
+    def set_resp_file(self, file=None):
+        pass
+
+    def start_physio(self):
+        pass
+
+    def stop_physio(self):
+        pass
+
+    def open_physio_monitor(self):
+        pass
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def quit_application(self, event=None):
         self.root_win.quit()
 
-# def on_item_double_click(event):
-#     # Get the selected item from the listbox
-#     selected_item_index = listbox.curselection()
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def save_properties(self):
+        # Save configurations
+        properties = {}
+        for kk in ('export_dir', 'image_src', 'image_file_pat', 'run_mode'):
+            val = getattr(self, kk)
+            if hasattr(val, 'get'):
+                val = val.get()
+            val = str(val)
+            properties[kk] = val
 
-#     if selected_item_index:
-#         selected_item = listbox.get(selected_item_index)
+        prop_file = Path.home() / '.RTPSpy' / 'simulate_RTMRI.json'
+        if not prop_file.parent.is_dir():
+            prop_file.parent.mkdir()
+        with open(prop_file, 'w') as fid:
+            json.dump(properties, fid, indent=4)
 
-#         # Show a confirmation dialog
-#         response = messagebox.askyesno("Confirmation", f"Do you want to start a process with '{selected_item}' in mode {mode.get()}?")
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def load_properties(self):
+        prop_file = Path.home() / '.RTPSpy' / 'simulate_RTMRI.json'
+        if not prop_file.is_file():
+            return
 
-#         if response:
-#             # Start the process in a new thread to simulate a long-running task
-#             global cancel_process
-#             cancel_process = False
-#             threading.Thread(target=start_process, args=(selected_item, mode.get())).start()
-#         else:
-#             messagebox.showinfo("Cancelled", "Process not started.")
+        try:
+            # Load configurations
+            with open(prop_file, 'r') as fid:
+                properties = json.load(fid)
 
-# def start_process(item, selected_mode):
-#     global cancel_process
-#     # Example long-running process simulation
-#     for i in range(10):
-#         if cancel_process:
-#             messagebox.showinfo("Process Cancelled", f"Process for '{item}' in {selected_mode} was cancelled.")
-#             return
-#         print(f"Processing '{item}' in {selected_mode}... Step {i+1}/10")
-#         time.sleep(1)  # Simulate a time-consuming task with sleep
-#     messagebox.showinfo("Process Completed", f"Process completed for '{item}' in {selected_mode}")
+            for kk, val in properties.items():
+                if val is None:
+                    continue
+                if kk == 'export_dir':
+                    self.set_export_dir(val)
+
+                elif kk == 'image_src':
+                    self.set_image_src(val)
+
+        except Exception:
+            return
 
 
 # %% __main__ =================================================================
 if __name__ == '__main__':
     rtmei_sim = RTMRISimulator()
     rtmei_sim.run()
+    rtmei_sim.save_properties()
