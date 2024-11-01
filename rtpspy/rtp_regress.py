@@ -1516,7 +1516,7 @@ class RtpRegress(RTP):
         self.ui_mask_lnEd = QtWidgets.QLineEdit()
         self.ui_mask_lnEd.setReadOnly(True)
         self.ui_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
                              self.ui_mask_lnEd])
 
@@ -1624,7 +1624,7 @@ class RtpRegress(RTP):
         self.ui_GS_mask_lnEd.setText(str(self.GS_mask))
         self.ui_GS_mask_lnEd.setReadOnly(True)
         self.ui_GS_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         GSmask_hBLayout.addWidget(self.ui_GS_mask_lnEd)
 
         self.ui_GSmask_btn = QtWidgets.QPushButton('Set')
@@ -1650,7 +1650,7 @@ class RtpRegress(RTP):
         self.ui_WM_mask_lnEd.setText(str(self.WM_mask))
         self.ui_WM_mask_lnEd.setReadOnly(True)
         self.ui_WM_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         WMmask_hBLayout.addWidget(self.ui_WM_mask_lnEd)
 
         self.ui_WMmask_btn = QtWidgets.QPushButton('Set')
@@ -1677,7 +1677,7 @@ class RtpRegress(RTP):
         self.ui_Vent_mask_lnEd.setText(str(self.Vent_mask))
         self.ui_Vent_mask_lnEd.setReadOnly(True)
         self.ui_Vent_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Ventmask_hBLayout.addWidget(self.ui_Vent_mask_lnEd)
 
         self.ui_Ventmask_btn = QtWidgets.QPushButton('Set')

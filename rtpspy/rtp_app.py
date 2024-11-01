@@ -2623,7 +2623,7 @@ class RtpApp(RTP):
         self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_anat_orig_lnEd.setReadOnly(True)
         self.ui_anat_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
 
         self.ui_anat_orig_btn = QtWidgets.QPushButton('Set')
@@ -2647,7 +2647,7 @@ class RtpApp(RTP):
         self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_func_orig_lnEd.setReadOnly(True)
         self.ui_func_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
 
         self.ui_func_orig_btn = QtWidgets.QPushButton('Set')
@@ -2692,7 +2692,7 @@ class RtpApp(RTP):
         self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
         self.ui_func_param_ref_lnEd.setReadOnly(True)
         self.ui_func_param_ref_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
 
         self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
@@ -2778,7 +2778,7 @@ class RtpApp(RTP):
         self.ui_template_lnEd.setText(str(self.template))
         self.ui_template_lnEd.setReadOnly(True)
         self.ui_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_template_lnEd, ri, 1)
 
         self.ui_template_btn = QtWidgets.QPushButton('Set')
@@ -2803,7 +2803,7 @@ class RtpApp(RTP):
         self.ui_ROI_template_lnEd.setText(str(self.ROI_template))
         self.ui_ROI_template_lnEd.setReadOnly(True)
         self.ui_ROI_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_ROI_template_lnEd, ri, 1)
 
         self.ui_ROI_template_btn = QtWidgets.QPushButton('Set')
@@ -2843,7 +2843,7 @@ class RtpApp(RTP):
         self.ui_WM_template_lnEd.setText(str(self.WM_template))
         self.ui_WM_template_lnEd.setReadOnly(True)
         self.ui_WM_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_WM_template_lnEd, ri, 1)
 
         self.ui_WM_template_btn = QtWidgets.QPushButton('Set')
@@ -2868,7 +2868,7 @@ class RtpApp(RTP):
         self.ui_Vent_template_lnEd.setText(str(self.Vent_template))
         self.ui_Vent_template_lnEd.setReadOnly(True)
         self.ui_Vent_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_Vent_template_lnEd, ri, 1)
 
         self.ui_Vent_template_btn = QtWidgets.QPushButton('Set')
@@ -2898,7 +2898,7 @@ class RtpApp(RTP):
         self.ui_alAnat_lnEd.setText(str(self.alAnat))
         self.ui_alAnat_lnEd.setReadOnly(True)
         self.ui_alAnat_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_alAnat_lnEd, ri0, 1)
 
         self.ui_alAnat_btn = QtWidgets.QPushButton('Set')
@@ -2931,7 +2931,7 @@ class RtpApp(RTP):
         self.ui_WM_orig_lnEd.setText(str(self.WM_orig))
         self.ui_WM_orig_lnEd.setReadOnly(True)
         self.ui_WM_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_WM_orig_lnEd, ri, 1)
 
         self.ui_WM_orig_btn = QtWidgets.QPushButton('Set')
@@ -2954,7 +2954,7 @@ class RtpApp(RTP):
         self.ui_Vent_orig_lnEd.setText(str(self.Vent_orig))
         self.ui_Vent_orig_lnEd.setReadOnly(True)
         self.ui_Vent_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_Vent_orig_lnEd, ri, 1)
 
         self.ui_Vent_orig_btn = QtWidgets.QPushButton('Set')
@@ -2977,7 +2977,7 @@ class RtpApp(RTP):
         self.ui_ROI_orig_lnEd.setText(str(self.ROI_orig))
         self.ui_ROI_orig_lnEd.setReadOnly(True)
         self.ui_ROI_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_ROI_orig_lnEd, ri, 1)
 
         self.ui_ROI_orig_btn = QtWidgets.QPushButton('Set')
@@ -3000,7 +3000,7 @@ class RtpApp(RTP):
         self.ui_RTP_mask_lnEd.setText(str(self.RTP_mask))
         self.ui_RTP_mask_lnEd.setReadOnly(True)
         self.ui_RTP_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_RTP_mask_lnEd, ri0, 1)
 
         self.ui_RTP_mask_btn = QtWidgets.QPushButton('Set')
@@ -3026,7 +3026,7 @@ class RtpApp(RTP):
         self.ui_GSR_mask_lnEd.setText(str(self.GSR_mask))
         self.ui_GSR_mask_lnEd.setReadOnly(True)
         self.ui_GSR_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_GSR_mask_lnEd, ri0, 1)
 
         self.ui_GSR_mask_btn = QtWidgets.QPushButton('Set')
@@ -3074,7 +3074,7 @@ class RtpApp(RTP):
         self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
         self.ui_simfMRIData_lnEd.setReadOnly(True)
         self.ui_simfMRIData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
 
         self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
@@ -3099,7 +3099,7 @@ class RtpApp(RTP):
         self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
         self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
         self.ui_simfMRIDataDir_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
 
         self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
@@ -3139,7 +3139,7 @@ class RtpApp(RTP):
         self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
         self.ui_simECGData_lnEd.setReadOnly(True)
         self.ui_simECGData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
 
         self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
@@ -3164,7 +3164,7 @@ class RtpApp(RTP):
         self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
         self.ui_simRespData_lnEd.setReadOnly(True)
         self.ui_simRespData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
 
         self.ui_simRespData_btn = QtWidgets.QPushButton('Set')

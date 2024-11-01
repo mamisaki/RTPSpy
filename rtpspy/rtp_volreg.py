@@ -821,7 +821,7 @@ class RtpVolreg(RTP):
         self.ui_baseVol_lnEd = QtWidgets.QLineEdit()
         self.ui_baseVol_lnEd.setReadOnly(True)
         self.ui_baseVol_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         ui_rows.append((None, self.ui_baseVol_lnEd))
 
         self.ui_objs.extend([var_lb, self.ui_baseVol_cmbBx,

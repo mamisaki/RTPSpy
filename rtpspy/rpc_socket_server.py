@@ -209,7 +209,7 @@ class RPCSocketServer:
         self._server.socket_name = self._socket_name
 
         # Save the port number in rtpspy config file
-        config_f = Path.home() / '.config' / 'rtpspy'
+        config_f = Path.home() / '.RTPSpy' / 'rtpspy'
         if config_f.is_file():
             with open(config_f, "r") as fid:
                 rtpspy_config = json.load(fid)

@@ -65,10 +65,10 @@ def call_rt_physio(data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        config_f = Path.home() / '.config' / 'rtpspy'
+        config_f = Path.home() / '.RTPSpy' / 'rtpspy'
         with open(config_f, "r") as fid:
             rtpspy_config = json.load(fid)
-        port = rtpspy_config['RtpTTLPhysioSocketServer_pot']
+        port = rtpspy_config['RtpTTLPhysioSocketServer_port']
         sock.connect(('localhost', port))
     except ConnectionRefusedError:
         time.sleep(1)
@@ -620,6 +620,7 @@ class TTLPhysioPlot(QtCore.QObject):
         signal_freq = self.recorder.sample_freq
 
         while self.plt_win.isVisible() and not self._cancel:
+            time.sleep(0.001)
             try:
                 # Get signals
                 plt_data = self.recorder.get_plot_signals(self.plot_len_sec+1)
@@ -632,7 +633,7 @@ class TTLPhysioPlot(QtCore.QObject):
                 card = plt_data['card']
                 resp = plt_data['resp']
                 tstamp = plt_data['tstamp']
-                
+
                 card[tstamp == 0] = 0
                 resp[tstamp == 0] = 0
                 zero_t = time.time() - np.max(self._ln_ttl[0].get_xdata())
@@ -903,6 +904,10 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_device(self, device, sport=None):
 
+        if device not in ('Numato', 'GE', 'Dummy', 'None'):
+            self._logger.error(f"Device {device} is not supported.")
+            return
+
         # --- Initialize data array shared with plotting process ---
         buf_len = self.buf_len_sec * self.sample_freq
         self._rbuf = self.init_data_array(buf_len)
@@ -910,7 +915,7 @@ class RtpTTLPhysio(RTP):
         if self._recorder is not None:
             self.stop_recording()
 
-        # --- Create recorder device ---
+        # --- Set recorder device ---
         self._device = device
 
         if device == 'Numato':
@@ -923,7 +928,9 @@ class RtpTTLPhysio(RTP):
         elif device == 'GE':
             self._recorder = None
 
-        if device == 'Dummy' or self._recorder is None:
+        if device == 'None':
+            self._recorder = None
+        elif device == 'Dummy' or self._recorder is None:
             self._device = 'Dummy'
             self._recorder = DummyRecording(
                 self._ttl_onset_que, self._ttl_offset_que, self._physio_que,
@@ -949,7 +956,7 @@ class RtpTTLPhysio(RTP):
             if cpos_mmap_f.is_file():
                 cpos_mmap_f.unlink()
             cpos_buf = np.memmap(cpos_mmap_f, dtype=np.int64, mode='w+',
-                                  shape=(1,))
+                                 shape=(1,))
             cpos_buf[0] = 0
             cpos_buf.flush()
             rbuf[label] = RingBuffer(
@@ -992,8 +999,9 @@ class RtpTTLPhysio(RTP):
         return self._rec_proc is not None and self._rec_proc.is_alive()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def stop_recording(self):
-        self.close_plot()
+    def stop_recording(self, close_plot=True):
+        if close_plot:
+            self.close_plot()
 
         if not self.is_recording():
             return
@@ -1010,6 +1018,9 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(self, main_win=None, win_shape=(450, 450), plot_len_sec=10,
                   disable_close=False):
+        if platform.system() == 'Darwin':
+            return
+
         if self.plot is None:
             self.plot = TTLPhysioPlot(
                 self, main_win, win_shape=win_shape, 
@@ -1030,8 +1041,11 @@ class RtpTTLPhysio(RTP):
             return
 
         self.plot._cancel = True
-        self._pltTh.quit()
-        self._pltTh.wait()
+        if platform.system() == 'Darwin':
+            self._pltTh.terminate()
+        else:    
+            if not self._pltTh.wait(10):  # wait ms
+                self._pltTh.terminate()
 
         del self.plot
         self.plot = None
@@ -1448,6 +1462,9 @@ class RtpTTLPhysio(RTP):
                 conf = call[1]
                 self.set_config(conf)
 
+            elif call[0] == 'SET_REC_DEV':
+                self.reset_device(call[1])
+
         elif call == 'QUIT':
             self.end()
 
@@ -1530,7 +1547,7 @@ class RtpTTLPhysio(RTP):
         # self.ui_mask_lnEd = QtWidgets.QLineEdit()
         # self.ui_mask_lnEd.setReadOnly(True)
         # self.ui_mask_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
+        #     'border: 0px none;')
         # self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
         #                      self.ui_mask_lnEd])
 
@@ -1638,7 +1655,7 @@ class RtpTTLPhysio(RTP):
         # self.ui_GS_mask_lnEd.setText(str(self.GS_mask))
         # self.ui_GS_mask_lnEd.setReadOnly(True)
         # self.ui_GS_mask_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
+        #     'border: 0px none;')
         # GSmask_hBLayout.addWidget(self.ui_GS_mask_lnEd)
 
         # self.ui_GSmask_btn = QtWidgets.QPushButton('Set')
@@ -1664,7 +1681,7 @@ class RtpTTLPhysio(RTP):
         # self.ui_WM_mask_lnEd.setText(str(self.WM_mask))
         # self.ui_WM_mask_lnEd.setReadOnly(True)
         # self.ui_WM_mask_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
+        #     'border: 0px none;')
         # WMmask_hBLayout.addWidget(self.ui_WM_mask_lnEd)
 
         # self.ui_WMmask_btn = QtWidgets.QPushButton('Set')
@@ -1691,7 +1708,7 @@ class RtpTTLPhysio(RTP):
         # self.ui_Vent_mask_lnEd.setText(str(self.Vent_mask))
         # self.ui_Vent_mask_lnEd.setReadOnly(True)
         # self.ui_Vent_mask_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
+        #     'border: 0px none;')
         # Ventmask_hBLayout.addWidget(self.ui_Vent_mask_lnEd)
 
         # self.ui_Ventmask_btn = QtWidgets.QPushButton('Set')
