@@ -385,7 +385,7 @@ class LANF(RtpApp):
         self.ui_NFROI_lnEd = QtWidgets.QLineEdit()
         self.ui_NFROI_lnEd.setReadOnly(True)
         self.ui_NFROI_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         if Path(self.ROI_orig).is_file():
             self.ui_NFROI_lnEd.setText(str(self.ROI_orig))
 

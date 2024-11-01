@@ -142,8 +142,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Watching Directory LineEdit
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWatchDir.setReadOnly(True)
-        self.lineEditWatchDir.setStyleSheet(
-            'background: white; border: 0px none;')
+        self.lineEditWatchDir.setStyleSheet('border: 0px none;')
 
         # Set watching directory button
         self.btnSetWatchDir = QtWidgets.QPushButton('Set', self.mainWidget)
@@ -156,8 +155,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Working Directory LineEdit
         self.lineEditWorkDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWorkDir.setReadOnly(True)
-        self.lineEditWorkDir.setStyleSheet(
-            'background: white; border: 0px none;')
+        self.lineEditWorkDir.setStyleSheet('border: 0px none;')
 
         # Set working directory button
         self.btnSetWorkDir = QtWidgets.QPushButton('Set', self.mainWidget)
@@ -515,8 +513,6 @@ class RtpGUI(QtWidgets.QMainWindow):
                     # Red color
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
                     add_line = add_line.replace('!!!', '')
-                else:
-                    self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
 
                 # Font weight
                 if '<B>' in add_line:
@@ -532,6 +528,12 @@ class RtpGUI(QtWidgets.QMainWindow):
                 # Move scroll bar
                 sb = self.logOutput_txtEd.verticalScrollBar()
                 sb.setValue(sb.maximum())
+
+                # Reset text color
+                cursor = self.logOutput_txtEd.textCursor()
+                default_format = QtGui.QTextCharFormat()
+                default_format.clearForeground()
+                cursor.setCharFormat(default_format)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_clicked_setOption(self, proc):
