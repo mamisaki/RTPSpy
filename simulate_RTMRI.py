@@ -666,8 +666,10 @@ class RTMRISimulator():
             )
             if card_file is None:
                 return
+        elif card_file == 'None':
+            return
         else:
-            if not Path(card_file).is_dir():
+            if not Path(card_file).is_file():
                 self.log(f"[ERROR] Not found {card_file}")
                 return
 
@@ -686,8 +688,10 @@ class RTMRISimulator():
             )
             if resp_file is None:
                 return
+        elif resp_file == 'None':
+            return
         else:
-            if not Path(resp_file).is_dir():
+            if not Path(resp_file).is_file():
                 self.log(f"[ERROR] Not found {resp_file}")
                 return
 

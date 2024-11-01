@@ -20,7 +20,6 @@ import time
 import traceback
 import socket
 import logging
-import platform
 
 import nibabel as nib
 import numpy as np
@@ -807,16 +806,13 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
         xpos = 0
         ypos = 0
 
-    env = os.environ
-    if platform.system() == 'Darwin':
-        env['DISPLAY'] = ':0'
     cmd = 'afni'
     if rt:
         cmd += f" -rt -DAFNI_TRUSTHOST={TRUSTHOST} -DAFNI_REALTIME_WRITEMODE=1"
     cmd += " -yesplugouts -DAFNI_IMSAVE_WARNINGS=NO"
     cmd += f" -com 'OPEN_WINDOW A geom=+{xpos}+{ypos}'"
     cmd += f" {boot_dir}"
-    subprocess.call(shlex.split(cmd), cwd=boot_dir, env=env)
+    subprocess.call(shlex.split(cmd), cwd=boot_dir)
 
 
 # %% excepthook ===============================================================
