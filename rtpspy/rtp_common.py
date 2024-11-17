@@ -20,6 +20,7 @@ import time
 import traceback
 import socket
 import logging
+import threading
 
 import nibabel as nib
 import numpy as np
@@ -193,12 +194,30 @@ class RTP(object):
         pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def select_file_dlg(self, caption, directory, filt):
+    def select_file_dlg(self, caption, directory, filt, parent=None):
         """
         If the user presses Cancel, it returns a tuple of empty string.
         """
-        fname = QtWidgets.QFileDialog.getOpenFileName(
-            None, caption, str(directory), filt)
+        if sys.platform == 'darwin':
+            fname = QtWidgets.QFileDialog.getOpenFileName(
+                parent, caption, str(directory), filt)
+        else:
+            options = QtWidgets.QFileDialog.Options()
+            options |= QtWidgets.QFileDialog.DontUseNativeDialog
+            fname = QtWidgets.QFileDialog.getOpenFileName(
+                parent, caption, str(directory), filt,
+                options=options
+            )
+
+        # dialog = QtWidgets.QFileDialog()
+        # dialog.setWindowTitle(caption)
+        # dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
+        # # dialog.setDirectory(QtCore.QDir(str(directory)))
+        # dialog.setNameFilter(filt)
+        # fname = ('',)
+        # if dialog.exec_():
+        #     fname = dialog.selectedFiles()
+
         return fname
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -413,7 +432,8 @@ def save_parameters(objs, fname='RTPSpy_params.pkl'):
                     'ui_' in var_name or \
                     isinstance(var_val, RTP) or \
                     isinstance(var_val, serial.Serial) or \
-                    isinstance(var_val, QtCore.QThread):
+                    isinstance(var_val, QtCore.QThread) or \
+                    isinstance(var_val, threading.Thread):
                 continue
 
             try:

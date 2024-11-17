@@ -195,6 +195,7 @@ class RtpApp(RTP):
             volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['TTLPHYSIO'])
 
         self.rtp_objs = rtp_objs
+        self.rtp_gui = None
 
         # --- Clean tmp dicom -------------------------------------------------
         tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
@@ -381,6 +382,13 @@ class RtpApp(RTP):
             dst_dir = out_dir / 'dicom'
             cmd = f"rsync -auvz {src_dir}/ {dst_dir}/"
             subprocess.check_call(shlex.split(cmd), stdout=subprocess.DEVNULL)
+
+            # # sanitize filename
+            # for fpath in out_dir.glob('*'):
+            #     fname = fpath.name
+            #     sanitized = re.sub(r'[\^|\s|<>:"/\\|?*\x00-\x1F]', '_', fname)
+            #     if sanitized != fname:
+            #         fpath.rename(out_dir / sanitized)
 
             msgBox.accept()
             QtWidgets.QMessageBox.information(
@@ -2398,7 +2406,8 @@ class RtpApp(RTP):
                     filt = '*.*;;*.txt;;*.1D'
                 else:
                     filt = "*.BRIK* *.nii*;;*.*"
-                fname = self.select_file_dlg(dlgMdg, startdir, filt)
+                fname = self.select_file_dlg(
+                    dlgMdg, startdir, filt, parent=self.rtp_gui )
                 if fname[0] == '':
                     return -1
 
