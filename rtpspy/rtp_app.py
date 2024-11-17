@@ -2524,79 +2524,6 @@ class RtpApp(RTP):
         self.ui_top_tabs = QtWidgets.QTabWidget()
         ui_rows.append((self.ui_top_tabs,))
 
-        if self.run_extApp:
-            # --- External App tab --------------------------------------------
-            self.ui_extAppTab = QtWidgets.QWidget()
-            self.ui_top_tabs.addTab(self.ui_extAppTab, 'Ext App')
-            self.ui_extApp_fLayout = QtWidgets.QFormLayout(self.ui_extAppTab)
-
-            # Command line
-            var_lb = QtWidgets.QLabel("App command:")
-            self.ui_extApp_cmd_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_cmd_lnEd.setText(str(self.extApp_cmd))
-            self.ui_extApp_cmd_lnEd.editingFinished.connect(
-                    lambda: self.set_param('extApp_cmd',
-                                           self.ui_extApp_cmd_lnEd.text()))
-            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_cmd_lnEd)
-            self.ui_objs.append(self.ui_extApp_cmd_lnEd)
-
-            # Boot App
-            self.ui_extApp_run_btn = QtWidgets.QPushButton('Run App')
-            self.ui_extApp_run_btn.clicked.connect(
-                lambda x: self.boot_extApp())
-            self.ui_extApp_fLayout.addRow(self.ui_extApp_run_btn, None)
-            self.ui_objs.append(self.ui_extApp_run_btn)
-
-            # address
-            var_lb = QtWidgets.QLabel("App server address\n(host:port):")
-            self.ui_extApp_addr_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_addr_lnEd.editingFinished.connect(
-                    lambda: self.set_param('extApp_addr',
-                                           self.ui_extApp_addr_lnEd.text(),
-                                           self.ui_extApp_addr_lnEd.setText))
-            if self.extApp_addr is not None:
-                addr_str = "{}:{}".format(*self.extApp_addr)
-                self.ui_extApp_addr_lnEd.setText(addr_str)
-            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_addr_lnEd)
-            self.ui_objs.append(self.ui_extApp_addr_lnEd)
-
-            # Check alive
-            self.ui_extApp_isAlive_btn = \
-                QtWidgets.QPushButton('Check connection')
-            self.ui_extApp_isAlive_btn.clicked.connect(
-                lambda x: self.set_param('extApp_isAlive', '',
-                                         self.ui_extApp_isAlive_lb.setText))
-            self.ui_extApp_isAlive_lb = QtWidgets.QLabel('')
-            self.ui_extApp_fLayout.addRow(self.ui_extApp_isAlive_btn,
-                                          self.ui_extApp_isAlive_lb)
-            self.ui_objs.append(self.ui_extApp_isAlive_btn)
-
-        else:
-            # --- Output --------------------------------------------
-            self.ui_extAppTab = QtWidgets.QWidget()
-            self.ui_top_tabs.addTab(self.ui_extAppTab, 'Output')
-            self.ui_extApp_gLayout = QtWidgets.QGridLayout(self.ui_extAppTab)
-
-            # real-time signal save file
-            var_lb = QtWidgets.QLabel("Real-time output file :")
-            self.ui_extApp_gLayout.addWidget(var_lb, 0, 0)
-
-            self.ui_sigSaveFile_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_lnEd, 0, 1)
-            self.ui_sigSaveFile_lnEd.setText(str(self.sig_save_file))
-            self.ui_sigSaveFile_lnEd.editingFinished.connect(
-                    lambda: self.set_param('sig_save_file',
-                                           self.ui_sigSaveFile_lnEd.text(),
-                                           self.ui_sigSaveFile_lnEd.setText))
-
-            self.ui_sigSaveFile_btn = QtWidgets.QPushButton('Set')
-            self.ui_sigSaveFile_btn.clicked.connect(
-                    lambda: self.set_param('sig_save_file', '',
-                                           self.ui_sigSaveFile_lnEd.setText))
-            self.ui_sigSaveFile_btn.setStyleSheet(
-                "background-color: rgb(151,217,235);")
-            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
-
         # --- Preprocessing tab -----------------------------------------------
         self.ui_preprocessingTab = QtWidgets.QWidget()
         self.ui_top_tabs.addTab(self.ui_preprocessingTab, 'Preprocessing')
@@ -2611,7 +2538,7 @@ class RtpApp(RTP):
 
         # --- dcm2nii ---
         ri = 0
-        self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2nii')
+        self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2niix')
         self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
         RefImg_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
 
@@ -2666,7 +2593,7 @@ class RtpApp(RTP):
         # -- CreateMasks button --
         ri += 1
         self.ui_CreateMasks_btn = QtWidgets.QPushButton(
-                'Create masks (+shift=overwrite; +ctrl=edit command lines)')
+                'Create masks (+shift=overwrite)')
         self.ui_CreateMasks_btn.clicked.connect(
                 lambda x: self.make_masks(progress_dlg=True,
                                           no_FastSeg=self.no_FastSeg))
@@ -2709,7 +2636,7 @@ class RtpApp(RTP):
         RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
 
         # --- check ROIs groups ---
-        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Check masks on AFNI")
+        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Display the masks in AFNI")
         ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
         self.ui_objs.append(self.ui_ChkMask_grpBx)
@@ -3053,142 +2980,216 @@ class RtpApp(RTP):
         procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, ri0, 3)
         self.ui_objs.append(self.ui_delAllProcImgs_btn)
 
+
+        if self.run_extApp:
+            # --- External App tab --------------------------------------------
+            self.ui_extAppTab = QtWidgets.QWidget()
+            self.ui_top_tabs.addTab(self.ui_extAppTab, 'Ext App')
+            self.ui_extApp_fLayout = QtWidgets.QFormLayout(self.ui_extAppTab)
+
+            # Command line
+            var_lb = QtWidgets.QLabel("App command:")
+            self.ui_extApp_cmd_lnEd = QtWidgets.QLineEdit()
+            self.ui_extApp_cmd_lnEd.setText(str(self.extApp_cmd))
+            self.ui_extApp_cmd_lnEd.editingFinished.connect(
+                    lambda: self.set_param('extApp_cmd',
+                                           self.ui_extApp_cmd_lnEd.text()))
+            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_cmd_lnEd)
+            self.ui_objs.append(self.ui_extApp_cmd_lnEd)
+
+            # Boot App
+            self.ui_extApp_run_btn = QtWidgets.QPushButton('Run App')
+            self.ui_extApp_run_btn.clicked.connect(
+                lambda x: self.boot_extApp())
+            self.ui_extApp_fLayout.addRow(self.ui_extApp_run_btn, None)
+            self.ui_objs.append(self.ui_extApp_run_btn)
+
+            # address
+            var_lb = QtWidgets.QLabel("App server address\n(host:port):")
+            self.ui_extApp_addr_lnEd = QtWidgets.QLineEdit()
+            self.ui_extApp_addr_lnEd.editingFinished.connect(
+                    lambda: self.set_param('extApp_addr',
+                                           self.ui_extApp_addr_lnEd.text(),
+                                           self.ui_extApp_addr_lnEd.setText))
+            if self.extApp_addr is not None:
+                addr_str = "{}:{}".format(*self.extApp_addr)
+                self.ui_extApp_addr_lnEd.setText(addr_str)
+            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_addr_lnEd)
+            self.ui_objs.append(self.ui_extApp_addr_lnEd)
+
+            # Check alive
+            self.ui_extApp_isAlive_btn = \
+                QtWidgets.QPushButton('Check connection')
+            self.ui_extApp_isAlive_btn.clicked.connect(
+                lambda x: self.set_param('extApp_isAlive', '',
+                                         self.ui_extApp_isAlive_lb.setText))
+            self.ui_extApp_isAlive_lb = QtWidgets.QLabel('')
+            self.ui_extApp_fLayout.addRow(self.ui_extApp_isAlive_btn,
+                                          self.ui_extApp_isAlive_lb)
+            self.ui_objs.append(self.ui_extApp_isAlive_btn)
+
+        else:
+            # --- Output --------------------------------------------
+            self.ui_extAppTab = QtWidgets.QWidget()
+            self.ui_top_tabs.addTab(self.ui_extAppTab, 'Output')
+            self.ui_extApp_gLayout = QtWidgets.QGridLayout(self.ui_extAppTab)
+
+            # real-time signal save file
+            var_lb = QtWidgets.QLabel("Real-time output file :")
+            self.ui_extApp_gLayout.addWidget(var_lb, 0, 0)
+
+            self.ui_sigSaveFile_lnEd = QtWidgets.QLineEdit()
+            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_lnEd, 0, 1)
+            self.ui_sigSaveFile_lnEd.setText(str(self.sig_save_file))
+            self.ui_sigSaveFile_lnEd.editingFinished.connect(
+                    lambda: self.set_param('sig_save_file',
+                                           self.ui_sigSaveFile_lnEd.text(),
+                                           self.ui_sigSaveFile_lnEd.setText))
+
+            self.ui_sigSaveFile_btn = QtWidgets.QPushButton('Set')
+            self.ui_sigSaveFile_btn.clicked.connect(
+                    lambda: self.set_param('sig_save_file', '',
+                                           self.ui_sigSaveFile_lnEd.setText))
+            self.ui_sigSaveFile_btn.setStyleSheet(
+                "background-color: rgb(151,217,235);")
+            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
+
         # --- Simulation tab -------------------------------------------------
-        self.ui_simulationTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
-        simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
+        # self.ui_simulationTab = QtWidgets.QWidget()
+        # self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
+        # simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
 
-        # enabled
-        self.ui_simEnabled_rdb = QtWidgets.QRadioButton("Enable simulation")
-        self.ui_simEnabled_rdb.setChecked(self.simEnabled)
-        self.ui_simEnabled_rdb.toggled.connect(
-                lambda checked: self.set_param(
-                    'simEnabled', checked, self.ui_simEnabled_rdb.setChecked))
-        simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
-        self.ui_objs.append(self.ui_simEnabled_rdb)
+        # # enabled
+        # self.ui_simEnabled_rdb = QtWidgets.QRadioButton("Enable simulation")
+        # self.ui_simEnabled_rdb.setChecked(self.simEnabled)
+        # self.ui_simEnabled_rdb.toggled.connect(
+        #         lambda checked: self.set_param(
+        #             'simEnabled', checked, self.ui_simEnabled_rdb.setChecked))
+        # simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
+        # self.ui_objs.append(self.ui_simEnabled_rdb)
 
-        # --- Simulation MRI data 4D file ---
-        var_lb = QtWidgets.QLabel("fMRI data 4D file:")
-        simulation_gLayout.addWidget(var_lb, 1, 0)
+        # # --- Simulation MRI data 4D file ---
+        # var_lb = QtWidgets.QLabel("fMRI data 4D file:")
+        # simulation_gLayout.addWidget(var_lb, 1, 0)
 
-        self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
-        self.ui_simfMRIData_lnEd.setReadOnly(True)
-        self.ui_simfMRIData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
+        # self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
+        # self.ui_simfMRIData_lnEd.setReadOnly(True)
+        # self.ui_simfMRIData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
 
-        self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simfMRIData_btn.clicked.connect(
-                lambda: self.set_param('simfMRIData', None,
-                                       self.ui_simfMRIData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simfMRIData_btn, 1, 2)
+        # self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simfMRIData_btn.clicked.connect(
+        #         lambda: self.set_param('simfMRIData', None,
+        #                                self.ui_simfMRIData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_btn, 1, 2)
 
-        self.ui_simfMRIData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simfMRIData_del_btn.clicked.connect(
-            lambda: self.delete_file('simfMRIData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simfMRIData_del_btn, 1, 3)
+        # self.ui_simfMRIData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simfMRIData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simfMRIData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_del_btn, 1, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simfMRIData_lnEd,
-                             self.ui_simfMRIData_btn,
-                             self.ui_simfMRIData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simfMRIData_lnEd,
+        #                      self.ui_simfMRIData_btn,
+        #                      self.ui_simfMRIData_del_btn])
 
-        # --- Simulation MRI data dicom directory ---
-        var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
-        simulation_gLayout.addWidget(var_lb, 2, 0)
+        # # --- Simulation MRI data dicom directory ---
+        # var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
+        # simulation_gLayout.addWidget(var_lb, 2, 0)
 
-        self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
-        self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
-        self.ui_simfMRIDataDir_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
+        # self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
+        # self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
+        # self.ui_simfMRIDataDir_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
 
-        self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
-        self.ui_simfMRIDataDir_btn.clicked.connect(
-                lambda: self.set_param('simfMRIDataDir', None,
-                                       self.ui_simfMRIDataDir_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
+        # self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simfMRIDataDir_btn.clicked.connect(
+        #         lambda: self.set_param('simfMRIDataDir', None,
+        #                                self.ui_simfMRIDataDir_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
 
-        self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simfMRIDataDir_del_btn.clicked.connect(
-            lambda: self.delete_file('simfMRIDataDir', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
+        # self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simfMRIDataDir_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simfMRIDataDir', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
-                             self.ui_simfMRIDataDir_btn,
-                             self.ui_simfMRIDataDir_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
+        #                      self.ui_simfMRIDataDir_btn,
+        #                      self.ui_simfMRIDataDir_del_btn])
 
-        # --- COM port list ---
-        var_lb = QtWidgets.QLabel("Simulation physio signal port :")
-        simulation_gLayout.addWidget(var_lb, 3, 0)
+        # # --- COM port list ---
+        # var_lb = QtWidgets.QLabel("Simulation physio signal port :")
+        # simulation_gLayout.addWidget(var_lb, 3, 0)
 
-        self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
-        self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
-        self.ui_simPhysPort_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('simPhysPort',
-                               self.ui_simPhysPort_cmbBx.currentText(),
-                               self.ui_simPhysPort_cmbBx.setCurrentText))
-        simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
+        # self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
+        # self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
+        # self.ui_simPhysPort_cmbBx.activated.connect(
+        #         lambda idx:
+        #         self.set_param('simPhysPort',
+        #                        self.ui_simPhysPort_cmbBx.currentText(),
+        #                        self.ui_simPhysPort_cmbBx.setCurrentText))
+        # simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
+        # self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
 
-        # --- ECG data ---
-        var_lb = QtWidgets.QLabel("ECG data :")
-        simulation_gLayout.addWidget(var_lb, 4, 0)
+        # # --- ECG data ---
+        # var_lb = QtWidgets.QLabel("ECG data :")
+        # simulation_gLayout.addWidget(var_lb, 4, 0)
 
-        self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
-        self.ui_simECGData_lnEd.setReadOnly(True)
-        self.ui_simECGData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
+        # self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
+        # self.ui_simECGData_lnEd.setReadOnly(True)
+        # self.ui_simECGData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
 
-        self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simECGData_btn.clicked.connect(
-            lambda: self.set_param('simECGData', None,
-                                   self.ui_simECGData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
+        # self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simECGData_btn.clicked.connect(
+        #     lambda: self.set_param('simECGData', None,
+        #                            self.ui_simECGData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
 
-        self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simECGData_del_btn.clicked.connect(
-            lambda: self.delete_file('simECGData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
+        # self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simECGData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simECGData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
-                             self.ui_simECGData_btn,
-                             self.ui_simECGData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
+        #                      self.ui_simECGData_btn,
+        #                      self.ui_simECGData_del_btn])
 
-        # --- Resp data ---
-        var_lb = QtWidgets.QLabel("Respiration data :")
-        simulation_gLayout.addWidget(var_lb, 5, 0)
+        # # --- Resp data ---
+        # var_lb = QtWidgets.QLabel("Respiration data :")
+        # simulation_gLayout.addWidget(var_lb, 5, 0)
 
-        self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
-        self.ui_simRespData_lnEd.setReadOnly(True)
-        self.ui_simRespData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
+        # self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
+        # self.ui_simRespData_lnEd.setReadOnly(True)
+        # self.ui_simRespData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
 
-        self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simRespData_btn.clicked.connect(
-            lambda: self.set_param('simRespData', None,
-                                   self.ui_simRespData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
+        # self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simRespData_btn.clicked.connect(
+        #     lambda: self.set_param('simRespData', None,
+        #                            self.ui_simRespData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
 
-        self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simRespData_del_btn.clicked.connect(
-            lambda: self.delete_file('simRespData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
+        # self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simRespData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simRespData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
-                             self.ui_simRespData_btn,
-                             self.ui_simRespData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
+        #                      self.ui_simRespData_btn,
+        #                      self.ui_simRespData_del_btn])
 
-        # --- Start simulation button ---
-        self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
-        self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
-        self.ui_startSim_btn.setStyleSheet(
-            "background-color: rgb(94,63,153);"
-            "height: 20px;")
-        simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
+        # # --- Start simulation button ---
+        # self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
+        # self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
+        # self.ui_startSim_btn.setStyleSheet(
+        #     "background-color: rgb(94,63,153);"
+        #     "height: 20px;")
+        # simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
 
         # --- Setup experiment button -----------------------------------------
         self.ui_setRTP_btn = QtWidgets.QPushButton('RTP setup')
