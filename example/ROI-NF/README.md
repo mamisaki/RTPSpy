@@ -46,6 +46,7 @@ Press the 'Template' tab and set the 'Template brain' and 'ROI on template' file
 
 ## 5. Create masks
 Go to the 'Preprocessing' tab and click the 'Create Masks' button.  
+> [!NOTE]  
 > If a GPU is not available, 'No FastSeg' will be selected. In this case, 3dSkullStrip and template white matter and ventricle masks will be used instead of FastSeg.  
 
 The 'Mask Image Creation' dialog will then open.
@@ -79,24 +80,23 @@ Press the 'Run App' button to open the application window.
 
 3. Detailed settings for real-time processing parameter
 > [!NOTE]  
-> - This step can be skipped if the setup was completed in a previous session and loaded via the 'Load Previous Settings?' prompt at startup.  
-> - Session-specific paramters are atomotically updated when the 'RTP setup' button is pressed.
+> - The detailed setup step can be skipped if it was completed in a previous session and loaded via the 'Load Previous Settings?' prompt at startup.  
+> - Session-specific parameters are automatically updated when the 'RTP Setup' button is pressed.
 
 You can adjust the real-time processing parameters in the 'RTP' panel.  
+Press a module button to set detailed parameters.  
 <img src="/example/ROI-NF/doc/REGRESS.png" height=400>  
 
-Press a module button to set detailed parameters.
-If the parameters are modified, you need to press the 'RTP Setup' button.
+When the parameters are modified, press the 'RTP Setup' button to apply the changes.  
 
 ## 7. Ready to scan
 Press the 'Ready' button.  
 - The application window shows a 'Ready' message.  
-- The watchdog thread will start monitoring the 'rtfMRI Watching Directory.'
 
-## 8. Start the scan and real-time processing will
+## 8. Start the scan and real-time processing
 You are now ready to start the scan.
 
-- If the TTL signal trigger is set, the RTP and PsychoPy application will start automatically with the trigger input.  
+- If the TTL signal trigger is set (refer to [Cardiogram, Respiration, and Scan Timing TTL Signal Recording](./PhysioRecording.md)), the RTP and PsychoPy application will start automatically with the trigger input.  
 - Alternatively, you can start the process manually by pressing the 'Manual Start' button.
 
 > Regression begins after receiving a certain number of images, as specified in the 'RTP' -> 'REGRESS' -> 'Wait REGRESS Until' field.
