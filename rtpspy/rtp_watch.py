@@ -936,7 +936,7 @@ class RtpWatch(RTP):
         var_lb = QtWidgets.QLabel("Watch directory :")
         self.ui_wdir_lnEd = QtWidgets.QLineEdit()
         self.ui_wdir_lnEd.setReadOnly(True)
-        self.ui_wdir_lnEd.setStyleSheet("background: white; border: 0px none;")
+        self.ui_wdir_lnEd.setStyleSheet("border: 0px none;")
         if self.watch_dir is not None and Path(self.watch_dir).is_dir():
             self.ui_wdir_lnEd.setText(str(self.watch_dir))
         ui_rows.append((var_lb, self.ui_wdir_lnEd))

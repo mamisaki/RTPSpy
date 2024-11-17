@@ -745,56 +745,51 @@ class RtpApp(RTP):
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
-                    work_dir, self.func_orig, self.ROI_template,
-                    total_ETA, warp_params, interpolator=self.ROI_resample,
+                    work_dir, self.ROI_template, self.alAnat, warp_params,
+                    res_master_f=self.func_orig, total_ETA=total_ETA,
+                    interpolator=self.ROI_resample,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert ROI_orig is not None
                 self.set_param('ROI_orig', ROI_orig)
 
             # --- 6. Make white matter and ventricle masks --------------------
-            if no_FastSeg:
-                if warp_params is not None:
-                    for roi in ('WM', 'Vent'):
-                        if roi == 'WM':
-                            roi_f = self.WM_template
-                        elif roi == 'Vent':
-                            roi_f = self.Vent_template
-
-                        warped_f = improc.ants_warp_resample(
-                            work_dir, self.alAnat, roi_f, total_ETA,
-                            warp_params, interpolator='nearestNeighbor',
-                            progress_bar=progress_bar, ask_cmd=ask_cmd,
-                            overwrite=overwrite)
-                        assert warped_f is not None
-
-                        if roi == 'WM':
-                            WM_seg = warped_f
-                        elif roi == 'Vent':
-                            Vent_seg = warped_f
-            else:
+            if warp_params is not None and Path(self.ROI_template).is_file():
                 for segname in ('WM', 'Vent', 'aseg'):
                     if segname == 'WM':
                         erode = 2
-                        seg_anat_f = WM_seg
+                        if no_FastSeg:
+                            seg_anat_f = self.WM_template
+                        else:
+                            seg_anat_f = WM_seg
                     elif segname == 'Vent':
                         erode = 1
-                        seg_anat_f = Vent_seg
+                        if no_FastSeg:
+                            seg_anat_f = self.Vent_template
+                        else:
+                            seg_anat_f = Vent_seg
                     elif segname == 'aseg':
+                        erode = 0
                         if no_FastSeg:
                             continue
-                        erode = 0
-                        seg_anat_f = aseg_seg
+                        else:
+                            seg_anat_f = aseg_seg
 
                     assert seg_anat_f.is_file()
+
                     if no_FastSeg:
+                        # warp template seg_anat_f
+                        seg_anat_f = improc.ants_warp_resample(
+                            work_dir, seg_anat_f, self.alAnat, warp_params,
+                            interpolator='nearestNeighbor',
+                            progress_bar=progress_bar, ask_cmd=ask_cmd,
+                            overwrite=overwrite)
                         aff1D_f = None
 
                     seg_al_f = improc.resample_segmasks(
                         work_dir, seg_anat_f, segname, erode, self.func_orig,
-                        total_ETA, aff1D_f, progress_bar=progress_bar,
+                        total_ETA, aff1D_f=aff1D_f, progress_bar=progress_bar,
                         ask_cmd=ask_cmd, overwrite=overwrite)
-                    assert seg_al_f is not None
 
                     # Use self.set_param() to update GUI fields
                     self.set_param(f'{segname}_orig', seg_al_f)
@@ -832,8 +827,8 @@ class RtpApp(RTP):
             # Message dialog
             if self.main_win is not None:
                 QtWidgets.QMessageBox.information(
-                    self.main_win, 'Complete the mask creation',
-                    'Complete the mask creation')
+                    self.main_win, 'Mask creation is complete.',
+                    'Mask creation is complete.')
 
         # Enable CreateMasks button
         if hasattr(self, 'ui_CreateMasks_btn'):
@@ -2550,7 +2545,7 @@ class RtpApp(RTP):
         self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_anat_orig_lnEd.setReadOnly(True)
         self.ui_anat_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
 
         self.ui_anat_orig_btn = QtWidgets.QPushButton('Set')
@@ -2574,7 +2569,7 @@ class RtpApp(RTP):
         self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
         self.ui_func_orig_lnEd.setReadOnly(True)
         self.ui_func_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
 
         self.ui_func_orig_btn = QtWidgets.QPushButton('Set')
@@ -2619,7 +2614,7 @@ class RtpApp(RTP):
         self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
         self.ui_func_param_ref_lnEd.setReadOnly(True)
         self.ui_func_param_ref_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
 
         self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
@@ -2705,7 +2700,7 @@ class RtpApp(RTP):
         self.ui_template_lnEd.setText(str(self.template))
         self.ui_template_lnEd.setReadOnly(True)
         self.ui_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_template_lnEd, ri, 1)
 
         self.ui_template_btn = QtWidgets.QPushButton('Set')
@@ -2730,7 +2725,7 @@ class RtpApp(RTP):
         self.ui_ROI_template_lnEd.setText(str(self.ROI_template))
         self.ui_ROI_template_lnEd.setReadOnly(True)
         self.ui_ROI_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_ROI_template_lnEd, ri, 1)
 
         self.ui_ROI_template_btn = QtWidgets.QPushButton('Set')
@@ -2770,7 +2765,7 @@ class RtpApp(RTP):
         self.ui_WM_template_lnEd.setText(str(self.WM_template))
         self.ui_WM_template_lnEd.setReadOnly(True)
         self.ui_WM_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_WM_template_lnEd, ri, 1)
 
         self.ui_WM_template_btn = QtWidgets.QPushButton('Set')
@@ -2795,7 +2790,7 @@ class RtpApp(RTP):
         self.ui_Vent_template_lnEd.setText(str(self.Vent_template))
         self.ui_Vent_template_lnEd.setReadOnly(True)
         self.ui_Vent_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Template_gLayout.addWidget(self.ui_Vent_template_lnEd, ri, 1)
 
         self.ui_Vent_template_btn = QtWidgets.QPushButton('Set')
@@ -2825,7 +2820,7 @@ class RtpApp(RTP):
         self.ui_alAnat_lnEd.setText(str(self.alAnat))
         self.ui_alAnat_lnEd.setReadOnly(True)
         self.ui_alAnat_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_alAnat_lnEd, ri0, 1)
 
         self.ui_alAnat_btn = QtWidgets.QPushButton('Set')
@@ -2858,7 +2853,7 @@ class RtpApp(RTP):
         self.ui_WM_orig_lnEd.setText(str(self.WM_orig))
         self.ui_WM_orig_lnEd.setReadOnly(True)
         self.ui_WM_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_WM_orig_lnEd, ri, 1)
 
         self.ui_WM_orig_btn = QtWidgets.QPushButton('Set')
@@ -2881,7 +2876,7 @@ class RtpApp(RTP):
         self.ui_Vent_orig_lnEd.setText(str(self.Vent_orig))
         self.ui_Vent_orig_lnEd.setReadOnly(True)
         self.ui_Vent_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_Vent_orig_lnEd, ri, 1)
 
         self.ui_Vent_orig_btn = QtWidgets.QPushButton('Set')
@@ -2904,7 +2899,7 @@ class RtpApp(RTP):
         self.ui_ROI_orig_lnEd.setText(str(self.ROI_orig))
         self.ui_ROI_orig_lnEd.setReadOnly(True)
         self.ui_ROI_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         wrpImg_gLayout.addWidget(self.ui_ROI_orig_lnEd, ri, 1)
 
         self.ui_ROI_orig_btn = QtWidgets.QPushButton('Set')
@@ -2927,7 +2922,7 @@ class RtpApp(RTP):
         self.ui_RTP_mask_lnEd.setText(str(self.RTP_mask))
         self.ui_RTP_mask_lnEd.setReadOnly(True)
         self.ui_RTP_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_RTP_mask_lnEd, ri0, 1)
 
         self.ui_RTP_mask_btn = QtWidgets.QPushButton('Set')
@@ -2953,7 +2948,7 @@ class RtpApp(RTP):
         self.ui_GSR_mask_lnEd.setText(str(self.GSR_mask))
         self.ui_GSR_mask_lnEd.setReadOnly(True)
         self.ui_GSR_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         procImg_gLayout.addWidget(self.ui_GSR_mask_lnEd, ri0, 1)
 
         self.ui_GSR_mask_btn = QtWidgets.QPushButton('Set')
