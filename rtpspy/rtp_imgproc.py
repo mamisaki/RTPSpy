@@ -557,7 +557,8 @@ class RtpImgProc(RTP):
         print(descStr)
 
         brain_anat_orig = Path(brain_anat_orig)
-        suffs = brain_anat_orig.suffixes
+        suffs = [ext for ext in brain_anat_orig.suffixes
+                 if ext in ('.nii', '.gz', '.HEAD', '.BRUK')]
         alAnat = work_dir / \
             (brain_anat_orig.name.replace(''.join(suffs), '_al_func.nii.gz'))
         if not alAnat.is_file() or overwrite:
@@ -571,7 +572,7 @@ class RtpImgProc(RTP):
             cmd += f" -anat {anat_orig_rel} -epi {func_orig_rel} -epi_base 0"
             cmd += " -suffix _al_func -epi_strip 3dAutomask -anat_has_skull no"
             cmd += f" -master_anat {brain_anat_orig}"
-            cmd += " -volreg off -tshift off -giant_move"
+            cmd += " -volreg off -tshift off -ginormous_move"
             if ask_cmd:
                 labelTxt = 'Commdand line: (see '
                 labelTxt += \
@@ -696,8 +697,8 @@ class RtpImgProc(RTP):
 
         seg_al_f = work_dir / (prefix + '_al_func.nii.gz')
         if not seg_al_f.is_file() or overwrite:
+            # -- Erode segmentation mask ---
             if erode != 0:
-                # -- Erode the segmentation mask ---
                 out_f0 = seg_al_f.parent / ('rm.1.' + seg_al_f.name)
 
                 # Spawn the processseg_files
@@ -716,19 +717,19 @@ class RtpImgProc(RTP):
                 st = time.time()
                 out_f0 = seg_anat_f
 
-            if aff1D_f is not None:
-                # --- deoblique ---
-                out_f1 = seg_al_f.parent / ('rm.2.' + seg_al_f.name)
-                cmd = f"3dWarp -deoblique -prefix {out_f1} {out_f0} && "
+            # --- Align seg_anat_f using aff1D_f ---
+            # deoblique
+            out_f1 = seg_al_f.parent / ('rm.2.' + seg_al_f.name)
+            cmd = f"3dWarp -deoblique -prefix {out_f1} {out_f0} && "
 
-                # --- Apply mat.aff12.1D ---
+            if aff1D_f is not None:
+                # Apply mat.aff12.1D
                 cmd += f"3dAllineate -overwrite -final NN -input {out_f1}"
                 cmd += f" -1Dmatrix_apply {aff1D_f}"
                 cmd += f" -master {func_orig} -prefix {seg_al_f}"
             else:
-                # --- Resample in func_orig space ---
-                cmd = f"3dresample -overwrite -rmode NN -master {func_orig}"
-                cmd += f" -prefix {seg_al_f} -input {out_f0}"
+                cmd += f"3dresample -overwrite -rmode NN -input {out_f1}"
+                cmd += f" -master {func_orig} -prefix {seg_al_f} "
 
             # Run cmd
             ret = self._show_cmd_progress(
@@ -736,7 +737,7 @@ class RtpImgProc(RTP):
                 desc=f'\n== Resample {segname} mask ==')
             assert ret == 0, f'Failed at resample_segmasks {segname}.\n'
 
-            for rmf in work_dir.glob('rm*'):
+            for rmf in work_dir.glob('rm.*'):
                 rmf.unlink()
 
             assert seg_al_f.is_file(), \
@@ -1015,26 +1016,29 @@ class RtpImgProc(RTP):
         return warp_params
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ants_warp_resample(self, work_dir, fix_f, move_f, total_ETA,
-                           transformlist, interpolator='nearestNeighbor',
-                           imagetype=0, progress_bar=None, ask_cmd=False,
-                           overwrite=False):
+    def ants_warp_resample(self, work_dir, move_f, fix_f, transformlist,
+                           res_master_f=None, total_ETA=None,
+                           interpolator='nearestNeighbor', imagetype=0,
+                           progress_bar=None, ask_cmd=False, overwrite=False):
         """
-        Apply ANTs warping with resampling to the fix_f image resolution.
+        Apply ANTs warping to align move_f with the fix_f space,
+        resampling to res_master_f if provided.
 
         Parameters
         ----------
-        work_dir : stirng or Path object
+        work_dir : stirng or Path
             Wroking directory.
-        fix_f : stirng or Path object
+        move_f : stirng or Path
+            Image file to be warped.
+        fix_f : stirng or Path
             Target image file.
-        out_f : stirng or Path object
-            Output file.
-        total_ETA : float
-            Total estimated time arrival.
         transformlist : list
             List of ANTs transform files, which should be made at
             self.ants_registration.
+        res_master_f : stirng or Path
+            Master image file to which the warped image will be resampled.
+        total_ETA : float
+            Total estimated time arrival.
         interpolator : str ['nearestNeighbor', 'linear', 'bSpline'], optional
             Resampling interpolation option. The default is 'nearestNeighbor'.
         imagetype : int, optional
@@ -1062,7 +1066,7 @@ class RtpImgProc(RTP):
         print(descStr)
 
         warped_f = work_dir / \
-            Path(move_f).name.replace('.nii', '_inOrig.nii')
+            Path(move_f).name.replace('.nii', '_al_func.nii')
         if not warped_f.is_file() or overwrite:
             st = time.time()
 
@@ -1070,12 +1074,28 @@ class RtpImgProc(RTP):
                 # Apply warp with resampling in fix_f space
                 print(f'Apply transform to {move_f.name} ...')
 
+                # warp roi on template to alAnat_f
                 fix_img = ants.image_read(str(fix_f))
                 move_img = ants.image_read(str(move_f))
                 out_img = ants.apply_transforms(
                     fix_img, move_img, transformlist, imagetype=imagetype,
                     interpolator=interpolator, verbose=False)
-                ants.image_write(out_img, str(warped_f))
+
+                if res_master_f is not None:
+                    # Resample warped roin in base_epi_f
+                    tmp_out = fix_f.parent / 'rm_tmp_roi_al_func.nii.gz'
+                    ants.image_write(out_img, str(tmp_out))
+                    cmd = f"3dresample -overwrite -master {res_master_f}"
+                    cmd += f" -input {tmp_out} -prefix {warped_f}"
+                    # Run cmd
+                    ret = self._show_cmd_progress(
+                        cmd, progress_bar,
+                        msgTxt=f"Warp and resample {move_f}",
+                        desc=f'\n== Resample {move_f} mask ==')
+                    assert ret == 0, f'Failed at resample_segmasks {move_f}.\n'
+                else:
+                    ants.image_write(out_img, str(warped_f))
+
             except Exception as e:
                 errmsg = str(e)+'\n'
                 errmsg += "'ants.apply_transforms' failed."
@@ -1084,7 +1104,7 @@ class RtpImgProc(RTP):
                 return None
 
             self.proc_times['ApplyWarp'] = np.ceil(time.time() - st)
-            if progress_bar is not None:
+            if progress_bar is not None and total_ETA is not None:
                 bar_inc = self.proc_times["ApplyWarp"] / total_ETA * 100
                 bar_val0 = progress_bar.progBar.value()
                 progress_bar.set_value(bar_val0+bar_inc)
@@ -1094,7 +1114,7 @@ class RtpImgProc(RTP):
 
         else:
             # Use existing file
-            if progress_bar is not None:
+            if progress_bar is not None and total_ETA is not None:
                 bar_inc = (self.proc_times['ApplyWarp']
                            / total_ETA) * 100
                 bar_val0 = progress_bar.progBar.value()
@@ -1104,8 +1124,8 @@ class RtpImgProc(RTP):
             else:
                 print(f"Use existing file: {warped_f}\n")
 
-        # Clean rm.* files
-        for rmf in work_dir.glob('rm*'):
+        # Clean rm_* files
+        for rmf in work_dir.glob('rm_*'):
             rmf.unlink()
 
         return warped_f

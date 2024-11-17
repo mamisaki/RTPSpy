@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 import pydicom
 
+from rtpspy.rtp_ttl_physio import call_rt_physio
+
 
 # %% RTMRISimulator ===========================================================
 class RTMRISimulator():
@@ -39,6 +41,8 @@ class RTMRISimulator():
         self.image_file_pat = r".+\.dcm"
         self.file_list = None
         self.run_mode = tk.StringVar(value="Series")
+        self.card_file = None
+        self.resp_file = None
 
         self.font = ("TkDefaultFont", 14)
 
@@ -261,7 +265,9 @@ class RTMRISimulator():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_export_dir(self, dir_path=None):
         if dir_path is None:
-            dir_path = filedialog.askdirectory()
+            dir_path = filedialog.askdirectory(
+                title="Select RTMRI export directory"
+            )
             if dir_path is None:
                 return
         else:
@@ -294,7 +300,9 @@ class RTMRISimulator():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_image_src(self, dir_path=None):
         if dir_path is None:
-            dir_path = filedialog.askdirectory()
+            dir_path = filedialog.askdirectory(
+                title="Select DICOM source directory",
+            )
             if dir_path is None:
                 return
         else:
@@ -650,19 +658,60 @@ class RTMRISimulator():
     def run(self):
         self.root_win.mainloop()
 
-    def set_card_file(self, file=None):
-        pass
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_card_file(self, card_file=None):
+        if card_file is None:
+            card_file = filedialog.askopenfilename(
+                title="Select a caridiac recording file",
+            )
+            if card_file is None:
+                return
+        elif card_file == 'None':
+            return
+        else:
+            if not Path(card_file).is_file():
+                self.log(f"[ERROR] Not found {card_file}")
+                return
 
-    def set_resp_file(self, file=None):
-        pass
+        self.card_entry.config(state="normal")
+        self.card_entry.delete(0, tk.END)
+        self.card_entry.insert(0, card_file)
+        self.card_entry.config(state="readonly")
+        self.card_file = card_file
+        self.log(f"Set cardiac file {self.card_file}")
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_resp_file(self, resp_file=None):
+        if resp_file is None:
+            resp_file = filedialog.askopenfilename(
+                title="Select a respiration recording file",
+            )
+            if resp_file is None:
+                return
+        elif resp_file == 'None':
+            return
+        else:
+            if not Path(resp_file).is_file():
+                self.log(f"[ERROR] Not found {resp_file}")
+                return
+
+        self.resp_entry.config(state="normal")
+        self.resp_entry.delete(0, tk.END)
+        self.resp_entry.insert(0, resp_file)
+        self.resp_entry.config(state="readonly")
+        self.resp_file = resp_file
+        self.log(f"Set cardiac file {self.resp_file}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_physio(self):
-        pass
+        if not call_rt_physio('ping'):
+            self.log('[ERROR]Cannot connect to RtpTTLPhysio')
+            return
 
+        call_rt_physio(('SET_REC_DEV', 'None'))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_physio(self):
-        pass
-
-    def open_physio_monitor(self):
         pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -673,7 +722,8 @@ class RTMRISimulator():
     def save_properties(self):
         # Save configurations
         properties = {}
-        for kk in ('export_dir', 'image_src', 'image_file_pat', 'run_mode'):
+        for kk in ('export_dir', 'image_src', 'image_file_pat', 'run_mode',
+                   'card_file', 'resp_file'):
             val = getattr(self, kk)
             if hasattr(val, 'get'):
                 val = val.get()
@@ -705,6 +755,12 @@ class RTMRISimulator():
 
                 elif kk == 'image_src':
                     self.set_image_src(val)
+
+                elif kk == 'card_file':
+                    self.set_card_file(val)
+
+                elif kk == 'resp_file':
+                    self.set_resp_file(val)
 
         except Exception:
             return
