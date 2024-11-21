@@ -25,6 +25,7 @@ import socket
 from datetime import datetime
 import json
 import platform
+import threading
 
 import numpy as np
 import pandas as pd
@@ -1027,25 +1028,28 @@ class RtpTTLPhysio(RTP):
                 plot_len_sec=plot_len_sec, disable_close=disable_close)
 
         self.plot.show()
-        self._pltTh = QtCore.QThread()
-        self.plot.moveToThread(self._pltTh)
-        self._pltTh.started.connect(self.plot.run)
-        self.plot.finished.connect(self._pltTh.quit)
+        self._pltTh = threading.Thread(target=self.plot.run, daemon=True)
+        # self._pltTh = QtCore.QThread()
+        # self.plot.moveToThread(self._pltTh)
+        # self._pltTh.started.connect(self.plot.run)
+        # self.plot.finished.connect(self._pltTh.quit)
         self._pltTh.start()
         # self._pltTh.setPriority(QtCore.QThread.LowPriority)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
         if not hasattr(self, '_pltTh') or \
-                not self._pltTh.isRunning():
+                not self._pltTh.is_alive():
             return
 
         self.plot._cancel = True
-        if platform.system() == 'Darwin':
-            self._pltTh.terminate()
-        else:    
-            if not self._pltTh.wait(10):  # wait ms
-                self._pltTh.terminate()
+        self._pltTh.join(1)
+
+        # if platform.system() == 'Darwin':
+        #     self._pltTh.terminate()
+        # else:    
+        #     if not self._pltTh.wait(1000):  # wait ms
+        #         self._pltTh.terminate()
 
         del self.plot
         self.plot = None

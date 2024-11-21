@@ -80,7 +80,8 @@ if __name__ == '__main__':
 
     # --- Start application ---------------------------------------------------
     app = QtWidgets.QApplication(sys.argv)
-    app.setStyle("Fusion")
+    if sys.platform == 'darwin':
+        app.setStyle("Fusion")
 
     # Make RtpApp instance
     rtp_app = ROINF(default_rtp_params=rtp_params)
@@ -88,6 +89,7 @@ if __name__ == '__main__':
     # Make GUI (RtpGUI) instance
     app_obj = {'ROI-NF': rtp_app}
     rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_file=log_file)
+    rtp_app.rtp_gui = rtp_ui
 
     # Get RTP object instances for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs
@@ -122,10 +124,11 @@ if __name__ == '__main__':
         save_parameters(all_rtp_objs, fname='RTPSpy_ROINF_params.pkl')
 
     # Copy log
-    work_dir = rtp_app.work_dir
+    work_dir = Path(rtp_app.work_dir)
     log_dir = work_dir / 'log'
     if not log_dir.is_dir():
         log_dir.mkdir()
-    shutil.copy(log_file, log_dir / log_file.name)
+    if log_file.parent != log_dir:
+        shutil.copy(log_file, log_dir / log_file.name)
 
     sys.exit(exit_code)
