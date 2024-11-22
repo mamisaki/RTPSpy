@@ -307,7 +307,8 @@ class RTMRISimulator():
                 return
         else:
             if not Path(dir_path).is_dir():
-                self.log(f"[ERROR]Not found {dir_path}")
+                if dir_path != 'None':
+                    self.log(f"[ERROR]Not found {dir_path}")
                 return
 
         # Set imageSrc_entry
@@ -384,10 +385,10 @@ class RTMRISimulator():
                          'Ctime', 'Ftime')
                 )
 
-        for fp in root_dir.glob('*'):
-            if progress_dialog is not None:
-                progress_dialog.update()
+        if progress_dialog is not None:
+            progress_dialog.update()
 
+        for fp in root_dir.glob('*'):
             if fp.is_dir():
                 image_files = self._find_files(
                     fp, image_files=image_files,
@@ -410,6 +411,9 @@ class RTMRISimulator():
                 else:
                     image_files = pd.concat(
                         [image_files, add_row], axis=0, ignore_index=True)
+
+        if progress_dialog is not None:
+            progress_dialog.update()
 
         image_files.reset_index(drop=True, inplace=True)
         image_files = image_files.sort_values(['Path', 'File'])
