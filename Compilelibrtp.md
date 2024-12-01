@@ -8,7 +8,7 @@ RTPSpy uses some C library functions from AFNI, compiled into librtp.so (or libr
 
 ## Linux
 ```
-sudo apt install libxext-dev libxpm-dev libxmu-dev libgsl-dev
+sudo apt install libxext-dev libxpm-dev libxmu-dev libgsl-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev
 ```
 
 ## Mac OS
