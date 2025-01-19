@@ -177,11 +177,18 @@ class NumatoGPIORecoding():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ttl_onset_que, ttl_offset_que, physio_que, sport,
                  sample_freq=100):
-        """ Initialize real-time physio recordign class
+        """ Initialize physio recordign class
         Set parameter values and list of serial ports.
 
         Parameters
         ----------
+        ttl_onset_que : multiprocessing.Queue
+        ttl_offset_que : multiprocessing.Queue
+        physio_que : multiprocessing.Queue
+        sport : str
+        sample_freq : float
+        
+        
         rbuf_names : dict
             RingBuffer names.
         sport : str, optional
@@ -538,7 +545,7 @@ class TTLPhysioPlot(QtCore.QObject):
         self._logger = logging.getLogger('TTLPhysioPlot')
         self.recorder = recorder
         self.main_win = main_win
-        self.plot_len_sec = plot_len_sec
+        self._plot_len_sec = plot_len_sec
         self.disable_close = disable_close
         self.is_scanning = False
         self._cancel = False
@@ -574,7 +581,7 @@ class TTLPhysioPlot(QtCore.QObject):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_plot(self):
         signal_freq = self.recorder.sample_freq
-        buf_size = int(np.round(self.plot_len_sec * signal_freq))
+        buf_size = int(np.round(self._plot_len_sec * signal_freq))
         sig_xi = np.arange(buf_size) * 1.0/signal_freq
 
         # Set TTL axis
@@ -624,7 +631,7 @@ class TTLPhysioPlot(QtCore.QObject):
             time.sleep(0.001)
             try:
                 # Get signals
-                plt_data = self.recorder.get_plot_signals(self.plot_len_sec+1)
+                plt_data = self.recorder.get_plot_signals(self._plot_len_sec+1)
                 if plt_data is None:
                     continue
 
@@ -832,35 +839,70 @@ class TTLPhysioPlot(QtCore.QObject):
 # %% ==========================================================================
 class RtpTTLPhysio(RTP):
     """
-    Recording signals
+    Interface for external signals, including TTL and physiological signals.
+    The recording class runs in a separate process, and the data are shared
+    with the process of this class via Queue.
+    The recording loop in _run_recording also runs in a separate process and
+    the data ara save in an mmap file in /dev/shm if available; otherwise,
+    they are stored in $HOME/.RTPSpy.
+    
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, device='Numato', sample_freq=100, buf_len_sec=1800,
-                 save_ttl=True, sport=None, sim_card_f=None, sim_resp_f=None,
+    def __init__(self, device='Numato', sample_freq=100, buf_len_sec=3600,
+                 sport=None, sim_card_f=None, sim_resp_f=None, save_ttl=True, 
                  **kwargs):
-        """ Initialize real-time signal recording class
+        """ Initialize the class
         Set parameter values and list of serial ports.
+        
+        
+        The recorded data are shared via an mmap file in /dev/shm if available;
+        otherwise, they are stored in $HOME/.RTPSpy.
 
         Parameters
         ----------
-        buf_len_sec : float, optional
-            Length (seconds) of signal recording buffer. The default is 1800s.
+        device : str,  optional
+            Physiological signals' IO device name.
+            'Numato'; Numato Lab 8 Channel USB GPIO
+                https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
+            'GE'; GE MRI serial port signal.
+            'Dummy'; Simulate signal recording using pre-recorded files.
+            'None'; No signal recorder.
+            The default is 'Numato'.
         sample_freq : float, optional
-            Frequency (Hz) of raw signal data. The default is 500.
+            Sampling frequency (Hz).
+        buf_len_sec : float, optional
+            Length (seconds) of signal recording buffer. The default is 3600s
+            (60 min). The buffer size must be large enough to accommodate one
+            scanning run.
         sport : str
-            Serial port name. The default is None.
+            Serial port name. The default is `None`, and the first available
+            port is assigned during initialization.
+        sim_card_f : str or Path
+            Pre-recorded cardiac signal file (a text file readable by
+            'numpy.loadtxt'). This is used for simulation when
+            'device='Dummy'.
+        sim_resp_f : str or Path
+            Pre-recorded respiration signal file (a text file readable by
+            'numpy.loadtxt'). This is used for simulation when
+            'device='Dummy'.
+        save_ttl : bool
+            Save TTL onset and offset times.
+        **kwargs : Additional arguments passed to the RTP base class.
         """
         super().__init__(**kwargs)
-        del self.work_dir
+        del self.work_dir  # This is set by RTP base class.
 
+        # Set parameters
         self.buf_len_sec = buf_len_sec
         self.save_ttl = save_ttl
         self.sample_freq = sample_freq
-        self.wait_ttl_on = False
-        self.plot = None
         self.sim_card_f = sim_card_f
         self.sim_resp_f = sim_resp_f
-        self._recorder = None
+
+        # Set state variables
+        self.wait_ttl_on = False  # Waiting for TTL to signal scan start.
+        self._plot = None  # View class of signal plot
+        self._recorder = None  # Singla recorder class
 
         # Queues to retrieve recorded data from a recorder process
         self._ttl_onset_que = Queue()
@@ -1022,17 +1064,17 @@ class RtpTTLPhysio(RTP):
         if platform.system() == 'Darwin':
             return
 
-        if self.plot is None:
-            self.plot = TTLPhysioPlot(
-                self, main_win, win_shape=win_shape, 
+        if self._plot is None:
+            self._plot = TTLPhysioPlot(
+                self, main_win, win_shape=win_shape,
                 plot_len_sec=plot_len_sec, disable_close=disable_close)
 
-        self.plot.show()
-        self._pltTh = threading.Thread(target=self.plot.run, daemon=True)
+        self._plot.show()
+        self._pltTh = threading.Thread(target=self._plot.run, daemon=True)
         # self._pltTh = QtCore.QThread()
-        # self.plot.moveToThread(self._pltTh)
-        # self._pltTh.started.connect(self.plot.run)
-        # self.plot.finished.connect(self._pltTh.quit)
+        # self._plot.moveToThread(self._pltTh)
+        # self._pltTh.started.connect(self._plot.run)
+        # self._plot.finished.connect(self._pltTh.quit)
         self._pltTh.start()
         # self._pltTh.setPriority(QtCore.QThread.LowPriority)
 
@@ -1042,17 +1084,17 @@ class RtpTTLPhysio(RTP):
                 not self._pltTh.is_alive():
             return
 
-        self.plot._cancel = True
+        self._plot._cancel = True
         self._pltTh.join(1)
 
         # if platform.system() == 'Darwin':
         #     self._pltTh.terminate()
-        # else:    
+        # else:
         #     if not self._pltTh.wait(1000):  # wait ms
         #         self._pltTh.terminate()
 
-        del self.plot
-        self.plot = None
+        del self._plot
+        self._plot = None
         del self._pltTh
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1441,12 +1483,12 @@ class RtpTTLPhysio(RTP):
             self.wait_ttl_on = False
 
         elif call == 'START_SCAN':
-            if self.plot:
-                self.plot.is_scanning = True
+            if self._plot:
+                self._plot.is_scanning = True
 
         elif call == 'END_SCAN':
-            if self.plot:
-                self.plot.is_scanning = False
+            if self._plot:
+                self._plot.is_scanning = False
 
         elif type(call) is tuple:  # Call with arguments
             if call[0] == 'SAVE_PHYSIO_DATA':
@@ -1458,9 +1500,9 @@ class RtpTTLPhysio(RTP):
                 self.set_scan_onset_bkwd(TR)
 
             elif call[0] == 'SET_GEOMETRY':
-                if self.plot is not None:
+                if self._plot is not None:
                     geometry = call[1]
-                    self.plot.set_position(geometry)
+                    self._plot.set_position(geometry)
 
             elif call[0] == 'SET_CONFIG':
                 conf = call[1]
