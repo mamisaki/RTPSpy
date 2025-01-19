@@ -25,7 +25,8 @@ try:
 except Exception:
     from rtpspy.rtp_common import save_parameters, load_parameters
 
-GPU_available = torch.cuda.is_available()
+GPU_available = torch.backends.mps.is_available() or \
+    torch.backends.mps.is_available()
 
 
 # %% RtpGUI class =============================================================
@@ -46,7 +47,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         winTitle : str, optional
             WIndow title. The default is 'RTPSpy'.
         onGPU : bool, optional
-            Flag to use GPU. The default is given by torch.cuda.is_available().
+            Flag to use GPU. The default is given by torch.cuda.is_available()
+            or torch.backends.mps.is_available().
 
         """
         QtWidgets.QMainWindow.__init__(self)
@@ -140,8 +142,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Watching Directory LineEdit
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWatchDir.setReadOnly(True)
-        self.lineEditWatchDir.setStyleSheet(
-            'background: white; border: 0px none;')
+        self.lineEditWatchDir.setStyleSheet('border: 0px none;')
 
         # Set watching directory button
         self.btnSetWatchDir = QtWidgets.QPushButton('Set', self.mainWidget)
@@ -154,8 +155,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Working Directory LineEdit
         self.lineEditWorkDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWorkDir.setReadOnly(True)
-        self.lineEditWorkDir.setStyleSheet(
-            'background: white; border: 0px none;')
+        self.lineEditWorkDir.setStyleSheet('border: 0px none;')
 
         # Set working directory button
         self.btnSetWorkDir = QtWidgets.QPushButton('Set', self.mainWidget)
@@ -171,7 +171,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                         lambda x: self.show_mot_chk(x))
 
         # Show Physio
-        if 'PHYSIO' in rtp_objs:
+        if 'TTLPHYSIO' in rtp_objs:
             self.chbShowPhysio = QtWidgets.QCheckBox('Show physio',
                                                      self.mainWidget)
             self.chbShowPhysio.setCheckState(0)
@@ -180,7 +180,11 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # GPU
         if self.GPU_available:
-            dev_name = torch.cuda.get_device_name(torch.cuda.current_device())
+            if torch.cuda.is_available():
+                dev_name = torch.cuda.get_device_name(
+                    torch.cuda.current_device())
+            elif torch.backends.mps.is_available():
+                dev_name = torch.device("mps")
             self.chbUseGPU = QtWidgets.QCheckBox(f'Use GPU\n{dev_name}',
                                                  self.mainWidget)
             self.chbUseGPU.setCheckState(onGPU * 2)
@@ -509,8 +513,6 @@ class RtpGUI(QtWidgets.QMainWindow):
                     # Red color
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
                     add_line = add_line.replace('!!!', '')
-                else:
-                    self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
 
                 # Font weight
                 if '<B>' in add_line:
@@ -526,6 +528,12 @@ class RtpGUI(QtWidgets.QMainWindow):
                 # Move scroll bar
                 sb = self.logOutput_txtEd.verticalScrollBar()
                 sb.setValue(sb.maximum())
+
+                # Reset text color
+                cursor = self.logOutput_txtEd.textCursor()
+                default_format = QtGui.QTextCharFormat()
+                default_format.clearForeground()
+                cursor.setCharFormat(default_format)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_clicked_setOption(self, proc):
@@ -561,8 +569,8 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_physio_chk(self, state):
-        if 'PHYSIO' not in self.rtp_objs or \
-                not self.rtp_objs['PHYSIO'].is_recording():
+        if 'TTLPHYSIO' not in self.rtp_objs or \
+                not self.rtp_objs['TTLPHYSIO'].is_recording():
             if state != 0:
                 if hasattr(self, 'chbShowPhysio'):
                     self.chbShowPhysio.blockSignals(True)
@@ -570,7 +578,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                     self.chbShowPhysio.blockSignals(False)
 
         if state > 0:
-            self.rtp_objs['PHYSIO'].open_plot(
+            self.rtp_objs['TTLPHYSIO'].open_plot(
                 main_win=self, win_shape=(450, 450), plot_len_sec=10,
                 disable_close=False)
             if hasattr(self, 'chbShowPhysio'):
@@ -578,7 +586,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                 self.chbShowPhysio.setCheckState(2)
                 self.chbShowPhysio.blockSignals(False)
         else:
-            self.rtp_objs['PHYSIO'].close_plot()
+            self.rtp_objs['TTLPHYSIO'].close_plot()
             if hasattr(self, 'chbShowPhysio'):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(0)
@@ -656,11 +664,11 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return
 
         # Stop physio
-        if 'PHYSIO' in self.rtp_objs and \
-                self.rtp_objs['PHYSIO'] is not None and \
-                self.rtp_objs['PHYSIO'].is_recording():
-            self.rtp_objs['PHYSIO'].stop_recording()
-            del self.rtp_objs['PHYSIO']
+        if 'TTLPHYSIO' in self.rtp_objs and \
+                self.rtp_objs['TTLPHYSIO'] is not None and \
+                self.rtp_objs['TTLPHYSIO'].is_recording():
+            self.rtp_objs['TTLPHYSIO'].stop_recording()
+            del self.rtp_objs['TTLPHYSIO']
 
         # Move logfile to work_dir
         cpfnames = {}

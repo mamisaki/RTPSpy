@@ -25,7 +25,7 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
-from rtpspy.rtp_physio import call_rt_physio
+from rtpspy.rtp_ttl_physio import call_rt_physio
 from rpc_socket_server import RPCSocketServer
 
 if '__file__' not in locals():
@@ -48,15 +48,15 @@ class RtpDicomMonitor:
       'self.series_timeout' seconds.
     - The conversion process can also be triggered by a remote request issued
       by a real-time processing process if a scan is aborted before the
-      NumberofTemporalPositions. A TCPServer thread in the class receives such
-      a request via a network socket at the 'rpc_port'.
+      NumberofTemporalPositions. A TCPServer thread receives such a request via
+      a network socket.
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, watch_dir, work_root, watch_file_pattern=r'.+\.dcm',
-                 study_prefix='P', study_ID_field=None,
-                 series_timeout=60, rpc_port=63210,
-                 make_brik=False, polling_observer=False,
-                 rtp_physio_address='localhost:63212', **kwargs):
+    def __init__(self, watch_dir, work_root, ftype='SiemensXADicom',
+                 watch_file_pattern=r'.+\.dcm',
+                 study_prefix='', study_ID_field=None,
+                 series_timeout=10, make_brik=False, polling_observer=False,
+                 **kwargs):
         """
         Parameters
         ----------
@@ -82,9 +82,6 @@ class RtpDicomMonitor:
         series_timeout : float
             Timeout period to consider as end of series to start conversion.
             The default is 60.
-        rpc_port : int
-            Port number to receive a remote request via a network socket.
-            The default is 63210.
         make_brik : bool
             Flag to create both BRIK and NIfTI files during DICOM conversion.
         polling_observer : bool, optional
@@ -102,14 +99,13 @@ class RtpDicomMonitor:
         self.series_timeout = series_timeout
         self.make_brik = make_brik
         self.polling_observer = polling_observer
-        host, port = rtp_physio_address.split(':')
-        self.rtp_physio_address = (host, int(port))
 
         self._dcmread_timeout = 3
         self._polling_timeout = 3
 
         # Prepare a DicomConverter
-        self.dcm_converter = DicomConverter(study_prefix=study_prefix)
+        self.dcm_converter = DicomConverter(
+            ftype=ftype, study_prefix=study_prefix)
 
         # Intialize session parameters
         self._current_study = -1
@@ -131,7 +127,7 @@ class RtpDicomMonitor:
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
-            rpc_port, self.RPC_handler,
+            self.RPC_handler,
             socket_name='RtpDicomMonitorSocketServer')
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -387,8 +383,7 @@ class RtpDicomMonitor:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_series(self, dcm):
         if self._study_dir is None:
-            studyID = self.dcm_converter.make_study_id(dcm, self.study_prefix)
-            self.init_study(self, studyID)
+            self.init_study(self, dcm)
 
         self._logger.info(
             '-' * 6 + f" Create a new series {dcm.SeriesNumber} ---\n#" +
@@ -411,12 +406,13 @@ class RtpDicomMonitor:
 
         # Set physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
-        if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
-            if call_rt_physio(self.rtp_physio_address, 'ping'):
-                call_rt_physio(self.rtp_physio_address, 'START_SCAN')
-                call_rt_physio(self.rtp_physio_address,
-                               ('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
-                self._save_physio = True
+        if ftype == 'SiemensXADicom':
+            if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
+                if call_rt_physio('ping'):
+                    call_rt_physio('START_SCAN')
+                    call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR),
+                                    pkl=True)
+                    self._save_physio = True
 
         self._NVol = 0
         self._isRun_series = True
@@ -431,9 +427,8 @@ class RtpDicomMonitor:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._save_physio and \
-                        call_rt_physio(self.rtp_physio_address, 'ping'):
-                    call_rt_physio(self.rtp_physio_address, 'END_SCAN')
+                if self._save_physio and call_rt_physio('ping'):
+                    call_rt_physio('END_SCAN')
                     # Save physio data
                     if self._TR is not None:
                         series_duration = self._NVol * self._TR
@@ -444,7 +439,7 @@ class RtpDicomMonitor:
 
                     args = ('SAVE_PHYSIO_DATA', None, series_duration,
                             fname_fmt)
-                    call_rt_physio(self.rtp_physio_address, args, pkl=True)
+                    call_rt_physio(args, pkl=True)
 
                     # Reset physio parameters
                     self._save_physio = False
@@ -489,15 +484,31 @@ class RtpDicomMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RPC_handler(self, call):
-        if call == 'CLOSE_SERIES':
+        if 'CLOSE_SERIES' in call:
             self.end_series()
 
-        elif call == 'GET_SERIES_NAME':
+        elif 'GET_SERIES_NAME' in call:
             if self._study_dir is None or self._series_nr is None:
                 return 'None'.encode('utf-8')
 
             retstr = f"{str(self._study_dir)}/ser-{int(self._series_nr):02d}"
             return retstr.encode('utf-8')
+
+        elif 'SET_WATCH_DIR' in call:
+            self.watch_dir = Path(call.split(';')[1])
+            self.stop_watching()
+            self.start_watching(callback=self.do_proc)
+
+        elif call == 'SET_WATCH_FILEPAT':
+            self.watch_file_pattern = call.split(';')[1]
+            self.stop_watching()
+            self.start_watching(callback=self.do_proc)
+
+        elif 'SET_WORK_ROOT' in call:
+            self.work_root = call.split(';')[1]
+
+        elif call == 'SET_WATCH_FTYPE':
+            self.dcm_converter.ftype = call.split(';')[1]
 
         elif call == 'QUIT':
             self._cancel = True
@@ -546,34 +557,31 @@ if __name__ == '__main__':
                         help='Converted data output directory root')
     parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
                         help='watch file pattern (regexp)')
-    parser.add_argument('--study_prefix', default='S', help='Study ID prefix')
+    parser.add_argument('--ftype', default='SiemensXADicom',
+                        help='DICOM file type')
+    parser.add_argument('--study_prefix', help='Study ID prefix')
     parser.add_argument('--study_ID_field', help='Study ID DICOM field')
     parser.add_argument('--series_timeout', default=10,
                         help='Timeout period to close a series')
-    parser.add_argument('--rpc_port', default=63210,
-                        help='RPC socket server port')
     parser.add_argument('--make_brik', action='store_true',
                         help='Make BRIK files')
     parser.add_argument('--polling_observer', action='store_true',
                         help='Use Polling observer')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
-    parser.add_argument('--rtp_physio_address', default='localhost:63212',
-                        help='rtp_physio socket server address')
     parser.add_argument('--debug', action='store_true')
 
     args = parser.parse_args()
     watch_dir = Path(args.watch_dir)
     work_root = Path(args.work_root)
     watch_file_pattern = args.watch_file_pattern
+    ftype = args.ftype
     study_prefix = args.study_prefix
     study_ID_field = args.study_ID_field
     series_timeout = args.series_timeout
-    rpc_port = args.rpc_port
     make_brik = args.make_brik
     polling_observer = args.polling_observer
     log_file = Path(args.log_file)
-    rtp_physio_address = args.rtp_physio_address
     debug = args.debug
 
     # Logger
@@ -584,12 +592,10 @@ if __name__ == '__main__':
 
     # Create the server
     rtp_dicom_monitor = RtpDicomMonitor(
-        watch_dir, work_root, watch_file_pattern=watch_file_pattern,
+        watch_dir, work_root, ftype, watch_file_pattern=watch_file_pattern,
         study_prefix=study_prefix, study_ID_field=study_ID_field,
-        series_timeout=series_timeout,
-        rpc_port=rpc_port, make_brik=make_brik,
-        polling_observer=polling_observer,
-        rtp_physio_address=rtp_physio_address)
+        series_timeout=series_timeout, make_brik=make_brik,
+        polling_observer=polling_observer)
 
     # Run mainloop
     try:

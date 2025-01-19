@@ -22,10 +22,10 @@ import numpy as np
 import nibabel as nib
 
 try:
-    from .rtp_physio import RtpPhysio
+    from .rtp_ttl_physio import RtpTTLPhysio
     from .rtp_app import RtpApp
 except Exception:
-    from rtpspy.rtp_physio import RtpPhysio
+    from rtpspy.rtp_ttl_physio import RtpTTLPhysio
     from rtpspy.rtp_app import RtpApp
 
 
@@ -67,7 +67,7 @@ class RTP_SIM(RtpApp):
             with open(self.sig_save_file, 'a') as save_fd:
                 print(save_vals, file=save_fd)
             if self._verb:
-                self.logmsg(f"Write data '{save_vals}'")
+                self.logmsg(f"Write ROI data '{save_vals}'")
 
             # --- Post procress -----------------------------------------------
             # Record the processing time
@@ -81,8 +81,9 @@ class RTP_SIM(RtpApp):
             # Log message
             if self._verb:
                 f = Path(fmri_img.get_filename()).name
-                msg = f"#{vol_idx+1};tstamp={tstamp}"
-                msg += f";ROI signal extraction is done for {f}"
+                msg = f"#{vol_idx+1}"
+                msg += f";tstamp={tstamp}"
+                msg += f";ROI signal extraction;{f}"
                 if pre_proc_time is not None:
                     msg += f';took {proc_delay:.4f}s'
                 self.logmsg(msg)
@@ -257,21 +258,21 @@ def run_simulation(raw_fmri_f, anat_mri_f, rtp_param_f=None,
 
         if 'phys_reg' in rtp_params['REGRESS']:
             if rtp_params['REGRESS']['phys_reg'] != 'None':
-                if 'PHYSIO' not in rtp_params:
+                if 'TTLPHYSIO' not in rtp_params:
                     errmsg = '"PHYSIO" must be given when REGRESS phys_reg'
                     errmsg += ' is not "None"\n'
                     sys.stderr.write(errmsg)
                     sys.exit()
 
                 # Set PHYSIO
-                ecg_f = rtp_params['PHYSIO']['ecg_f']
+                ecg_f = rtp_params['TTLPHYSIO']['ecg_f']
                 assert Path(ecg_f).is_file()
-                resp_f = rtp_params['PHYSIO']['resp_f']
+                resp_f = rtp_params['TTLPHYSIO']['resp_f']
                 assert Path(resp_f).is_file()
-                sample_freq = rtp_params['PHYSIO']['sample_freq']
+                sample_freq = rtp_params['TTLPHYSIO']['sample_freq']
                 resp = np.loadtxt(resp_f)
                 card = np.loadtxt(ecg_f)
-                rtp_sim.rtp_objs['PHYSIO'] = RtpPhysio(
+                rtp_sim.rtp_objs['TTLPHYSIO'] = RtpTTLPhysio(
                     sample_freq=sample_freq, sim_data=(card, resp))
 
     # --- RTP setup -----------------------------------------------------------

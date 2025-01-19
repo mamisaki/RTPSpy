@@ -249,7 +249,7 @@ class LANF(RtpApp):
             # log message
             if self._verb:
                 f = Path(fmri_img.get_filename()).name
-                msg = f"#{vol_idx+1};ROI signal extraction is done for {f}"
+                msg = f"#{vol_idx+1};ROI signal extraction;{f}"
                 msg += f";tstamp={tstamp}"
                 if pre_proc_time is not None:
                     msg += f";took {proc_delay:.4f}s"
@@ -311,6 +311,8 @@ class LANF(RtpApp):
         """
 
         super().set_param(attr, val, reset_fn, echo)
+
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         if attr == 'ROI_orig':
             if Path(self.ROI_orig).is_file():
@@ -383,7 +385,7 @@ class LANF(RtpApp):
         self.ui_NFROI_lnEd = QtWidgets.QLineEdit()
         self.ui_NFROI_lnEd.setReadOnly(True)
         self.ui_NFROI_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         if Path(self.ROI_orig).is_file():
             self.ui_NFROI_lnEd.setText(str(self.ROI_orig))
 

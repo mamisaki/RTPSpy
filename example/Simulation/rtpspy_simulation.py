@@ -14,7 +14,7 @@ import numpy as np
 import nibabel as nib
 
 from rtpspy import RtpApp
-from rtpspy import RtpPhysio
+from rtpspy import RtpTTLPhysio
 
 
 # %% main =====================================================================
@@ -25,7 +25,7 @@ if __name__ == '__main__':
 
     # --- Filenames -------------------------------------------------------
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent.parent / 'tests'
 
     # Set test data files
     testdata_f = test_dir / 'func_epi.nii.gz'
@@ -49,10 +49,10 @@ if __name__ == '__main__':
                        overwrite=False)
 
     # --- Set up RTP ------------------------------------------------------
-    # Set RtpPhysio
+    # Set RtpTTLPhysio
     resp = np.loadtxt(resp_f)
     card = np.loadtxt(ecg_f)
-    rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
+    rtp_app.rtp_objs['TTLPHYSIO'] = RtpTTLPhysio(
         sample_freq=40, device='Dummy', sim_data=(card, resp))
 
     # RTP parameters

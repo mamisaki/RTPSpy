@@ -2,7 +2,7 @@
 
 MAKE = make
 
-RTPSRC = librtp.c rtp_retrots.c
+RTPSRC = librtp.c
 CC     = gcc -O3 -m64 -fPIC -DREAD_WRITE_64
 
 RM = /bin/rm -f

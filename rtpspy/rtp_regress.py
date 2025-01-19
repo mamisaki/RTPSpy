@@ -13,6 +13,7 @@ import sys
 import time
 import re
 import traceback
+import logging
 
 import numpy as np
 import nibabel as nib
@@ -25,7 +26,7 @@ try:
 except Exception:
     from rtpspy.rtp_common import RTP, MatplotlibWindow
 
-gpu_available = torch.cuda.is_available()
+gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
 
 # %% lstsq_SVDsolver ==========================================================
@@ -140,7 +141,7 @@ class RtpRegress(RTP):
             RVT+RICOR13: both RVT5 and RICOR8
             RVT is not recomended for RTP (see Misaki and Bodrka, 2021.)
             The default is 'None'.
-        rtp_phyiso : RtpPyshio object, optional
+        rtp_physio : RtpPyshio object, optional
             RtpPyshio object to get retrots regressors. The default is None.
         tshift : float, optional
             Slice timing offset (second) for calculating the restrots
@@ -163,7 +164,7 @@ class RtpRegress(RTP):
             the length of desMtx.
         onGPU : bool, optional
             Run REGRESS on GPU when available. The default is the output of
-            torch.cuda.is_available().
+            torch.cuda.is_available() or torch.backends.mps.is_available().
         reg_retro_proc : bool, optional
             Flag to retroactively process the volumes before starting regress.
             Default is True.
@@ -230,8 +231,10 @@ class RtpRegress(RTP):
         if _onGPU:
             if torch.cuda.is_available():
                 self.device = 'cuda'
+            elif torch.backends.mps.is_available():
+                self.device = 'mps'
             else:
-                errmsg = "CUDA device is not available."
+                errmsg = "GPU is not available."
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 self.device = 'cpu'
@@ -256,7 +259,7 @@ class RtpRegress(RTP):
 
         if self.phys_reg != 'None':
             if self.rtp_physio is None:
-                errmsg = 'RtpPhysio object is not set.'
+                errmsg = 'RtpTTLPhysio object is not set.'
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 self._proc_ready = False
@@ -403,7 +406,7 @@ class RtpRegress(RTP):
                     self.YMtx = self.YMtx.to(self.device)
                 except Exception as e:
                     self._logger.error(str(e))
-                    if self.device == 'cuda':
+                    if self.device != 'cpu':
                         errmsg = "Failed to keep GPU memory for Y."
                         self._logger.error(errmsg)
                         self.err_popup(errmsg)
@@ -548,14 +551,17 @@ class RtpRegress(RTP):
 
                 vi0 = vol_idx - (Resids.shape[0]-1)
                 vilast = vol_idx - 1
-                msg = f"Regression is done for {vi0}-{vilast}"
-                msg += ", retrospectively."
+                msg = f"Retrospective regression for {vi0}-{vilast}"
                 self._logger.info(msg)
 
                 # Save filename template
                 save_name_temp = Path(fmri_img.get_filename()).name
                 save_name_temp = 'regRes.' + save_name_temp
-                dstr = re.search(f"0*{vol_idx+1}", save_name_temp).group()
+                ma = re.search(f"0*{vol_idx+1}", save_name_temp)
+                if ma is not None:
+                    dstr = ma.group()
+                else:
+                    dstr = None
 
                 # Data space
                 vol_data = np.zeros_like(self.maskV, dtype=np.float32)
@@ -569,9 +575,14 @@ class RtpRegress(RTP):
                     # temporay nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
-                    dstr_i0 = f"{vi+1}"
-                    dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
-                    save_name = save_name_temp.replace(dstr, dstr_i)
+                    if dstr is not None:
+                        dstr_i0 = f"{vi+1}"
+                        dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
+                        save_name = save_name_temp.replace(dstr, dstr_i)
+                    else:
+                        save_name = save_name_temp.replace(
+                            '.nii', f"_{vi+1:04d}.nii")
+
                     retro_fmri_img.set_filename(save_name)
 
                     # Run the next process
@@ -613,7 +624,8 @@ class RtpRegress(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Regression is done for {f};tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Regression;{f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
@@ -1027,6 +1039,8 @@ class RtpRegress(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
+        self._logger.debug(f"set_param: {attr} = {val}")
+
         # -- check value --
         if attr == 'enabled':
             if hasattr(self, 'ui_enabled_rdb'):
@@ -1502,7 +1516,7 @@ class RtpRegress(RTP):
         self.ui_mask_lnEd = QtWidgets.QLineEdit()
         self.ui_mask_lnEd.setReadOnly(True)
         self.ui_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
                              self.ui_mask_lnEd])
 
@@ -1610,7 +1624,7 @@ class RtpRegress(RTP):
         self.ui_GS_mask_lnEd.setText(str(self.GS_mask))
         self.ui_GS_mask_lnEd.setReadOnly(True)
         self.ui_GS_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         GSmask_hBLayout.addWidget(self.ui_GS_mask_lnEd)
 
         self.ui_GSmask_btn = QtWidgets.QPushButton('Set')
@@ -1636,7 +1650,7 @@ class RtpRegress(RTP):
         self.ui_WM_mask_lnEd.setText(str(self.WM_mask))
         self.ui_WM_mask_lnEd.setReadOnly(True)
         self.ui_WM_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         WMmask_hBLayout.addWidget(self.ui_WM_mask_lnEd)
 
         self.ui_WMmask_btn = QtWidgets.QPushButton('Set')
@@ -1663,7 +1677,7 @@ class RtpRegress(RTP):
         self.ui_Vent_mask_lnEd.setText(str(self.Vent_mask))
         self.ui_Vent_mask_lnEd.setReadOnly(True)
         self.ui_Vent_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         Ventmask_hBLayout.addWidget(self.ui_Vent_mask_lnEd)
 
         self.ui_Ventmask_btn = QtWidgets.QPushButton('Set')
@@ -1762,15 +1776,22 @@ class RtpRegress(RTP):
 
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
+
+    # Set logging
+    logging.basicConfig(
+        stream=sys.stdout, level=logging.INFO,
+        format='%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S')
+
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Set test data files
     testdata_f = test_dir / 'func_epi.nii.gz'
-    mask_data_f = test_dir / 'RTP_mask.nii.gz'
     ecg_f = test_dir / 'ECG.1D'
     resp_f = test_dir / 'Resp.1D'
+    mask_data_f = test_dir / 'work' / 'RTP' / 'RTP_mask.nii.gz'
 
     # Load test data
     assert testdata_f.is_file()
@@ -1782,29 +1803,31 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RTP instances and set parameters
+    # --- Create RTP instances and set parameters ---
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_retrots import RtpRetroTS
+    from rtpspy.rtp_ttl_physio import RtpTTLPhysio
+
     # RtpTshift
     rtp_tshift = RtpTshift()
     rtp_tshift.method = 'cubic'
     rtp_tshift.ignore_init = 3
     rtp_tshift.ref_time = 0
-    rtp_tshift.slice_timing_from_sample(testdata_f)
+    rtp_tshift.set_from_sample(testdata_f)
 
     # RtpVolreg
     rtp_volreg = RtpVolreg(regmode='cubic')
     refname = str(testdata_f) + '[0]'
     rtp_volreg.set_ref_vol(refname)
+
     # RtpSmooth
     rtp_smooth = RtpSmooth(blur_fwhm=6)
     rtp_smooth.set_param('mask_file', mask_data_f)
 
-    # RTP_RETOTS and RTP_PHYSIO
-    sample_freq = 40
-    rtp_retrots = RtpRetroTS()
+    # Set RtpTTLPhysio
+    rtp_physio = RtpTTLPhysio(
+        sample_freq=40, device='Dummy', sim_card_f=ecg_f, sim_resp_f=resp_f)
 
     # RtpRegress
     rtp_regress = RtpRegress()
@@ -1815,18 +1838,20 @@ if __name__ == '__main__':
     rtp_regress.mot_reg = 'mot12'
     rtp_regress.volreg = rtp_volreg
     rtp_regress.phys_reg = 'RICOR8'
-    rtp_regress.rtp_retrots = rtp_retrots
     rtp_regress.tshift = 0.0
     rtp_regress.GS_reg = True
-    rtp_regress.GS_mask = test_dir / "GSR_mask.nii.gz"
+    rtp_regress.GS_mask = test_dir / 'work' / 'RTP' / 'GSR_mask.nii.gz'
     rtp_regress.WM_reg = True
-    rtp_regress.WM_mask = test_dir / "anat_mprage_WM_al_func.nii.gz"
+    rtp_regress.WM_mask = test_dir / 'work' / 'RTP' / \
+        'anat_mprage_WM_al_func.nii.gz'
     rtp_regress.Vent_reg = True
-    rtp_regress.Vent_mask = test_dir / "anat_mprage_Vent_al_func.nii.gz"
+    rtp_regress.Vent_mask = test_dir / 'work' / 'RTP' / \
+        'anat_mprage_Vent_al_func.nii.gz'
     rtp_regress.mask_src_proc = rtp_volreg
     rtp_regress.wait_num = 45
     rtp_regress.set_param('mask_file', mask_data_f)
     rtp_regress.onGPU = True
+    rtp_regress.rtp_physio = rtp_physio
 
     # Save processed files
     rtp_tshift.work_dir = work_dir
@@ -1845,14 +1870,21 @@ if __name__ == '__main__':
     rtp_smooth.next_proc = rtp_regress
     rtp_tshift.end_reset()
 
+    # Wait for the rtp_physio to start recording
+    while rtp_regress.rtp_physio.scan_onset < 0:
+        time.sleep(0.1)
+
     # Run
     N_vols = img.shape[-1]
+    TR = float(img.header.get_zooms()[3])
+    rtp_regress.rtp_physio.scan_onset = time.time()
     for ii in range(N_vols):
-        save_filename = f"test_nr_{ii:04d}.nii.gz"
+        save_filename = f"test_nr_{ii+1:04d}.nii.gz"
         fmri_img = nib.Nifti1Image(img_data[:, :, :, ii], affine=img.affine)
         fmri_img.set_filename(save_filename)
         st = time.time()
         rtp_tshift.do_proc(fmri_img, ii, st)  # run rtp_tshift -> rtp_regress
+        time.sleep(TR)
 
     proc_delay = rtp_regress.proc_delay
     rtp_tshift.end_reset()  # Reset propagetes to the chained processes

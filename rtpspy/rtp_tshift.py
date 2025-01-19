@@ -153,9 +153,8 @@ class RtpTshift(RTP):
                 # log message
                 fname = Path(self.pre_fmri_img.get_filename()).name
                 fname = fname.replace('.nii.gz', '')
-                msg = f"#{vol_idx}, "
-                msg += "Retrospective slice-timing correction"
-                msg += f" is done for {fname}."
+                msg = f"#{vol_idx};"
+                msg += f"Retrospective slice-timing correction;{fname}"
                 self._logger.info(msg)
 
                 # Set save_name
@@ -214,10 +213,10 @@ class RtpTshift(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};;Slice-timing correction is done for {f}"
+            msg = f"#{vol_idx+1};Slice-timing correction;{f}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s)"
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set filename
@@ -359,7 +358,7 @@ class RtpTshift(RTP):
         if len(notset_params):
             errmsg = ', '.join(notset_params)
             errmsg += ' has not been read from the sample.'
-            self._logger.error(errmsg)
+            self._logger.warning(errmsg)
             self.err_popup(errmsg)
 
         # set interpolation weight
@@ -516,6 +515,7 @@ class RtpTshift(RTP):
         When reset_fn is None, set_param is considered to be called from
         load_parameters function
         """
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         # -- check value --
         if attr == 'enabled':
@@ -719,7 +719,7 @@ class RtpTshift(RTP):
 if __name__ == '__main__':
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Load test data
     testdata_f = test_dir / 'func_epi.nii.gz'
