@@ -6,7 +6,7 @@ Real-time physiological signal recording class.
 
 Model class : GENumatoRecoding
 View class : TTLPhysioPlot
-Controler class: RtpPhysio
+Controler class: RtpTTLPhysio
 """
 
 
@@ -49,8 +49,7 @@ mpl.rcParams['font.size'] = 8
 
 
 # %% call_rt_physio ===========================================================
-def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
-                   logger=None):
+def call_rt_physio(data, pkl=False, get_return=False, logger=None):
     """
     Parameters:
         data:
@@ -63,7 +62,12 @@ def call_rt_physio(rtp_physio_address, data, pkl=False, get_return=False,
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.connect(rtp_physio_address)
+        config_f = Path.home() / '.config' / 'rtpspy'
+        with open(config_f, "r") as fid:
+            rtpspy_config = json.load(fid)
+        port = rtpspy_config['RtpTTLPhysioSocketServer_pot']
+        sock.connect(('localhost', port))
+
     except ConnectionRefusedError:
         time.sleep(1)
         if data == 'ping':
@@ -833,14 +837,14 @@ class TTLPhysioPlot(QtCore.QObject):
 
 
 # %% ==========================================================================
-class RtpPhysio(RTP):
+class RtpTTLPhysio(RTP):
     """
     Recording signals
     """
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, buf_len_sec=1800, sport=None,
-                 sample_freq=100, rpc_port=63212, save_ttl=True,
-                 debug=False, sim_data=None, **kwargs):
+                 sample_freq=100, save_ttl=True, debug=False, sim_data=None,
+                 **kwargs):
         """ Initialize real-time signal recording class
         Set parameter values and list of serial ports.
 
@@ -856,7 +860,7 @@ class RtpPhysio(RTP):
         super().__init__(**kwargs)
         del self.work_dir
 
-        self._logger = logging.getLogger('RtpPhysio')
+        self._logger = logging.getLogger('RtpTTLPhysio')
         self.buf_len_sec = buf_len_sec
         self.sample_freq = sample_freq
         self.wait_ttl_on = False
@@ -894,8 +898,8 @@ class RtpPhysio(RTP):
         self._rec_proc_pipe = None
 
         # Start RPC socket server
-        self.socekt_srv = RPCSocketServer(rpc_port, self.RPC_handler,
-                                          socket_name='RtpPhysioSocketServer')
+        self.socekt_srv = RPCSocketServer(self.RPC_handler,
+                                          socket_name='RtpTTLPhysioSocketServer')
 
         self._retrots = RtpRetroTS()
 
@@ -1410,8 +1414,6 @@ if __name__ == '__main__':
                         help='sampling frequency (Hz)')
     parser.add_argument('--log_file', default=LOG_FILE,
                         help='Log file path')
-    parser.add_argument('--rpc_port', default=63212,
-                        help='RPC socket server port')
     parser.add_argument('--win_shape', default='450x450',
                         help='Plot window position')
     parser.add_argument('--disable_close', action='store_true',
@@ -1420,14 +1422,13 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     log_file = args.log_file
-    rpc_port = args.rpc_port
     win_shape = args.win_shape
     win_shape = [int(v) for v in win_shape.split('x')]
     disable_close = args.disable_close
     debug = args.debug
 
     # Logger
-    logging.basicConfig(level=logging.INFO,
+    (level=logging.INFO,
                         filename=log_file, filemode='a',
                         format='%(name)s - %(levelname)s - %(message)s')
 
@@ -1440,14 +1441,13 @@ if __name__ == '__main__':
         resp_f = test_dir / 'Resp_100Hz_ser-12.1D'
         resp = np.loadtxt(resp_f)
         card = np.loadtxt(card_f)
-        rtp_physio = RtpPhysio(
-            sample_freq=100, rpc_port=rpc_port,
-            debug=True, sim_data=(card, resp))
+        rtp_ttl_physio = RtpTTLPhysio(
+            sample_freq=100, debug=True, sim_data=(card, resp))
     else:
-        rtp_physio = RtpPhysio(
-            sample_freq=100, rpc_port=rpc_port)
+        rtp_ttl_physio = RtpTTLPhysio(
+            sample_freq=100)
 
-    rtp_physio.open_plot()
+    rtp_ttl_physio.open_plot()
 
     sys.exit(app.exec_())
 

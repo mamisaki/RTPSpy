@@ -18,7 +18,6 @@ import nibabel as nib
 import torch
 
 from rtpspy import RtpApp
-from rtpspy import RtpPhysio
 
 
 # %% main =====================================================================
@@ -26,15 +25,22 @@ if __name__ == '__main__':
 
     # Parse arguments
     parser = argparse.ArgumentParser(description='rtp_system_check')
-    parser.add_argument('--TR', default=2.0)
-    parser.add_argument('--preserve',  action='store_true',
-                        help="Keep existing processd mask")
+    parser.add_argument('--log_file',
+                        help="Write log to specified file," +
+                        " instead of console.")
+    parser.add_argument('--keep_masks',  action='store_true',
+                        help="Keep existing processd mask files")
     parser.add_argument('--debug',  action='store_true')
 
     args = parser.parse_args()
-    TR = args.TR
-    overwrite = not args.preserve
+    log_file = args.log_file
+    overwrite = not args.keep_masks
     debug = args.debug
+
+    if debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
 
     # -------------------------------------------------------------------------
     print("=" * 80)
@@ -42,9 +48,16 @@ if __name__ == '__main__':
     sys.stdout.flush()
 
     # Set logging
-    logging.basicConfig(
-        stream=sys.stdout, level=logging.INFO,
-        format='%(asctime)s.%(msecs)04d,%(name)s,%(message)s')
+    fmt = '%(asctime)s.%(msecs)04d,[%(levelname)s],%(name)s,%(message)s'
+    datefmt = '%Y-%m-%dT%H:%M:%S'
+    if log_file is None:
+        logging.basicConfig(
+            stream=sys.stdout, level=log_level, format=fmt, datefmt=datefmt)
+    else:
+        logging.basicConfig(
+            filename=log_file, level=log_level, format=fmt, datefmt=datefmt)
+
+    logger = logging.getLogger('rtpspy_system_check')
 
     try:
         # --- Filenames -------------------------------------------------------
@@ -83,12 +96,13 @@ if __name__ == '__main__':
         rtp_app = RtpApp(work_dir=work_dir)
 
         # --- Make mask images ------------------------------------------------
-        if torch.cuda.is_available():
-            print('GPU is utilized.')
+        logger.debug('### Start creating mask images ###')
+        if torch.cuda.is_available() or torch.backends.mps.is_available():
+            logger.info('GPU is utilized.')
             no_FastSeg = False
             rtp_app.fastSeg_batch_size = 1  # Adjust the size according to GPU
         else:
-            print('GPU is not avilable.')
+            logger.info('GPU is not avilable.')
             no_FastSeg = True
 
         rtp_app.make_masks(
@@ -97,14 +111,23 @@ if __name__ == '__main__':
             no_FastSeg=no_FastSeg, WM_template=WM_template_f,
             Vent_template=Vent_template_f, overwrite=overwrite)
 
+        logger.debug('### End creating mask images ###')
+
         # --- Set up RTP ------------------------------------------------------
-        # Set RTP_PHYSIO
-        resp = np.loadtxt(resp_f)
-        card = np.loadtxt(ecg_f)
-        rtp_app.rtp_objs['PHYSIO'] = RtpPhysio(
-            sample_freq=40, device='Dummy', sim_data=(card, resp))
+        logger.debug('### Start preparing the dummy physio recorder ###')
+        # Set RtpTTLPhysio
+        rtp_app.rtp_objs['TTLPHYSIO'].set_param(
+            {'device': 'Dummy', 'sample_freq': 40,
+             'sim_card_f': ecg_f, 'sim_resp_f': resp_f})
+
+        # Wait for the rtp_physio to start recording
+        while rtp_app.rtp_objs['TTLPHYSIO'].scan_onset < 0:
+            time.sleep(0.1)
+
+        logger.debug('### End preparing the dummy physio recorder ###')
 
         # RTP parameters
+        logger.debug('### Start RTP setup ###')
         rtp_app.func_param_ref = Path(testdata_f)
         rtp_params = {'WATCH': {'watch_dir': watch_dir,
                                 'watch_file_pattern': r'nr_\d+.*\.nii',
@@ -115,7 +138,7 @@ if __name__ == '__main__':
                       'REGRESS': {'mot_reg': 'mot12',
                                   'GS_reg': True, 'WM_reg': True,
                                   'Vent_reg': True, 'phys_reg': 'RICOR8',
-                                  'wait_num': 40}}
+                                  'wait_num': 30}}
 
         # RTP setup
         rtp_app.RTP_setup(rtp_params=rtp_params)
@@ -124,9 +147,13 @@ if __name__ == '__main__':
         # Ready to run the pipeline
         proc_chain = rtp_app.ready_to_run()
 
+        logger.debug('### End RTP setup ###')
+
         # --- Simulate scan (Copy data volume-by-volume) ----------------------
+        logger.debug('### Start simulating real-time fMRI imaging ###')
         # Load data
         img = nib.load(testdata_f)
+        TR = img.header.get_zooms()[3]
         fmri_data = np.asanyarray(img.dataobj)
         N_vols = img.shape[-1]
 
@@ -137,11 +164,10 @@ if __name__ == '__main__':
         rtp_app.manual_start()
         scan_onset_time = rtp_app.scan_onset
 
-        next_tr = TR
         for ii in range(N_vols):
-            next_tr = (ii+1)*2.0
+            next_tr = (ii+1)*TR
             while time.time() - scan_onset_time < next_tr:
-                # Wait ofr next TR
+                # Wait for next TR
                 time.sleep(0.001)
 
             # Copy volume file to watch_dir
@@ -153,18 +179,22 @@ if __name__ == '__main__':
             if debug:
                 proc_chain.do_proc(save_filename)
 
-            time.sleep(TR)
+        logger.debug('### End simulating real-time fMRI imaging ###')
+
+        logger.debug('### Close RTP ###')
         rtp_app.end_run()
+        logger.debug('### Close dummy physio recorder ###')
+        rtp_app.rtp_objs['TTLPHYSIO'].end()
 
         # End
-        print('-' * 80)
-        print('End process')
-        print('RTPSpy system check finished successfully.')
-        print(f'See the processed data in {work_dir}/RTP')
+        logger.info('-' * 80)
+        logger.info('End process')
+        logger.info('RTPSpy system check finished.')
+        logger.info(f'See the processed data in {work_dir}/RTP')
 
     except Exception:
-        print('x' * 80)
-        print('RTPSpy system check failed.')
+        logger.error('x' * 80)
+        logger.error('RTPSpy system check failed.')
         exc_type, exc_obj, exc_tb = sys.exc_info()
         exc_type, exc_obj, exc_tb = sys.exc_info()
         traceback.print_exception(exc_type, exc_obj, exc_tb)

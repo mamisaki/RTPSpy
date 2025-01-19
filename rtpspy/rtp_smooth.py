@@ -123,7 +123,8 @@ class RtpSmooth(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Smoothing is done for {f};tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Smoothing;{f}"
+            msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
@@ -270,6 +271,7 @@ class RtpSmooth(RTP):
         When reset_fn is None, set_param is considered to be called from
         load_parameters function.
         """
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         # -- check value --
         if attr == 'enabled':
@@ -427,7 +429,7 @@ class RtpSmooth(RTP):
         self.ui_mask_lnEd = QtWidgets.QLineEdit()
         self.ui_mask_lnEd.setReadOnly(True)
         self.ui_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
+            'border: 0px none;')
         ui_rows.append((None, self.ui_mask_lnEd))
 
         self.ui_objs.extend([var_lb, self.ui_mask_cmbBx, self.ui_mask_lnEd])
@@ -473,7 +475,7 @@ class RtpSmooth(RTP):
 if __name__ == '__main__':
     # --- Test ---
     # test data directory
-    test_dir = Path(__file__).absolute().parent.parent / 'test'
+    test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Load test data
     testdata_f = test_dir / 'func_epi.nii.gz'

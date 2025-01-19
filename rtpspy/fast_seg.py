@@ -9,20 +9,26 @@ Anatomical image segmentation for real-time fMRI processing using FastSurfer
 
 
 # %% import ===================================================================
-import numpy as np
+import os
 from pathlib import Path
 import subprocess
 import shlex
 import shutil
 
+import numpy as np
 import torch
-import nibabel as nib
+import ants
 
 # Debug
 if '__file__' not in locals():
     __file__ = 'this.py'
 
-no_cuda = (not torch.cuda.is_available())
+if torch.cuda.is_available():
+    DEVICE = 'cuda'
+elif torch.backends.mps.is_available():
+    DEVICE = 'mps'
+else:
+    DEVICE = 'cpu'
 
 
 # %%
@@ -130,13 +136,13 @@ class FastSeg:
             fastsurfer_dir = Path(__file__).absolute().parent / 'FastSurfer'
 
         self.fastsurfer_dir = Path(fastsurfer_dir)
-        self.run_cmd = self.fastsurfer_dir / 'run_fastsurfer.sh'
+        self.run_cmd = 'run_fastsurfer.sh'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run(self, in_f, prefix=None, batch_size=1,
+    def run(self, in_f, bias_correction=False, prefix=None, batch_size=1,
             segs=['aseg', 'Brain', 'WM', 'Vent'], overwrite=False):
         # --- Prepare files ---
-        in_f, prefix = self.prep_files(in_f, prefix)
+        in_f, prefix = self.prep_files(in_f, bias_correction, prefix)
 
         # --- Run FastSurferCNN ---
         fsSeg_mgz = self.run_seg_only(in_f, prefix, batch_size)
@@ -156,7 +162,8 @@ class FastSeg:
         print(f"Output images: \n  {out_fs_str}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def prep_files(self, in_f, prefix=None):
+    def prep_files(self, in_f, bias_correction=False, prefix=None,
+                   show_proc_progress=None, ETA=None):
         """ Convert BRIK to NIfTI
         Parameters
         ----------
@@ -173,6 +180,10 @@ class FastSeg:
         """
 
         # --- Get input file type ---
+        cmd = f"3dinfo -space {in_f}"
+        img_space = subprocess.check_output(
+            shlex.split(cmd)).decode().rstrip()
+
         exts = in_f.suffixes
         if exts[-1] == '.gz':
             ftype = exts[-2]
@@ -197,10 +208,34 @@ class FastSeg:
             subprocess.check_call(cmd, shell=True, stderr=subprocess.PIPE)
             in_f = nii_f
 
+        if bias_correction:
+            in_img = ants.image_read(str(in_f))
+            in_img_bc = in_img.n4_bias_field_correction()
+            in_f = in_f.parent / in_f.name.replace('.nii', '_N4BCOR.nii')
+            ants.image_write(in_img_bc, str(in_f))
+
+            cmd = f"3drefit -space {img_space} {in_f}"
+            if show_proc_progress is not None:
+                proc = subprocess.Popen(
+                    shlex.split(cmd), stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=prefix.parent)
+                assert proc.returncode is None or proc.returncode == 0, \
+                    'Failed at n4_bias_field_correction.\n'
+                ret = show_proc_progress(proc, ETA)
+                if ret != 0:
+                    return (None, None)
+            else:
+                subprocess.check_call(
+                    shlex.split(cmd),
+                    cwd=prefix.parent
+                    )
+
         return (in_f, prefix)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run_seg_only(self, in_f, prefix, batch_size=1, seg_cereb=False):
+    def run_seg_only(self, in_f, prefix, batch_size=1, seg_cereb=False,
+                     show_proc_progress=None, ETA=None):
         """
         run_FastSurferCNN
         Parameters
@@ -222,114 +257,107 @@ class FastSeg:
 
         # Run
         work_dir = Path(prefix).parent
-        cmd = f"./{self.run_cmd.relative_to(self.fastsurfer_dir)}"
+        cmd = f"./{self.run_cmd}"
         cmd += f" --t1 {in_f} --sd {work_dir}"
         cmd += f" --sid {Path(prefix).name} --seg_only --no_biasfield"
         if not seg_cereb:
             cmd += " --no_cereb"
         cmd += f" --batch {batch_size}"
-        if no_cuda:
-            cmd += ' --no_cuda'
+        cmd += f' --device {DEVICE}'
+        env = os.environ
+        env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
+        env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
-        # Spawn the process
-        proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,
-                                cwd=self.fastsurfer_dir)
+        if show_proc_progress is not None:
+            proc = subprocess.Popen(
+                shlex.split(cmd), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=Path(__file__).absolute().parent,
+                env=env)
+            assert proc.returncode is None or proc.returncode == 0, \
+                'Failed at run_seg_only.\n'
+            ret = show_proc_progress(proc, ETA)
+            if ret != 0:
+                return None
+        else:
+            subprocess.check_call(
+                shlex.split(cmd),
+                cwd=prefix.parent
+                )
 
         fsSeg_mgz = Path(prefix) / 'mri' / 'aparc.DKTatlas+aseg.deep.mgz'
 
-        return proc, fsSeg_mgz
+        return fsSeg_mgz
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_seg_images(self, in_f, fsSeg_mgz, prefix,
                         segs=['aseg', 'Brain', 'WM', 'Vent'],
-                        show_proc_progress=None):
+                        show_proc_progress=None, ETA=None):
 
-        aseg_img = nib.load(fsSeg_mgz)
-        header = aseg_img.header
-        affine = aseg_img.affine
-        aseg_V = np.asarray(aseg_img.dataobj)
+        orig_mgz = fsSeg_mgz.parent / 'orig.mgz'
+
+        # Register orig to in_f
+        orig_img = ants.image_read(str(orig_mgz))
+        in_img = ants.image_read(str(in_f))
+        reg = ants.registration(in_img, orig_img, 'Translation')
+
+        aseg_img = ants.image_read(str(fsSeg_mgz))
+        aseg_V = aseg_img.numpy()
 
         # Get space of input file for AFNI
         cmd = f"3dinfo -space {in_f}"
-        img_space = subprocess.check_output(shlex.split(cmd)).decode()
+        img_space = subprocess.check_output(
+            shlex.split(cmd)).decode().rstrip()
 
         out_fs = []
         for seg_name in segs:
             out_f = str(prefix) + f"_{seg_name}.nii.gz"
             if seg_name == 'aseg':
-                seg = aseg_V
+                out_img = ants.apply_transforms(
+                    in_img, aseg_img, reg['fwdtransforms'],
+                    'nearestNeighbor'
+                    )
+
+            elif seg_name == 'Brain':
+                mask_img = ants.image_read(str(fsSeg_mgz.parent / 'mask.mgz'))
+                mask_in = ants.apply_transforms(
+                    in_img, mask_img, reg['fwdtransforms'], 'nearestNeighbor'
+                    )
+                out_img = in_img * mask_in
+
             else:
                 seg_idx = FastSeg.aseg_mask_IDs[seg_name]
-
-                seg = np.zeros_like(aseg_V)
+                seg_V = np.zeros_like(aseg_V)
                 for idx in seg_idx:
                     if type(idx) is str:
-                        seg += eval(f"aseg_V {idx}")
+                        seg_V += eval(f"aseg_V {idx}")
                     elif idx < 0:
-                        seg -= aseg_V == -idx
+                        seg_V -= aseg_V == -idx
                     else:
-                        seg += aseg_V == idx
+                        seg_V += aseg_V == idx
+                seg_img = aseg_img.new_image_like(seg_V)
+                out_img = ants.apply_transforms(
+                    in_img, seg_img,
+                    reg['fwdtransforms'], 'nearestNeighbor'
+                    )
 
-            tmp_f = prefix.parent / f'rm_{seg_name}.nii.gz'
-            seg_nii_img = nib.Nifti1Image(seg, affine, header)
-            nib.save(seg_nii_img, str(tmp_f))
+            ants.image_write(out_img, str(out_f))
 
-            if seg_name == 'Brain':
-                cmd = f"3dmask_tool -overwrite -input {tmp_f}"
-                cmd += f" -prefix {tmp_f}"
-                cmd += " -frac 1.0 -dilate_inputs 5 -5 -fill_holes"
+            cmd = f"3drefit -space {img_space} {out_f}"
+            if show_proc_progress is not None:
                 proc = subprocess.Popen(
                     shlex.split(cmd), stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=prefix.parent)
-                ret = show_proc_progress(proc)
-                if ret != 0:
-                    return None
-
-            if seg_name == 'aseg':
-                cmd = f"3dresample -overwrite -master {in_f} -input {tmp_f}"
-                cmd += f" -prefix {out_f} -rmode NN"
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=prefix.parent)
-                ret = show_proc_progress(proc)
+                assert proc.returncode is None or proc.returncode == 0, \
+                    'Failed at run_seg_only.\n'
+                ret = show_proc_progress(proc, ETA)
                 if ret != 0:
                     return None
             else:
-                cmd = f"3dfractionize -overwrite -template {in_f}"
-                cmd += f" -input {tmp_f} -prefix {tmp_f} -clip 0.5"
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=prefix.parent)
-                ret = show_proc_progress(proc)
-                if ret != 0:
-                    return None
-
-                if seg_name == 'Brain':
-                    cmd = f"3dcalc -overwrite -prefix {out_f}"
-                    cmd += f"  -a {tmp_f} -b {in_f} -expr 'step(a)*b'"
-                else:
-                    cmd = f"3dcalc -overwrite -prefix {out_f} -a {tmp_f}"
-                    cmd += " -expr 'step(a)'"
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=prefix.parent)
-                ret = show_proc_progress(proc)
-                if ret != 0:
-                    return None
-
-            cmd = f"3drefit -space {img_space} {out_f}"
-            ret = show_proc_progress(proc)
-            if ret != 0:
-                return None
-
-            if tmp_f.is_file():
-                tmp_f.unlink()
-
-            out_fs.append(out_f)
+                subprocess.check_call(
+                    shlex.split(cmd),
+                    cwd=prefix.parent
+                    )
 
         return out_fs

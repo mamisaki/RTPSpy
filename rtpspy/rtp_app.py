@@ -42,7 +42,7 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
-    from .rtp_physio import RtpPhysio
+    from .rtp_ttl_physio import RtpTTLPhysio
     from .rtp_imgproc import RtpImgProc
     from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
@@ -50,7 +50,7 @@ try:
 except Exception:
     # For DEBUG environment
     from rtpspy import (RtpWatch, RtpTshift, RtpVolreg, RtpSmooth,
-                        RtpRegress, RtpPhysio, RtpImgProc)
+                        RtpRegress, RtpTTLPhysio, RtpImgProc)
     from rtpspy.rtp_common import (RTP, boot_afni, MatplotlibWindow,
                                    DlgProgressBar, excepthook, load_parameters,
                                    save_parameters)
@@ -72,6 +72,8 @@ class RtpApp(RTP):
                 Working directory.
         """
         super(RtpApp, self).__init__(**kwargs)
+
+        self._logger.debug('### Initialize RtpApp ###')
 
         # --- Initialize parameters -------------------------------------------
         self.work_dir = work_dir
@@ -103,7 +105,7 @@ class RtpApp(RTP):
         self._isReadyRun = False
 
         # mask creation parameter
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() or torch.backends.mps.is_available():
             self.no_FastSeg = False
             self.fastSeg_batch_size = 1
             # total_memory = torch.cuda.get_device_properties(0).total_memory
@@ -140,7 +142,7 @@ class RtpApp(RTP):
         self.chk_run_timer = QtCore.QTimer()
         self.chk_run_timer.setSingleShot(True)
         self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
-        self.max_watch_wait = 20  # seconds
+        self.max_watch_wait = 5  # seconds
 
         # Simulation data
         self.simEnabled = False
@@ -184,15 +186,16 @@ class RtpApp(RTP):
 
         # --- RTP module instances --------------------------------------------
         rtp_objs = dict()
-        rtp_objs['PHYSIO'] = RtpPhysio()
+        rtp_objs['TTLPHYSIO'] = RtpTTLPhysio()
         rtp_objs['WATCH'] = RtpWatch()
         rtp_objs['VOLREG'] = RtpVolreg()
         rtp_objs['TSHIFT'] = RtpTshift()
         rtp_objs['SMOOTH'] = RtpSmooth()
         rtp_objs['REGRESS'] = RtpRegress(
-            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['PHYSIO'])
+            volreg=rtp_objs['VOLREG'], rtp_physio=rtp_objs['TTLPHYSIO'])
 
         self.rtp_objs = rtp_objs
+        self.rtp_gui = None
 
         # --- Clean tmp dicom -------------------------------------------------
         tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
@@ -211,6 +214,8 @@ class RtpApp(RTP):
             if 'APP' in default_rtp_params:
                 for attr, val in default_rtp_params['APP'].items():
                     self.set_param(attr, val)
+
+        self._logger.debug('### Complete RtpApp initialization ###')
 
     # --- Override these functions for a custom application -------------------
     #  ready_proc, do_proc, end_reset, end_proc
@@ -290,7 +295,7 @@ class RtpApp(RTP):
                 # Online saving in a file
                 with open(self.sig_save_file, 'a') as save_fd:
                     print(val_str, file=save_fd)
-                self._logger.info(f"Write data '{val_str}'")
+                self._logger.info(f"Write ROI data '{val_str}'")
 
             # --- Post procress -----------------------------------------------
             tstamp = time.time()
@@ -302,10 +307,10 @@ class RtpApp(RTP):
 
             # log message
             f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};ROI signal extraction is done for {f}"
+            msg = f"#{vol_idx+1};ROI signal extraction;{f}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s)"
+                msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Update signal plot
@@ -338,8 +343,9 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_dcm2nii(self):
         # Select dicom directory
+        watch_dir = self.rtp_objs['WATCH'].watch_dir
         dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_win, 'Select dicom file directory', str(self.work_dir))
+            self.main_win, 'Select dicom file directory', str(watch_dir))
 
         if dcm_dir == '':
             return
@@ -347,10 +353,9 @@ class RtpApp(RTP):
         out_dir = Path(self.work_dir).absolute()
         if out_dir == '':
             out_dir = './'
-        ses = out_dir.name.replace('_', '')
 
-        cmd = f"dcm2niix -f sub-%n_ses-{ses}_ser-%s_desc-%d"
-        cmd += f" -i y -z o -w 0 -o {out_dir} {dcm_dir}"
+        cmd = "dcm2niix -f sub-%n_ses-%t_ser-%s_desc-%d"
+        cmd += f" -i n -z o -w 0 -o {out_dir} {dcm_dir}"
         try:
             # progress dialog
             msgBox = QtWidgets.QMessageBox(self.main_win)
@@ -365,14 +370,31 @@ class RtpApp(RTP):
             proc = subprocess.Popen(
                 shlex.split(cmd), stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE)
-
-            msgBox.accept()
+            while proc.poll() is None:
+                QtWidgets.QApplication.processEvents()
+                time.sleep(0.5)
 
             stdout, stderr = proc.communicate()
             ostr = '\n'.join([stdout.decode(), stderr.decode()])
+
+            # Copy dicoms
+            src_dir = dcm_dir
+            dst_dir = out_dir / 'dicom'
+            cmd = f"rsync -auvz {src_dir}/ {dst_dir}/"
+            subprocess.check_call(shlex.split(cmd), stdout=subprocess.DEVNULL)
+
+            # # sanitize filename
+            # for fpath in out_dir.glob('*'):
+            #     fname = fpath.name
+            #     sanitized = re.sub(r'[\^|\s|<>:"/\\|?*\x00-\x1F]', '_', fname)
+            #     if sanitized != fname:
+            #         fpath.rename(out_dir / sanitized)
+
+            msgBox.accept()
             QtWidgets.QMessageBox.information(
                 self.main_win, 'dcm2niix', ostr,
                 QtWidgets.QMessageBox.Ok)
+
         except Exception as e:
             try:
                 msgBox.accept()
@@ -563,9 +585,7 @@ class RtpApp(RTP):
 
         st0 = time.time()  # start time
         OK = True
-        RTP_dir = self.work_dir / 'RTP'
-        if not RTP_dir.is_dir():
-            RTP_dir.mkdir()
+        work_dir = self.work_dir
 
         try:
             # --- Check image space -------------------------------------------
@@ -583,12 +603,12 @@ class RtpApp(RTP):
                 pass
 
             # Deoblique self.anat_orig
-            anat_orig = RTP_dir / Path(self.anat_orig).name
+            anat_orig = work_dir / Path(self.anat_orig).name
             improc.copy_deoblique(self.anat_orig, anat_orig,
                                   progress_bar=progress_bar)
 
             # --- 0. Copy func_orig to RTP_dir as vr_base_* ------------------
-            if Path(func_orig).parent != RTP_dir or \
+            if Path(func_orig).parent != work_dir or \
                     not Path(func_orig).stem.startswith('vr_base_') or \
                     overwrite:
                 src_f = func_orig
@@ -617,7 +637,7 @@ class RtpApp(RTP):
                 if not src_save_fname.startswith('vr_base_'):
                     src_save_fname = 'vr_base_' + src_save_fname
 
-                dst_f = RTP_dir / f'{src_save_fname}.nii.gz'
+                dst_f = work_dir / f'{src_save_fname}.nii.gz'
                 if src_f != dst_f and (not dst_f.is_file() or overwrite):
                     src_img = improc.load_image(src_f, vidx=vidx)
                     if src_img is None:
@@ -637,9 +657,10 @@ class RtpApp(RTP):
                 # If a json file exists, copy it as well
                 json_f = Path(src_f).parent / (src_f_stem + '.json')
                 if json_f.is_file():
-                    dst_json_f = RTP_dir / (src_f_stem + '.json')
+                    dst_json_f = work_dir / (src_f_stem + '.json')
                     if not dst_json_f.is_file() or overwrite:
-                        shutil.copy(json_f, dst_json_f)
+                        if json_f != dst_json_f:
+                            shutil.copy(json_f, dst_json_f)
                 else:
                     # Save TR and slice timing
                     header = nib.load(src_f).header
@@ -673,7 +694,7 @@ class RtpApp(RTP):
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
                 seg_files = improc.run_fast_seg(
-                    RTP_dir, anat_orig, total_ETA,
+                    work_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, overwrite=overwrite)
                 assert seg_files is not None
 
@@ -686,7 +707,7 @@ class RtpApp(RTP):
                 # --- 1. 3dSkullStrip -----------------------------------------
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
-                    RTP_dir, anat_orig, total_ETA,
+                    work_dir, anat_orig, total_ETA,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert brain_anat_orig is not None, "skullStrip failed.\n"
@@ -696,7 +717,7 @@ class RtpApp(RTP):
 
             # --- 2. Align anatomy to function --------------------------------
             alAnat = improc.align_anat2epi(
-                RTP_dir, self.brain_anat_orig, self.func_orig, total_ETA,
+                work_dir, self.brain_anat_orig, self.func_orig, total_ETA,
                 progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert alAnat is not None, "align_anat2epi failed.\n"
@@ -705,12 +726,12 @@ class RtpApp(RTP):
             self.set_param('alAnat', alAnat)
 
             alAnat_f_stem = self.alAnat.stem.replace('.nii', '')
-            aff1D_f = RTP_dir / (alAnat_f_stem + '_mat.aff12.1D')
+            aff1D_f = work_dir / (alAnat_f_stem + '_mat.aff12.1D')
             assert aff1D_f.is_file()
 
             # --- 3. Make RTP and GSR masks -----------------------------------
             mask_files = improc.make_RTP_GSR_masks(
-                RTP_dir, self.func_orig, total_ETA, ref_vi=0,
+                work_dir, self.func_orig, total_ETA, ref_vi=0,
                 alAnat=self.alAnat, progress_bar=progress_bar, ask_cmd=ask_cmd,
                 overwrite=overwrite)
             assert mask_files is not None
@@ -722,7 +743,7 @@ class RtpApp(RTP):
             if Path(self.template).is_file():
                 if Path(self.ROI_template).is_file() or no_FastSeg:
                     warp_params = improc.warp_template(
-                        RTP_dir, self.alAnat, self.template,
+                        work_dir, self.alAnat, self.template,
                         total_ETA, progress_bar=progress_bar, ask_cmd=ask_cmd,
                         overwrite=overwrite)
             else:
@@ -732,56 +753,51 @@ class RtpApp(RTP):
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
-                    RTP_dir, self.func_orig, self.ROI_template,
-                    total_ETA, warp_params, interpolator=self.ROI_resample,
+                    work_dir, self.ROI_template, self.alAnat, warp_params,
+                    res_master_f=self.func_orig, total_ETA=total_ETA,
+                    interpolator=self.ROI_resample,
                     progress_bar=progress_bar, ask_cmd=ask_cmd,
                     overwrite=overwrite)
                 assert ROI_orig is not None
                 self.set_param('ROI_orig', ROI_orig)
 
             # --- 6. Make white matter and ventricle masks --------------------
-            if no_FastSeg:
-                if warp_params is not None:
-                    for roi in ('WM', 'Vent'):
-                        if roi == 'WM':
-                            roi_f = self.WM_template
-                        elif roi == 'Vent':
-                            roi_f = self.Vent_template
-
-                        warped_f = improc.ants_warp_resample(
-                            RTP_dir, self.alAnat, roi_f, total_ETA,
-                            warp_params, interpolator='nearestNeighbor',
-                            progress_bar=progress_bar, ask_cmd=ask_cmd,
-                            overwrite=overwrite)
-                        assert warped_f is not None
-
-                        if roi == 'WM':
-                            WM_seg = warped_f
-                        elif roi == 'Vent':
-                            Vent_seg = warped_f
-            else:
+            if warp_params is not None and Path(self.ROI_template).is_file():
                 for segname in ('WM', 'Vent', 'aseg'):
                     if segname == 'WM':
                         erode = 2
-                        seg_anat_f = WM_seg
+                        if no_FastSeg:
+                            seg_anat_f = self.WM_template
+                        else:
+                            seg_anat_f = WM_seg
                     elif segname == 'Vent':
                         erode = 1
-                        seg_anat_f = Vent_seg
+                        if no_FastSeg:
+                            seg_anat_f = self.Vent_template
+                        else:
+                            seg_anat_f = Vent_seg
                     elif segname == 'aseg':
+                        erode = 0
                         if no_FastSeg:
                             continue
-                        erode = 0
-                        seg_anat_f = aseg_seg
+                        else:
+                            seg_anat_f = aseg_seg
 
                     assert seg_anat_f.is_file()
+
                     if no_FastSeg:
+                        # warp template seg_anat_f
+                        seg_anat_f = improc.ants_warp_resample(
+                            work_dir, seg_anat_f, self.alAnat, warp_params,
+                            interpolator='nearestNeighbor',
+                            progress_bar=progress_bar, ask_cmd=ask_cmd,
+                            overwrite=overwrite)
                         aff1D_f = None
 
                     seg_al_f = improc.resample_segmasks(
-                        RTP_dir, seg_anat_f, segname, erode, self.func_orig,
-                        total_ETA, aff1D_f, progress_bar=progress_bar,
+                        work_dir, seg_anat_f, segname, erode, self.func_orig,
+                        total_ETA, aff1D_f=aff1D_f, progress_bar=progress_bar,
                         ask_cmd=ask_cmd, overwrite=overwrite)
-                    assert seg_al_f is not None
 
                     # Use self.set_param() to update GUI fields
                     self.set_param(f'{segname}_orig', seg_al_f)
@@ -819,8 +835,8 @@ class RtpApp(RTP):
             # Message dialog
             if self.main_win is not None:
                 QtWidgets.QMessageBox.information(
-                    self.main_win, 'Complete the mask creation',
-                    'Complete the mask creation')
+                    self.main_win, 'Mask creation is complete.',
+                    'Mask creation is complete.')
 
         # Enable CreateMasks button
         if hasattr(self, 'ui_CreateMasks_btn'):
@@ -944,8 +960,9 @@ class RtpApp(RTP):
                                     return -1
 
                     elif proc == 'REGRESS':
-                        pobj.TR = self.rtp_objs['TSHIFT'].TR
-                        pobj.tshift = self.rtp_objs['TSHIFT'].ref_time
+                        pobj.set_param('TR', self.rtp_objs['TSHIFT'].TR)
+                        pobj.set_param('tshift',
+                                       self.rtp_objs['TSHIFT'].ref_time)
                         pobj.set_param('mask_file', self.RTP_mask)
                         if pobj.mot_reg != 'None':
                             if not self.rtp_objs['VOLREG'].enabled:
@@ -954,10 +971,12 @@ class RtpApp(RTP):
                                 errmsg += 'Motion regressor is set to None.'
                                 self.rtp_objs['VOLREG'].errmsg(errmsg)
                             else:
-                                pobj.volreg = self.rtp_objs['VOLREG']
+                                pobj.set_param('volreg',
+                                               self.rtp_objs['VOLREG'])
 
                         if pobj.phys_reg != 'None':
-                            pobj.rtp_physio = self.rtp_objs['PHYSIO']
+                            pobj.set_param('rtp_physio',
+                                           self.rtp_objs['TTLPHYSIO'])
 
                         if pobj.GS_reg:
                             if Path(self.GSR_mask).is_file():
@@ -1036,13 +1055,6 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _is_running_dcm2nii(self):
         # Check if dcm2niix is in progress
-        tmp_dcm = list(Path('/tmp').glob('**/*.dcm'))
-        if len(tmp_dcm):
-            errmsg = 'DICOM to NIfTI conversion is still in progress.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
-            return True
-
         try:
             ostr = subprocess.check_output(shlex.split('pgrep -f dcm2niix'))
             if len(ostr.decode().rstrip()):
@@ -1058,6 +1070,8 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
         """ Ready running the process """
+        self._logger.debug('ready_to_run')
+
         #  --- Disable ui to block parameters change --------------------------
         if self.enable_RTP > 0 and self.main_win is not None:
             self.ui_setEnabled(False)
@@ -1091,11 +1105,14 @@ class RtpApp(RTP):
                     elif proc == 'REGRESS':
                         if pobj.GS_reg or pobj.WM_reg or pobj.Vent_reg:
                             if self.rtp_objs['VOLREG'].enabled:
-                                pobj.mask_src_proc = self.rtp_objs['VOLREG']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['VOLREG'])
                             elif self.rtp_objs['TSHIFT'].enabled:
-                                pobj.mask_src_proc = self.rtp_objs['TSHIFT']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['TSHIFT'])
                             else:
-                                pobj.mask_src_proc = self.rtp_objs['WATCH']
+                                pobj.set_param('mask_src_proc',
+                                               self.rtp_objs['WATCH'])
 
                         self.max_watch_wait = max(pobj.wait_num * 0.5,
                                                   self.max_watch_wait)
@@ -1159,17 +1176,17 @@ class RtpApp(RTP):
             self.chk_run_timer.start(1000)
 
             # Stand by scan onset monitor
-            if 'PHYSIO' in self.rtp_objs and \
-                    self.rtp_objs['PHYSIO'] is not None:
-                self.rtp_objs['PHYSIO'].scan_onset = 0
-                self.rtp_objs['PHYSIO'].wait_ttl_on = True
+            if 'TTLPHYSIO' in self.rtp_objs and \
+                    self.rtp_objs['TTLPHYSIO'] is not None:
+                self.rtp_objs['TTLPHYSIO'].scan_onset = 0
+                self.rtp_objs['TTLPHYSIO'].wait_ttl_on = True
             self._scanning = False
             self._wait_start = True
 
             # Run wait_onset thread
             self.th_wait_onset = QtCore.QThread()
             self.wait_onset = RtpApp.WAIT_ONSET(
-                    self, self.rtp_objs['PHYSIO'], self.extApp_sock)
+                    self, self.rtp_objs['TTLPHYSIO'], self.extApp_sock)
             self.wait_onset.moveToThread(self.th_wait_onset)
             self.th_wait_onset.started.connect(self.wait_onset.run)
             self.wait_onset.finished.connect(self.th_wait_onset.quit)
@@ -1195,7 +1212,7 @@ class RtpApp(RTP):
         self._scanning = True
         self._wait_start = False
 
-        self.rtp_objs['PHYSIO'].scan_onset = self.scan_onset
+        self.rtp_objs['TTLPHYSIO'].scan_onset = self.scan_onset
 
         if self.extApp_sock is not None:
             # Send message to self.extApp_sock
@@ -1321,7 +1338,7 @@ class RtpApp(RTP):
                 # Get the root and last processes
                 root_proc = None
                 for rtp, obj in self.rtp_objs.items():
-                    if rtp in ('PHYSIO'):
+                    if rtp in ('TTLPHYSIO'):
                         continue
                     if obj.enabled:
                         if root_proc is None:
@@ -1355,15 +1372,17 @@ class RtpApp(RTP):
         return save_fnames
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def check_onAFNI(self, base, ovl):
-        work_dir = Path(self.work_dir) / 'RTP'
+    def check_onAFNI(self, base=None, ovl=None):
+        work_dir = Path(self.work_dir)
 
         # Set underlay and overlay image file
+        base_img = None
         if base == 'anat':
             base_img = self.alAnat
         elif base == 'func':
             base_img = self.func_orig
 
+        ovl_img = None
         if ovl == 'func':
             ovl_img = self.func_orig
         elif ovl == 'wm':
@@ -1377,31 +1396,6 @@ class RtpApp(RTP):
         elif ovl == 'GSRmask':
             ovl_img = self.GSR_mask
 
-        if not Path(base_img).is_file() or not Path(ovl_img).is_file():
-            return
-
-        # Get volume shape to adjust window size
-        baseWinSize = 480  # height of axial image window
-        bimg = nib.load(base_img)
-        vsize = np.diag(bimg.affine)[:3]
-        if np.any(vsize == 0):
-            vsize = np.abs([r[np.argmax(np.abs(r))]
-                            for r in bimg.affine[:3, :3]])
-        vshape = bimg.shape[:3] * vsize
-        wh_ax = np.abs([int(baseWinSize*vshape[0]//vshape[1]), baseWinSize])
-        wh_sg = np.abs([baseWinSize, int(baseWinSize*vshape[2]//vshape[1])])
-        wh_cr = np.abs([int(baseWinSize*vshape[0]//vshape[1]),
-                        int(baseWinSize*vshape[2]//vshape[1])])
-
-        # Get cursor position
-        if ovl in ['roi', 'wm', 'vent', 'mask']:
-            ovl_v = nib.load(ovl_img).get_fdata()
-            if ovl_v.ndim > 3:
-                ovl_v = ovl_v[:, :, :, 0]
-            ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
-            ijk = np.concatenate([ijk, [1]])
-            xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
-
         # Check if afni is ready
         cmd0 = "afni"
         pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
@@ -1411,39 +1405,68 @@ class RtpApp(RTP):
                  if "pgrep -af 'afni" not in ll and 'RTafni' not in ll and
                  len(ll) > 0]
         if len(procs) == 0:
+            # Boot AFNI
             rt = (work_dir == self.rtp_objs['WATCH'].watch_dir)
             boot_afni(main_win=self.main_win, boot_dir=work_dir, rt=rt,
                       TRUSTHOST=self.AFNIRT_TRUSTHOST)
 
-        # Run plugout_drive to drive afni
-        le = 800  # left end
-        tp = 500  # top
-        cmd = 'plugout_drive'
-        cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
-        cmd += " -com 'RESCAN_THIS'"
-        cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
-        cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
-        cmd += " -com 'SEE_OVERLAY +'"
-        cmd += " -com 'OPEN_WINDOW A.axialimage"
-        cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
-        cmd += " -com 'OPEN_WINDOW A.sagittalimage"
-        if le+wh_ax[0]+wh_sg[0]+wh_cr[0]-100 > 1920:
-            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp-100}"
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]-50}"
-            cmd += f"+{wh_sg[1]+tp-100} opacity=6'"
-        else:
-            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp}"
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]+wh_sg[0]-100}"
-            cmd += f"+{tp} opacity=6'"
+        if base_img is not None:
+            # Get volume shape to adjust window size
+            baseWinSize = 480  # height of axial image window
+            bimg = nib.load(base_img)
+            vsize = np.diag(bimg.affine)[:3]
+            if np.any(vsize == 0):
+                vsize = np.abs([r[np.argmax(np.abs(r))]
+                                for r in bimg.affine[:3, :3]])
+            vshape = bimg.shape[:3] * vsize
+            wh_ax = np.abs(
+                [int(baseWinSize*vshape[0]//vshape[1]), baseWinSize])
+            wh_sg = np.abs(
+                [baseWinSize, int(baseWinSize*vshape[2]//vshape[1])])
+            wh_cr = np.abs(
+                [int(baseWinSize*vshape[0]//vshape[1]),
+                 int(baseWinSize*vshape[2]//vshape[1])])
 
-        if ovl in ['roi', 'wm', 'vent', 'mask']:
-            cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
-        cmd += " -quit"
-        subprocess.run(cmd, shell=True)
+            # Get cursor position
+            if ovl in ['roi', 'wm', 'vent', 'mask']:
+                ovl_v = nib.load(ovl_img).get_fdata()
+                if ovl_v.ndim > 3:
+                    ovl_v = ovl_v[:, :, :, 0]
+                ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
+                ijk = np.concatenate([ijk, [1]])
+                xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
+
+            # Run plugout_drive to drive afni
+            le = 800  # left end
+            tp = 500  # top
+            cmd = 'plugout_drive'
+            cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
+            cmd += " -com 'RESCAN_THIS'"
+            cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
+            if ovl_img is not None:
+                cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
+                cmd += " -com 'SEE_OVERLAY +'"
+            cmd += " -com 'OPEN_WINDOW A.axialimage"
+            cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.sagittalimage"
+            if le+wh_ax[0]+wh_sg[0]+wh_cr[0]-100 > 1920:
+                cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp-100}"
+                cmd += " opacity=6'"
+                cmd += " -com 'OPEN_WINDOW A.coronalimage"
+                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le+wh_ax[0]-50}"
+                cmd += f"+{wh_sg[1]+tp-100} opacity=6'"
+            else:
+                cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le+wh_ax[0]-50}+{tp}"
+                cmd += " opacity=6'"
+                cmd += " -com 'OPEN_WINDOW A.coronalimage"
+                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}"
+                cmd += f"+{le+wh_ax[0]+wh_sg[0]-100}"
+                cmd += f"+{tp} opacity=6'"
+
+            if ovl in ['roi', 'wm', 'vent', 'mask']:
+                cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
+            cmd += " -quit"
+            subprocess.run(cmd, shell=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def delete_file(self, attr, keepfile=False):
@@ -1910,8 +1933,9 @@ class RtpApp(RTP):
             # resp_src = self.simRespData
             # physio_port = self.simPhysPort.split()[0]
             # recording_rate_ms = \
-            #     1000 / self.rtp_objs['PHYSIO'].effective_sample_freq
-            # samples_to_average = self.rtp_objs['PHYSIO'].samples_to_average
+            #     1000 / self.rtp_objs['TTLPHYSIO'].effective_sample_freq
+            # samples_to_average = \
+            # self.rtp_objs['TTLPHYSIO'].samples_to_average
 
             # recv_physio_port = re.search(r'slave:(.+)\)',
             #                              self.simPhysPort).groups()[0]
@@ -1923,8 +1947,9 @@ class RtpApp(RTP):
             #     self.rtp_objs['EXTSIG'].stop_recording()
 
             # # Change port
-            # self.rtp_objs['PHYSIO'].update_port_list()
-            # self.rtp_objs['PHYSIO'].set_param('ser_port', recv_physio_port)
+            # self.rtp_objs['TTLPHYSIO'].update_port_list()
+            # self.rtp_objs['TTLPHYSIO'].set_param('ser_port',
+            # recv_physio_port)
 
             # self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
             #                         recording_rate_ms, samples_to_average)
@@ -1934,11 +1959,11 @@ class RtpApp(RTP):
             #     self.main_win.chbRecSignal.setCheckState(2)
             #     self.main_win.chbShowExtSig.setCheckState(2)
             # else:
-            #     self.rtp_objs['PHYSIO'].start_recording()
-            #     self.rtp_objs['PHYSIO'].open_signal_plot()
+            #     self.rtp_objs['TTLPHYSIO'].start_recording()
+            #     self.rtp_objs['TTLPHYSIO'].open_signal_plot()
 
-            # if hasattr(self.rtp_objs['PHYSIO'], 'ui_objs'):
-            #     for ui in self.rtp_objs['PHYSIO'].ui_objs:
+            # if hasattr(self.rtp_objs['TTLPHYSIO'], 'ui_objs'):
+            #     for ui in self.rtp_objs['TTLPHYSIO'].ui_objs:
             #         ui.setEnabled(False)
 
             # run_physio = True
@@ -2159,7 +2184,7 @@ class RtpApp(RTP):
         except BrokenPipeError:
             self.extApp_sock = None
             errmsg = 'No connection to external app.'
-            self._logger.error(errmsg)
+            self._logger.debug(errmsg)
             if not no_err_pop:
                 self.err_popup(errmsg)
             return False
@@ -2222,6 +2247,7 @@ class RtpApp(RTP):
         When reset_fn is None, set_param is considered to be called from
         load_parameters function.
         """
+        self._logger.debug(f"set_param: {attr} = {val}")
 
         if attr == 'enable_RTP':
             if reset_fn is None and hasattr(self, 'ui_enableRTP_chb'):
@@ -2380,7 +2406,8 @@ class RtpApp(RTP):
                     filt = '*.*;;*.txt;;*.1D'
                 else:
                     filt = "*.BRIK* *.nii*;;*.*"
-                fname = self.select_file_dlg(dlgMdg, startdir, filt)
+                fname = self.select_file_dlg(
+                    dlgMdg, startdir, filt, parent=self.rtp_gui )
                 if fname[0] == '':
                     return -1
 
@@ -2501,6 +2528,463 @@ class RtpApp(RTP):
         self.ui_top_tabs = QtWidgets.QTabWidget()
         ui_rows.append((self.ui_top_tabs,))
 
+        # --- Preprocessing tab -----------------------------------------------
+        self.ui_preprocessingTab = QtWidgets.QWidget()
+        self.ui_top_tabs.addTab(self.ui_preprocessingTab, 'Preprocessing')
+        self.ui_preprocessing_fLayout = \
+            QtWidgets.QFormLayout(self.ui_preprocessingTab)
+
+        # --- Preprocessing group ---
+        self.ui_RefImg_grpBx = QtWidgets.QGroupBox("Reference images")
+        RefImg_gLayout = QtWidgets.QGridLayout(self.ui_RefImg_grpBx)
+        self.ui_preprocessing_fLayout.addRow(self.ui_RefImg_grpBx)
+        self.ui_objs.append(self.ui_RefImg_grpBx)
+
+        # --- dcm2nii ---
+        ri = 0
+        self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2niix')
+        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
+        RefImg_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
+
+        # -- Anatomy orig image --
+        ri += 1
+        var_lb = QtWidgets.QLabel("Anatomy image :")
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
+        self.ui_anat_orig_lnEd.setReadOnly(True)
+        self.ui_anat_orig_lnEd.setStyleSheet(
+            'border: 0px none;')
+        RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
+
+        self.ui_anat_orig_btn = QtWidgets.QPushButton('Set')
+        self.ui_anat_orig_btn.clicked.connect(
+                lambda: self.set_param('anat_orig', '',
+                                       self.ui_anat_orig_lnEd.setText))
+        self.ui_anat_orig_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);")
+        RefImg_gLayout.addWidget(self.ui_anat_orig_btn, ri, 2)
+
+        self.ui_anat_orig_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_anat_orig_del_btn.clicked.connect(
+            lambda: self.delete_file('anat_orig', keepfile=True))
+        RefImg_gLayout.addWidget(self.ui_anat_orig_del_btn, ri, 3)
+
+        # -- function orig image --
+        ri += 1
+        var_lb = QtWidgets.QLabel("Base function image : ")
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
+        self.ui_func_orig_lnEd.setReadOnly(True)
+        self.ui_func_orig_lnEd.setStyleSheet(
+            'border: 0px none;')
+        RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
+
+        self.ui_func_orig_btn = QtWidgets.QPushButton('Set')
+        self.ui_func_orig_btn.clicked.connect(
+                lambda: self.set_param('func_orig', '',
+                                       self.ui_func_orig_lnEd.setText))
+        self.ui_func_orig_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);")
+        RefImg_gLayout.addWidget(self.ui_func_orig_btn, ri, 2)
+
+        self.ui_func_orig_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_func_orig_del_btn.clicked.connect(
+            lambda: self.delete_file('func_orig', keepfile=True))
+        RefImg_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
+
+        # -- CreateMasks button --
+        ri += 1
+        self.ui_CreateMasks_btn = QtWidgets.QPushButton(
+                'Create masks (+shift=overwrite)')
+        self.ui_CreateMasks_btn.clicked.connect(
+                lambda x: self.make_masks(progress_dlg=True,
+                                          no_FastSeg=self.no_FastSeg))
+        self.ui_CreateMasks_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);")
+        RefImg_gLayout.addWidget(self.ui_CreateMasks_btn, ri, 0, 1, 3)
+        self.ui_objs.append(self.ui_CreateMasks_btn)
+
+        # no_FastSeg checkbox
+        self.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
+        self.ui_no_FastSeg_chb.setChecked(self.no_FastSeg)
+        self.ui_no_FastSeg_chb.stateChanged.connect(
+                lambda x: self.set_param('no_FastSeg', x,
+                                         self.ui_no_FastSeg_chb.setCheckState))
+        RefImg_gLayout.addWidget(self.ui_no_FastSeg_chb, ri, 3, 1, 1)
+        self.ui_objs.append(self.ui_no_FastSeg_chb)
+
+        # -- paremeter reference image --
+        ri += 1
+        var_lb = QtWidgets.QLabel("fMRI parameter refrence : ")
+        RefImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
+        self.ui_func_param_ref_lnEd.setReadOnly(True)
+        self.ui_func_param_ref_lnEd.setStyleSheet(
+            'border: 0px none;')
+        RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
+
+        self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
+        self.ui_param_ref_btn.clicked.connect(
+                lambda: self.set_param('func_param_ref', '',
+                                       self.ui_func_param_ref_lnEd.setText))
+        self.ui_param_ref_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);")
+        RefImg_gLayout.addWidget(self.ui_param_ref_btn, ri, 2)
+
+        self.ui_param_ref_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_param_ref_del_btn.clicked.connect(
+            lambda: self.delete_file('func_param_ref', keepfile=True))
+        RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
+
+        # --- check ROIs groups ---
+        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Display the masks in AFNI")
+        ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
+        self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
+        self.ui_objs.append(self.ui_ChkMask_grpBx)
+
+        self.ui_openAFNI_btn = \
+            QtWidgets.QPushButton('Open AFNI')
+        self.ui_openAFNI_btn.clicked.connect(
+                lambda: self.check_onAFNI())
+        ChkMask_gLayout.addWidget(self.ui_openAFNI_btn, 0, 0)
+
+        self.ui_chkFuncAnat_btn = \
+            QtWidgets.QPushButton('func-anat align')
+        self.ui_chkFuncAnat_btn.clicked.connect(
+                lambda: self.check_onAFNI('anat', 'func'))
+        ChkMask_gLayout.addWidget(self.ui_chkFuncAnat_btn, 0, 1)
+
+        self.ui_chkROIFunc_btn = QtWidgets.QPushButton('ROI on function')
+        self.ui_chkROIFunc_btn.clicked.connect(
+                lambda: self.check_onAFNI('func', 'roi'))
+        ChkMask_gLayout.addWidget(self.ui_chkROIFunc_btn, 0, 2)
+
+        self.ui_chkROIAnat_btn = QtWidgets.QPushButton('ROI on anatomy')
+        self.ui_chkROIAnat_btn.clicked.connect(
+                lambda: self.check_onAFNI('anat', 'roi'))
+        ChkMask_gLayout.addWidget(self.ui_chkROIAnat_btn, 0, 3)
+
+        self.ui_chkWMFunc_btn = QtWidgets.QPushButton('WM on anatomy')
+        self.ui_chkWMFunc_btn.clicked.connect(
+                lambda: self.check_onAFNI('anat', 'wm'))
+        ChkMask_gLayout.addWidget(self.ui_chkWMFunc_btn, 1, 0)
+
+        self.ui_chkVentFunc_btn = \
+            QtWidgets.QPushButton('Vent on anatomy')
+        self.ui_chkVentFunc_btn.clicked.connect(
+                lambda: self.check_onAFNI('anat', 'vent'))
+        ChkMask_gLayout.addWidget(self.ui_chkVentFunc_btn, 1, 1)
+
+        self.ui_chkGSRmask_btn = QtWidgets.QPushButton('GSR mask')
+        self.ui_chkGSRmask_btn.clicked.connect(
+                lambda: self.check_onAFNI('func', 'GSRmask'))
+        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 1, 2)
+
+        self.ui_chkRTPmask_btn = QtWidgets.QPushButton('RTP mask')
+        self.ui_chkRTPmask_btn.clicked.connect(
+                lambda: self.check_onAFNI('func', 'RTPmask'))
+        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 1, 3)
+
+        # --- Template tab ----------------------------------------------------
+        self.ui_templateTab = QtWidgets.QWidget()
+        self.ui_top_tabs.addTab(self.ui_templateTab, 'Template')
+        template_fLayout = QtWidgets.QFormLayout(self.ui_templateTab)
+
+        # -- Template group box --
+        self.ui_Template_grpBx = QtWidgets.QGroupBox("Template images")
+        Template_gLayout = QtWidgets.QGridLayout(self.ui_Template_grpBx)
+        template_fLayout.addWidget(self.ui_Template_grpBx)
+        self.ui_objs.append(self.ui_Template_grpBx)
+
+        ri = 0
+
+        # -- Templete image --
+        var_lb = QtWidgets.QLabel("Template brain :")
+        Template_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_template_lnEd = QtWidgets.QLineEdit()
+        self.ui_template_lnEd.setText(str(self.template))
+        self.ui_template_lnEd.setReadOnly(True)
+        self.ui_template_lnEd.setStyleSheet(
+            'border: 0px none;')
+        Template_gLayout.addWidget(self.ui_template_lnEd, ri, 1)
+
+        self.ui_template_btn = QtWidgets.QPushButton('Set')
+        self.ui_template_btn.clicked.connect(
+                lambda: self.set_param(
+                        'template',
+                        os.path.dirname(self.ui_template_lnEd.text()),
+                        self.ui_template_lnEd.setText))
+        Template_gLayout.addWidget(self.ui_template_btn, ri, 2)
+
+        self.ui_template_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_template_del_btn.clicked.connect(
+            lambda: self.delete_file('template', keepfile=True))
+        Template_gLayout.addWidget(self.ui_template_del_btn, ri, 3)
+
+        # -- ROI on template --
+        ri += 1
+        self.ui_ROI_template_lb = QtWidgets.QLabel("ROI on template :")
+        Template_gLayout.addWidget(self.ui_ROI_template_lb, ri, 0)
+
+        self.ui_ROI_template_lnEd = QtWidgets.QLineEdit()
+        self.ui_ROI_template_lnEd.setText(str(self.ROI_template))
+        self.ui_ROI_template_lnEd.setReadOnly(True)
+        self.ui_ROI_template_lnEd.setStyleSheet(
+            'border: 0px none;')
+        Template_gLayout.addWidget(self.ui_ROI_template_lnEd, ri, 1)
+
+        self.ui_ROI_template_btn = QtWidgets.QPushButton('Set')
+        self.ui_ROI_template_btn.clicked.connect(
+                lambda: self.set_param(
+                        'ROI_template',
+                        os.path.dirname(self.ui_ROI_template_lnEd.text()),
+                        self.ui_ROI_template_lnEd.setText))
+        Template_gLayout.addWidget(self.ui_ROI_template_btn, ri, 2)
+
+        self.ui_ROI_template_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_ROI_template_del_btn.clicked.connect(
+            lambda: self.delete_file('ROI_template', keepfile=True))
+        Template_gLayout.addWidget(self.ui_ROI_template_del_btn, ri, 3)
+
+        # ROI resampling mode
+        ri += 1
+        var_ROI_resample_lb = QtWidgets.QLabel("ROI resampling :")
+        Template_gLayout.addWidget(var_ROI_resample_lb, ri, 0)
+
+        self.ui_ROI_resample_cmbBx = QtWidgets.QComboBox()
+        self.ui_ROI_resample_cmbBx.addItems(self.ROI_resample_opts)
+        self.ui_ROI_resample_cmbBx.setCurrentText(self.ROI_resample)
+        self.ui_ROI_resample_cmbBx.currentIndexChanged.connect(
+                lambda idx:
+                self.set_param('ROI_resample',
+                               self.ui_ROI_resample_cmbBx.currentText(),
+                               self.ui_ROI_resample_cmbBx.setCurrentIndex))
+        Template_gLayout.addWidget(self.ui_ROI_resample_cmbBx, ri, 1)
+
+        # -- WM on template --
+        ri += 1
+        self.ui_WM_template_lb = QtWidgets.QLabel("White matter on template :")
+        Template_gLayout.addWidget(self.ui_WM_template_lb, ri, 0)
+
+        self.ui_WM_template_lnEd = QtWidgets.QLineEdit()
+        self.ui_WM_template_lnEd.setText(str(self.WM_template))
+        self.ui_WM_template_lnEd.setReadOnly(True)
+        self.ui_WM_template_lnEd.setStyleSheet(
+            'border: 0px none;')
+        Template_gLayout.addWidget(self.ui_WM_template_lnEd, ri, 1)
+
+        self.ui_WM_template_btn = QtWidgets.QPushButton('Set')
+        self.ui_WM_template_btn.clicked.connect(
+                lambda: self.set_param(
+                        'WM_template',
+                        os.path.dirname(self.ui_WM_template_lnEd.text()),
+                        self.ui_WM_template_lnEd.setText))
+        Template_gLayout.addWidget(self.ui_WM_template_btn, ri, 2)
+
+        self.ui_WM_template_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_WM_template_del_btn.clicked.connect(
+            lambda: self.delete_file('WM_template', keepfile=True))
+        Template_gLayout.addWidget(self.ui_WM_template_del_btn, ri, 3)
+
+        # -- Ventricle on template --
+        ri += 1
+        self.ui_Vent_template_lb = QtWidgets.QLabel("Ventricle on template :")
+        Template_gLayout.addWidget(self.ui_Vent_template_lb, ri, 0)
+
+        self.ui_Vent_template_lnEd = QtWidgets.QLineEdit()
+        self.ui_Vent_template_lnEd.setText(str(self.Vent_template))
+        self.ui_Vent_template_lnEd.setReadOnly(True)
+        self.ui_Vent_template_lnEd.setStyleSheet(
+            'border: 0px none;')
+        Template_gLayout.addWidget(self.ui_Vent_template_lnEd, ri, 1)
+
+        self.ui_Vent_template_btn = QtWidgets.QPushButton('Set')
+        self.ui_Vent_template_btn.clicked.connect(
+                lambda: self.set_param(
+                        'Vent_template',
+                        os.path.dirname(self.ui_Vent_template_lnEd.text()),
+                        self.ui_Vent_template_lnEd.setText))
+        Template_gLayout.addWidget(self.ui_Vent_template_btn, ri, 2)
+
+        self.ui_Vent_template_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_Vent_template_del_btn.clicked.connect(
+            lambda: self.delete_file('Vent_template', keepfile=True))
+        Template_gLayout.addWidget(self.ui_Vent_template_del_btn, ri, 3)
+
+        # --- Processed image tab ---------------------------------------------
+        self.ui_procImgTab = QtWidgets.QWidget()
+        self.ui_top_tabs.addTab(self.ui_procImgTab, 'Processed images')
+        procImg_gLayout = QtWidgets.QGridLayout(self.ui_procImgTab)
+
+        # -- aligned anatomy --
+        ri0 = 0
+        var_lb = QtWidgets.QLabel("Aligned anatomy :")
+        procImg_gLayout.addWidget(var_lb, ri0, 0)
+
+        self.ui_alAnat_lnEd = QtWidgets.QLineEdit()
+        self.ui_alAnat_lnEd.setText(str(self.alAnat))
+        self.ui_alAnat_lnEd.setReadOnly(True)
+        self.ui_alAnat_lnEd.setStyleSheet(
+            'border: 0px none;')
+        procImg_gLayout.addWidget(self.ui_alAnat_lnEd, ri0, 1)
+
+        self.ui_alAnat_btn = QtWidgets.QPushButton('Set')
+        self.ui_alAnat_btn.clicked.connect(
+                lambda: self.set_param('alAnat', self.work_dir,
+                                       self.ui_alAnat_lnEd.setText))
+        procImg_gLayout.addWidget(self.ui_alAnat_btn, ri0, 2)
+
+        self.ui_alAnat_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_alAnat_del_btn.clicked.connect(
+            lambda: self.delete_file('alAnat', keepfile=True))
+        procImg_gLayout.addWidget(self.ui_alAnat_del_btn, ri0, 3)
+
+        self.ui_objs.extend([var_lb, self.ui_alAnat_lnEd,
+                             self.ui_alAnat_btn, self.ui_alAnat_del_btn])
+
+        # -- warped images --
+        ri0 += 1
+        self.ui_wrpImg_grpBx = QtWidgets.QGroupBox('Warped images')
+        wrpImg_gLayout = QtWidgets.QGridLayout(self.ui_wrpImg_grpBx)
+        procImg_gLayout.addWidget(self.ui_wrpImg_grpBx, ri0, 0, 1, 4)
+        self.ui_objs.append(self.ui_wrpImg_grpBx)
+
+        # -- WM in the original space --
+        ri = 0
+        var_lb = QtWidgets.QLabel("WM mask in original :")
+        wrpImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_WM_orig_lnEd = QtWidgets.QLineEdit()
+        self.ui_WM_orig_lnEd.setText(str(self.WM_orig))
+        self.ui_WM_orig_lnEd.setReadOnly(True)
+        self.ui_WM_orig_lnEd.setStyleSheet(
+            'border: 0px none;')
+        wrpImg_gLayout.addWidget(self.ui_WM_orig_lnEd, ri, 1)
+
+        self.ui_WM_orig_btn = QtWidgets.QPushButton('Set')
+        self.ui_WM_orig_btn.clicked.connect(
+                lambda: self.set_param('WM_orig', self.work_dir,
+                                       self.ui_WM_orig_lnEd.setText))
+        wrpImg_gLayout.addWidget(self.ui_WM_orig_btn, ri, 2)
+
+        self.ui_WM_orig_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_WM_orig_del_btn.clicked.connect(
+            lambda: self.delete_file('WM_orig', keepfile=True))
+        wrpImg_gLayout.addWidget(self.ui_WM_orig_del_btn, ri, 3)
+
+        # -- Vent in the original space --
+        ri += 1
+        var_lb = QtWidgets.QLabel("Vent mask in original :")
+        wrpImg_gLayout.addWidget(var_lb, ri, 0)
+
+        self.ui_Vent_orig_lnEd = QtWidgets.QLineEdit()
+        self.ui_Vent_orig_lnEd.setText(str(self.Vent_orig))
+        self.ui_Vent_orig_lnEd.setReadOnly(True)
+        self.ui_Vent_orig_lnEd.setStyleSheet(
+            'border: 0px none;')
+        wrpImg_gLayout.addWidget(self.ui_Vent_orig_lnEd, ri, 1)
+
+        self.ui_Vent_orig_btn = QtWidgets.QPushButton('Set')
+        self.ui_Vent_orig_btn.clicked.connect(
+                lambda: self.set_param('Vent_orig', self.work_dir,
+                                       self.ui_Vent_orig_lnEd.setText))
+        wrpImg_gLayout.addWidget(self.ui_Vent_orig_btn, ri, 2)
+
+        self.ui_Vent_orig_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_Vent_orig_del_btn.clicked.connect(
+            lambda: self.delete_file('Vent_orig', keepfile=True))
+        wrpImg_gLayout.addWidget(self.ui_Vent_orig_del_btn, ri, 3)
+
+        # -- ROI in the original space --
+        ri += 1
+        self.ui_ROI_orig_lb = QtWidgets.QLabel("ROI mask in original :")
+        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lb, ri, 0)
+
+        self.ui_ROI_orig_lnEd = QtWidgets.QLineEdit()
+        self.ui_ROI_orig_lnEd.setText(str(self.ROI_orig))
+        self.ui_ROI_orig_lnEd.setReadOnly(True)
+        self.ui_ROI_orig_lnEd.setStyleSheet(
+            'border: 0px none;')
+        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lnEd, ri, 1)
+
+        self.ui_ROI_orig_btn = QtWidgets.QPushButton('Set')
+        self.ui_ROI_orig_btn.clicked.connect(
+                lambda: self.set_param('ROI_orig', self.work_dir,
+                                       self.ui_ROI_orig_lnEd.setText))
+        wrpImg_gLayout.addWidget(self.ui_ROI_orig_btn, ri, 2)
+
+        self.ui_ROI_orig_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_ROI_orig_del_btn.clicked.connect(
+            lambda: self.delete_file('ROI_orig', keepfile=True))
+        wrpImg_gLayout.addWidget(self.ui_ROI_orig_del_btn, ri, 3)
+
+        # --- RTP_mask ---
+        ri0 += 1
+        var_lb = QtWidgets.QLabel("RTP mask :")
+        procImg_gLayout.addWidget(var_lb, ri0, 0)
+
+        self.ui_RTP_mask_lnEd = QtWidgets.QLineEdit()
+        self.ui_RTP_mask_lnEd.setText(str(self.RTP_mask))
+        self.ui_RTP_mask_lnEd.setReadOnly(True)
+        self.ui_RTP_mask_lnEd.setStyleSheet(
+            'border: 0px none;')
+        procImg_gLayout.addWidget(self.ui_RTP_mask_lnEd, ri0, 1)
+
+        self.ui_RTP_mask_btn = QtWidgets.QPushButton('Set')
+        self.ui_RTP_mask_btn.clicked.connect(
+                lambda: self.set_param('RTP_mask', self.work_dir,
+                                       self.ui_RTP_mask_lnEd.setText))
+        procImg_gLayout.addWidget(self.ui_RTP_mask_btn, ri0, 2)
+
+        self.ui_RTP_mask_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_RTP_mask_del_btn.clicked.connect(
+            lambda: self.delete_file('RTP_mask', keepfile=True))
+        procImg_gLayout.addWidget(self.ui_RTP_mask_del_btn, ri0, 3)
+
+        self.ui_objs.extend([var_lb, self.ui_RTP_mask_lnEd,
+                             self.ui_RTP_mask_btn, self.ui_RTP_mask_del_btn])
+
+        # --- GSR mask ---
+        ri0 += 1
+        var_lb = QtWidgets.QLabel("GSR mask :")
+        procImg_gLayout.addWidget(var_lb, ri0, 0)
+
+        self.ui_GSR_mask_lnEd = QtWidgets.QLineEdit()
+        self.ui_GSR_mask_lnEd.setText(str(self.GSR_mask))
+        self.ui_GSR_mask_lnEd.setReadOnly(True)
+        self.ui_GSR_mask_lnEd.setStyleSheet(
+            'border: 0px none;')
+        procImg_gLayout.addWidget(self.ui_GSR_mask_lnEd, ri0, 1)
+
+        self.ui_GSR_mask_btn = QtWidgets.QPushButton('Set')
+        self.ui_GSR_mask_btn.clicked.connect(
+                lambda: self.set_param('GSR_mask', self.work_dir,
+                                       self.ui_GSR_mask_lnEd.setText))
+        procImg_gLayout.addWidget(self.ui_GSR_mask_btn, ri0, 2)
+
+        self.ui_GSR_mask_del_btn = QtWidgets.QPushButton('Unset')
+        self.ui_GSR_mask_del_btn.clicked.connect(
+            lambda: self.delete_file('GSR_mask', keepfile=True))
+        procImg_gLayout.addWidget(self.ui_GSR_mask_del_btn, ri0, 3)
+
+        self.ui_objs.extend([var_lb, self.ui_GSR_mask_lnEd,
+                             self.ui_GSR_mask_btn, self.ui_GSR_mask_del_btn])
+
+        # --- Delete all processed images ---
+        ri0 += 1
+        self.ui_delAllProcImgs_btn = QtWidgets.QPushButton('Delete All')
+        self.ui_delAllProcImgs_btn.setStyleSheet(
+            "background-color: rgb(255,0,0);")
+        self.ui_delAllProcImgs_btn.clicked.connect(
+            lambda: self.delete_file('AllProc'))
+        procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, ri0, 3)
+        self.ui_objs.append(self.ui_delAllProcImgs_btn)
+
+
         if self.run_extApp:
             # --- External App tab --------------------------------------------
             self.ui_extAppTab = QtWidgets.QWidget()
@@ -2574,592 +3058,142 @@ class RtpApp(RTP):
                 "background-color: rgb(151,217,235);")
             self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
 
-        # --- Preprocessing tab -----------------------------------------------
-        self.ui_preprocessingTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_preprocessingTab, 'Preprocessing')
-        self.ui_preprocessing_fLayout = \
-            QtWidgets.QFormLayout(self.ui_preprocessingTab)
-
-        # --- Preprocessing group ---
-        self.ui_RefImg_grpBx = QtWidgets.QGroupBox("Reference images")
-        RefImg_gLayout = QtWidgets.QGridLayout(self.ui_RefImg_grpBx)
-        self.ui_preprocessing_fLayout.addRow(self.ui_RefImg_grpBx)
-        self.ui_objs.append(self.ui_RefImg_grpBx)
-
-        # --- dcm2nii ---
-        ri = 0
-        self.ui_dcm2nii_btn = QtWidgets.QPushButton('dcm2nii')
-        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
-        RefImg_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
-
-        # -- Anatomy orig image --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Anatomy image :")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_anat_orig_lnEd.setReadOnly(True)
-        self.ui_anat_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
-
-        self.ui_anat_orig_btn = QtWidgets.QPushButton('Set')
-        self.ui_anat_orig_btn.clicked.connect(
-                lambda: self.set_param('anat_orig', '',
-                                       self.ui_anat_orig_lnEd.setText))
-        self.ui_anat_orig_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
-        RefImg_gLayout.addWidget(self.ui_anat_orig_btn, ri, 2)
-
-        self.ui_anat_orig_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_anat_orig_del_btn.clicked.connect(
-            lambda: self.delete_file('anat_orig', keepfile=True))
-        RefImg_gLayout.addWidget(self.ui_anat_orig_del_btn, ri, 3)
-
-        # -- function orig image --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Base function image : ")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_func_orig_lnEd.setReadOnly(True)
-        self.ui_func_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
-
-        self.ui_func_orig_btn = QtWidgets.QPushButton('Set')
-        self.ui_func_orig_btn.clicked.connect(
-                lambda: self.set_param('func_orig', '',
-                                       self.ui_func_orig_lnEd.setText))
-        self.ui_func_orig_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
-        RefImg_gLayout.addWidget(self.ui_func_orig_btn, ri, 2)
-
-        self.ui_func_orig_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_func_orig_del_btn.clicked.connect(
-            lambda: self.delete_file('func_orig', keepfile=True))
-        RefImg_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
-
-        # -- CreateMasks button --
-        ri += 1
-        self.ui_CreateMasks_btn = QtWidgets.QPushButton(
-                'Create masks (+shift=overwrite; +ctrl=edit command lines)')
-        self.ui_CreateMasks_btn.clicked.connect(
-                lambda x: self.make_masks(progress_dlg=True,
-                                          no_FastSeg=self.no_FastSeg))
-        self.ui_CreateMasks_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
-        RefImg_gLayout.addWidget(self.ui_CreateMasks_btn, ri, 0, 1, 3)
-        self.ui_objs.append(self.ui_CreateMasks_btn)
-
-        # no_FastSeg checkbox
-        self.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
-        self.ui_no_FastSeg_chb.setChecked(self.no_FastSeg)
-        self.ui_no_FastSeg_chb.stateChanged.connect(
-                lambda x: self.set_param('no_FastSeg', x,
-                                         self.ui_no_FastSeg_chb.setCheckState))
-        RefImg_gLayout.addWidget(self.ui_no_FastSeg_chb, ri, 3, 1, 1)
-        self.ui_objs.append(self.ui_no_FastSeg_chb)
-
-        # -- paremeter reference image --
-        ri += 1
-        var_lb = QtWidgets.QLabel("fMRI parameter refrence : ")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
-        self.ui_func_param_ref_lnEd.setReadOnly(True)
-        self.ui_func_param_ref_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
-
-        self.ui_param_ref_btn = QtWidgets.QPushButton('Set')
-        self.ui_param_ref_btn.clicked.connect(
-                lambda: self.set_param('func_param_ref', '',
-                                       self.ui_func_param_ref_lnEd.setText))
-        self.ui_param_ref_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
-        RefImg_gLayout.addWidget(self.ui_param_ref_btn, ri, 2)
-
-        self.ui_param_ref_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_param_ref_del_btn.clicked.connect(
-            lambda: self.delete_file('func_param_ref', keepfile=True))
-        RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
-
-        # --- check ROIs groups ---
-        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Check masks on AFNI")
-        ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
-        self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
-        self.ui_objs.append(self.ui_ChkMask_grpBx)
-
-        self.ui_chkFuncAnat_btn = \
-            QtWidgets.QPushButton('func-anat align')
-        self.ui_chkFuncAnat_btn.clicked.connect(
-                lambda: self.check_onAFNI('anat', 'func'))
-        ChkMask_gLayout.addWidget(self.ui_chkFuncAnat_btn, 0, 0)
-
-        self.ui_chkROIFunc_btn = QtWidgets.QPushButton('ROI on function')
-        self.ui_chkROIFunc_btn.clicked.connect(
-                lambda: self.check_onAFNI('func', 'roi'))
-        ChkMask_gLayout.addWidget(self.ui_chkROIFunc_btn, 0, 1)
-
-        self.ui_chkROIAnat_btn = QtWidgets.QPushButton('ROI on anatomy')
-        self.ui_chkROIAnat_btn.clicked.connect(
-                lambda: self.check_onAFNI('anat', 'roi'))
-        ChkMask_gLayout.addWidget(self.ui_chkROIAnat_btn, 0, 2)
-
-        self.ui_chkWMFunc_btn = QtWidgets.QPushButton('WM on anatomy')
-        self.ui_chkWMFunc_btn.clicked.connect(
-                lambda: self.check_onAFNI('anat', 'wm'))
-        ChkMask_gLayout.addWidget(self.ui_chkWMFunc_btn, 0, 3)
-
-        self.ui_chkVentFunc_btn = \
-            QtWidgets.QPushButton('Vent on anatomy')
-        self.ui_chkVentFunc_btn.clicked.connect(
-                lambda: self.check_onAFNI('anat', 'vent'))
-        ChkMask_gLayout.addWidget(self.ui_chkVentFunc_btn, 0, 4)
-
-        self.ui_chkGSRmask_btn = QtWidgets.QPushButton('GSR mask')
-        self.ui_chkGSRmask_btn.clicked.connect(
-                lambda: self.check_onAFNI('func', 'GSRmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 0, 5)
-
-        self.ui_chkRTPmask_btn = QtWidgets.QPushButton('RTP mask')
-        self.ui_chkRTPmask_btn.clicked.connect(
-                lambda: self.check_onAFNI('func', 'RTPmask'))
-        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 0, 6)
-
-        # --- Template tab ----------------------------------------------------
-        self.ui_templateTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_templateTab, 'Template')
-        template_fLayout = QtWidgets.QFormLayout(self.ui_templateTab)
-
-        # -- Template group box --
-        self.ui_Template_grpBx = QtWidgets.QGroupBox("Template images")
-        Template_gLayout = QtWidgets.QGridLayout(self.ui_Template_grpBx)
-        template_fLayout.addWidget(self.ui_Template_grpBx)
-        self.ui_objs.append(self.ui_Template_grpBx)
-
-        ri = 0
-
-        # -- Templete image --
-        var_lb = QtWidgets.QLabel("Template brain :")
-        Template_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_template_lnEd.setText(str(self.template))
-        self.ui_template_lnEd.setReadOnly(True)
-        self.ui_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        Template_gLayout.addWidget(self.ui_template_lnEd, ri, 1)
-
-        self.ui_template_btn = QtWidgets.QPushButton('Set')
-        self.ui_template_btn.clicked.connect(
-                lambda: self.set_param(
-                        'template',
-                        os.path.dirname(self.ui_template_lnEd.text()),
-                        self.ui_template_lnEd.setText))
-        Template_gLayout.addWidget(self.ui_template_btn, ri, 2)
-
-        self.ui_template_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_template_del_btn.clicked.connect(
-            lambda: self.delete_file('template', keepfile=True))
-        Template_gLayout.addWidget(self.ui_template_del_btn, ri, 3)
-
-        # -- ROI on template --
-        ri += 1
-        self.ui_ROI_template_lb = QtWidgets.QLabel("ROI on template :")
-        Template_gLayout.addWidget(self.ui_ROI_template_lb, ri, 0)
-
-        self.ui_ROI_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_ROI_template_lnEd.setText(str(self.ROI_template))
-        self.ui_ROI_template_lnEd.setReadOnly(True)
-        self.ui_ROI_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        Template_gLayout.addWidget(self.ui_ROI_template_lnEd, ri, 1)
-
-        self.ui_ROI_template_btn = QtWidgets.QPushButton('Set')
-        self.ui_ROI_template_btn.clicked.connect(
-                lambda: self.set_param(
-                        'ROI_template',
-                        os.path.dirname(self.ui_ROI_template_lnEd.text()),
-                        self.ui_ROI_template_lnEd.setText))
-        Template_gLayout.addWidget(self.ui_ROI_template_btn, ri, 2)
-
-        self.ui_ROI_template_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_ROI_template_del_btn.clicked.connect(
-            lambda: self.delete_file('ROI_template', keepfile=True))
-        Template_gLayout.addWidget(self.ui_ROI_template_del_btn, ri, 3)
-
-        # ROI resampling mode
-        ri += 1
-        var_ROI_resample_lb = QtWidgets.QLabel("ROI resampling :")
-        Template_gLayout.addWidget(var_ROI_resample_lb, ri, 0)
-
-        self.ui_ROI_resample_cmbBx = QtWidgets.QComboBox()
-        self.ui_ROI_resample_cmbBx.addItems(self.ROI_resample_opts)
-        self.ui_ROI_resample_cmbBx.setCurrentText(self.ROI_resample)
-        self.ui_ROI_resample_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('ROI_resample',
-                               self.ui_ROI_resample_cmbBx.currentText(),
-                               self.ui_ROI_resample_cmbBx.setCurrentIndex))
-        Template_gLayout.addWidget(self.ui_ROI_resample_cmbBx, ri, 1)
-
-        # -- WM on template --
-        ri += 1
-        self.ui_WM_template_lb = QtWidgets.QLabel("White matter on template :")
-        Template_gLayout.addWidget(self.ui_WM_template_lb, ri, 0)
-
-        self.ui_WM_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_WM_template_lnEd.setText(str(self.WM_template))
-        self.ui_WM_template_lnEd.setReadOnly(True)
-        self.ui_WM_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        Template_gLayout.addWidget(self.ui_WM_template_lnEd, ri, 1)
-
-        self.ui_WM_template_btn = QtWidgets.QPushButton('Set')
-        self.ui_WM_template_btn.clicked.connect(
-                lambda: self.set_param(
-                        'WM_template',
-                        os.path.dirname(self.ui_WM_template_lnEd.text()),
-                        self.ui_WM_template_lnEd.setText))
-        Template_gLayout.addWidget(self.ui_WM_template_btn, ri, 2)
-
-        self.ui_WM_template_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_WM_template_del_btn.clicked.connect(
-            lambda: self.delete_file('WM_template', keepfile=True))
-        Template_gLayout.addWidget(self.ui_WM_template_del_btn, ri, 3)
-
-        # -- Ventricle on template --
-        ri += 1
-        self.ui_Vent_template_lb = QtWidgets.QLabel("Ventricle on template :")
-        Template_gLayout.addWidget(self.ui_Vent_template_lb, ri, 0)
-
-        self.ui_Vent_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_Vent_template_lnEd.setText(str(self.Vent_template))
-        self.ui_Vent_template_lnEd.setReadOnly(True)
-        self.ui_Vent_template_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        Template_gLayout.addWidget(self.ui_Vent_template_lnEd, ri, 1)
-
-        self.ui_Vent_template_btn = QtWidgets.QPushButton('Set')
-        self.ui_Vent_template_btn.clicked.connect(
-                lambda: self.set_param(
-                        'Vent_template',
-                        os.path.dirname(self.ui_Vent_template_lnEd.text()),
-                        self.ui_Vent_template_lnEd.setText))
-        Template_gLayout.addWidget(self.ui_Vent_template_btn, ri, 2)
-
-        self.ui_Vent_template_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_Vent_template_del_btn.clicked.connect(
-            lambda: self.delete_file('Vent_template', keepfile=True))
-        Template_gLayout.addWidget(self.ui_Vent_template_del_btn, ri, 3)
-
-        # --- Processed image tab ---------------------------------------------
-        self.ui_procImgTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_procImgTab, 'Processed images')
-        procImg_gLayout = QtWidgets.QGridLayout(self.ui_procImgTab)
-
-        # -- aligned anatomy --
-        ri0 = 0
-        var_lb = QtWidgets.QLabel("Aligned anatomy :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_alAnat_lnEd = QtWidgets.QLineEdit()
-        self.ui_alAnat_lnEd.setText(str(self.alAnat))
-        self.ui_alAnat_lnEd.setReadOnly(True)
-        self.ui_alAnat_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        procImg_gLayout.addWidget(self.ui_alAnat_lnEd, ri0, 1)
-
-        self.ui_alAnat_btn = QtWidgets.QPushButton('Set')
-        self.ui_alAnat_btn.clicked.connect(
-                lambda: self.set_param('alAnat', self.work_dir,
-                                       self.ui_alAnat_lnEd.setText))
-        procImg_gLayout.addWidget(self.ui_alAnat_btn, ri0, 2)
-
-        self.ui_alAnat_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_alAnat_del_btn.clicked.connect(
-            lambda: self.delete_file('alAnat', keepfile=True))
-        procImg_gLayout.addWidget(self.ui_alAnat_del_btn, ri0, 3)
-
-        self.ui_objs.extend([var_lb, self.ui_alAnat_lnEd,
-                             self.ui_alAnat_btn, self.ui_alAnat_del_btn])
-
-        # -- warped images --
-        ri0 += 1
-        self.ui_wrpImg_grpBx = QtWidgets.QGroupBox('Warped images')
-        wrpImg_gLayout = QtWidgets.QGridLayout(self.ui_wrpImg_grpBx)
-        procImg_gLayout.addWidget(self.ui_wrpImg_grpBx, ri0, 0, 1, 4)
-        self.ui_objs.append(self.ui_wrpImg_grpBx)
-
-        # -- WM in the original space --
-        ri = 0
-        var_lb = QtWidgets.QLabel("WM mask in original :")
-        wrpImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_WM_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_WM_orig_lnEd.setText(str(self.WM_orig))
-        self.ui_WM_orig_lnEd.setReadOnly(True)
-        self.ui_WM_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_lnEd, ri, 1)
-
-        self.ui_WM_orig_btn = QtWidgets.QPushButton('Set')
-        self.ui_WM_orig_btn.clicked.connect(
-                lambda: self.set_param('WM_orig', self.work_dir,
-                                       self.ui_WM_orig_lnEd.setText))
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_btn, ri, 2)
-
-        self.ui_WM_orig_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_WM_orig_del_btn.clicked.connect(
-            lambda: self.delete_file('WM_orig', keepfile=True))
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_del_btn, ri, 3)
-
-        # -- Vent in the original space --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Vent mask in original :")
-        wrpImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_Vent_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_Vent_orig_lnEd.setText(str(self.Vent_orig))
-        self.ui_Vent_orig_lnEd.setReadOnly(True)
-        self.ui_Vent_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_lnEd, ri, 1)
-
-        self.ui_Vent_orig_btn = QtWidgets.QPushButton('Set')
-        self.ui_Vent_orig_btn.clicked.connect(
-                lambda: self.set_param('Vent_orig', self.work_dir,
-                                       self.ui_Vent_orig_lnEd.setText))
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_btn, ri, 2)
-
-        self.ui_Vent_orig_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_Vent_orig_del_btn.clicked.connect(
-            lambda: self.delete_file('Vent_orig', keepfile=True))
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_del_btn, ri, 3)
-
-        # -- ROI in the original space --
-        ri += 1
-        self.ui_ROI_orig_lb = QtWidgets.QLabel("ROI mask in original :")
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lb, ri, 0)
-
-        self.ui_ROI_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_ROI_orig_lnEd.setText(str(self.ROI_orig))
-        self.ui_ROI_orig_lnEd.setReadOnly(True)
-        self.ui_ROI_orig_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lnEd, ri, 1)
-
-        self.ui_ROI_orig_btn = QtWidgets.QPushButton('Set')
-        self.ui_ROI_orig_btn.clicked.connect(
-                lambda: self.set_param('ROI_orig', self.work_dir,
-                                       self.ui_ROI_orig_lnEd.setText))
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_btn, ri, 2)
-
-        self.ui_ROI_orig_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_ROI_orig_del_btn.clicked.connect(
-            lambda: self.delete_file('ROI_orig', keepfile=True))
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_del_btn, ri, 3)
-
-        # --- RTP_mask ---
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("RTP mask :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_RTP_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_RTP_mask_lnEd.setText(str(self.RTP_mask))
-        self.ui_RTP_mask_lnEd.setReadOnly(True)
-        self.ui_RTP_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        procImg_gLayout.addWidget(self.ui_RTP_mask_lnEd, ri0, 1)
-
-        self.ui_RTP_mask_btn = QtWidgets.QPushButton('Set')
-        self.ui_RTP_mask_btn.clicked.connect(
-                lambda: self.set_param('RTP_mask', self.work_dir,
-                                       self.ui_RTP_mask_lnEd.setText))
-        procImg_gLayout.addWidget(self.ui_RTP_mask_btn, ri0, 2)
-
-        self.ui_RTP_mask_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_RTP_mask_del_btn.clicked.connect(
-            lambda: self.delete_file('RTP_mask', keepfile=True))
-        procImg_gLayout.addWidget(self.ui_RTP_mask_del_btn, ri0, 3)
-
-        self.ui_objs.extend([var_lb, self.ui_RTP_mask_lnEd,
-                             self.ui_RTP_mask_btn, self.ui_RTP_mask_del_btn])
-
-        # --- GSR mask ---
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("GSR mask :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_GSR_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_GSR_mask_lnEd.setText(str(self.GSR_mask))
-        self.ui_GSR_mask_lnEd.setReadOnly(True)
-        self.ui_GSR_mask_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        procImg_gLayout.addWidget(self.ui_GSR_mask_lnEd, ri0, 1)
-
-        self.ui_GSR_mask_btn = QtWidgets.QPushButton('Set')
-        self.ui_GSR_mask_btn.clicked.connect(
-                lambda: self.set_param('GSR_mask', self.work_dir,
-                                       self.ui_GSR_mask_lnEd.setText))
-        procImg_gLayout.addWidget(self.ui_GSR_mask_btn, ri0, 2)
-
-        self.ui_GSR_mask_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_GSR_mask_del_btn.clicked.connect(
-            lambda: self.delete_file('GSR_mask', keepfile=True))
-        procImg_gLayout.addWidget(self.ui_GSR_mask_del_btn, ri0, 3)
-
-        self.ui_objs.extend([var_lb, self.ui_GSR_mask_lnEd,
-                             self.ui_GSR_mask_btn, self.ui_GSR_mask_del_btn])
-
-        # --- Delete all processed images ---
-        ri0 += 1
-        self.ui_delAllProcImgs_btn = QtWidgets.QPushButton('Delete All')
-        self.ui_delAllProcImgs_btn.setStyleSheet(
-            "background-color: rgb(255,0,0);")
-        self.ui_delAllProcImgs_btn.clicked.connect(
-            lambda: self.delete_file('AllProc'))
-        procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, ri0, 3)
-        self.ui_objs.append(self.ui_delAllProcImgs_btn)
-
         # --- Simulation tab -------------------------------------------------
-        self.ui_simulationTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
-        simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
+        # self.ui_simulationTab = QtWidgets.QWidget()
+        # self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
+        # simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
 
-        # enabled
-        self.ui_simEnabled_rdb = QtWidgets.QRadioButton("Enable simulation")
-        self.ui_simEnabled_rdb.setChecked(self.simEnabled)
-        self.ui_simEnabled_rdb.toggled.connect(
-                lambda checked: self.set_param(
-                    'simEnabled', checked, self.ui_simEnabled_rdb.setChecked))
-        simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
-        self.ui_objs.append(self.ui_simEnabled_rdb)
+        # # enabled
+        # self.ui_simEnabled_rdb = QtWidgets.QRadioButton("Enable simulation")
+        # self.ui_simEnabled_rdb.setChecked(self.simEnabled)
+        # self.ui_simEnabled_rdb.toggled.connect(
+        #         lambda checked: self.set_param(
+        #             'simEnabled', checked, self.ui_simEnabled_rdb.setChecked))
+        # simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
+        # self.ui_objs.append(self.ui_simEnabled_rdb)
 
-        # --- Simulation MRI data 4D file ---
-        var_lb = QtWidgets.QLabel("fMRI data 4D file:")
-        simulation_gLayout.addWidget(var_lb, 1, 0)
+        # # --- Simulation MRI data 4D file ---
+        # var_lb = QtWidgets.QLabel("fMRI data 4D file:")
+        # simulation_gLayout.addWidget(var_lb, 1, 0)
 
-        self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
-        self.ui_simfMRIData_lnEd.setReadOnly(True)
-        self.ui_simfMRIData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
+        # self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
+        # self.ui_simfMRIData_lnEd.setReadOnly(True)
+        # self.ui_simfMRIData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
 
-        self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simfMRIData_btn.clicked.connect(
-                lambda: self.set_param('simfMRIData', None,
-                                       self.ui_simfMRIData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simfMRIData_btn, 1, 2)
+        # self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simfMRIData_btn.clicked.connect(
+        #         lambda: self.set_param('simfMRIData', None,
+        #                                self.ui_simfMRIData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_btn, 1, 2)
 
-        self.ui_simfMRIData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simfMRIData_del_btn.clicked.connect(
-            lambda: self.delete_file('simfMRIData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simfMRIData_del_btn, 1, 3)
+        # self.ui_simfMRIData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simfMRIData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simfMRIData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simfMRIData_del_btn, 1, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simfMRIData_lnEd,
-                             self.ui_simfMRIData_btn,
-                             self.ui_simfMRIData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simfMRIData_lnEd,
+        #                      self.ui_simfMRIData_btn,
+        #                      self.ui_simfMRIData_del_btn])
 
-        # --- Simulation MRI data dicom directory ---
-        var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
-        simulation_gLayout.addWidget(var_lb, 2, 0)
+        # # --- Simulation MRI data dicom directory ---
+        # var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
+        # simulation_gLayout.addWidget(var_lb, 2, 0)
 
-        self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
-        self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
-        self.ui_simfMRIDataDir_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
+        # self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(self.simfMRIDataDir)
+        # self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
+        # self.ui_simfMRIDataDir_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
 
-        self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
-        self.ui_simfMRIDataDir_btn.clicked.connect(
-                lambda: self.set_param('simfMRIDataDir', None,
-                                       self.ui_simfMRIDataDir_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
+        # self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simfMRIDataDir_btn.clicked.connect(
+        #         lambda: self.set_param('simfMRIDataDir', None,
+        #                                self.ui_simfMRIDataDir_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
 
-        self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simfMRIDataDir_del_btn.clicked.connect(
-            lambda: self.delete_file('simfMRIDataDir', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
+        # self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simfMRIDataDir_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simfMRIDataDir', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
-                             self.ui_simfMRIDataDir_btn,
-                             self.ui_simfMRIDataDir_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
+        #                      self.ui_simfMRIDataDir_btn,
+        #                      self.ui_simfMRIDataDir_del_btn])
 
-        # --- COM port list ---
-        var_lb = QtWidgets.QLabel("Simulation physio signal port :")
-        simulation_gLayout.addWidget(var_lb, 3, 0)
+        # # --- COM port list ---
+        # var_lb = QtWidgets.QLabel("Simulation physio signal port :")
+        # simulation_gLayout.addWidget(var_lb, 3, 0)
 
-        self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
-        self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
-        self.ui_simPhysPort_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('simPhysPort',
-                               self.ui_simPhysPort_cmbBx.currentText(),
-                               self.ui_simPhysPort_cmbBx.setCurrentText))
-        simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
+        # self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
+        # self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
+        # self.ui_simPhysPort_cmbBx.activated.connect(
+        #         lambda idx:
+        #         self.set_param('simPhysPort',
+        #                        self.ui_simPhysPort_cmbBx.currentText(),
+        #                        self.ui_simPhysPort_cmbBx.setCurrentText))
+        # simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
+        # self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
 
-        # --- ECG data ---
-        var_lb = QtWidgets.QLabel("ECG data :")
-        simulation_gLayout.addWidget(var_lb, 4, 0)
+        # # --- ECG data ---
+        # var_lb = QtWidgets.QLabel("ECG data :")
+        # simulation_gLayout.addWidget(var_lb, 4, 0)
 
-        self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
-        self.ui_simECGData_lnEd.setReadOnly(True)
-        self.ui_simECGData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
+        # self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
+        # self.ui_simECGData_lnEd.setReadOnly(True)
+        # self.ui_simECGData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
 
-        self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simECGData_btn.clicked.connect(
-            lambda: self.set_param('simECGData', None,
-                                   self.ui_simECGData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
+        # self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simECGData_btn.clicked.connect(
+        #     lambda: self.set_param('simECGData', None,
+        #                            self.ui_simECGData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
 
-        self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simECGData_del_btn.clicked.connect(
-            lambda: self.delete_file('simECGData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
+        # self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simECGData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simECGData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
-                             self.ui_simECGData_btn,
-                             self.ui_simECGData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
+        #                      self.ui_simECGData_btn,
+        #                      self.ui_simECGData_del_btn])
 
-        # --- Resp data ---
-        var_lb = QtWidgets.QLabel("Respiration data :")
-        simulation_gLayout.addWidget(var_lb, 5, 0)
+        # # --- Resp data ---
+        # var_lb = QtWidgets.QLabel("Respiration data :")
+        # simulation_gLayout.addWidget(var_lb, 5, 0)
 
-        self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
-        self.ui_simRespData_lnEd.setReadOnly(True)
-        self.ui_simRespData_lnEd.setStyleSheet(
-            'background: white; border: 0px none;')
-        simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
+        # self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
+        # self.ui_simRespData_lnEd.setReadOnly(True)
+        # self.ui_simRespData_lnEd.setStyleSheet(
+        #     'background: white; border: 0px none;')
+        # simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
 
-        self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
-        self.ui_simRespData_btn.clicked.connect(
-            lambda: self.set_param('simRespData', None,
-                                   self.ui_simRespData_lnEd.setText))
-        simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
+        # self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
+        # self.ui_simRespData_btn.clicked.connect(
+        #     lambda: self.set_param('simRespData', None,
+        #                            self.ui_simRespData_lnEd.setText))
+        # simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
 
-        self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
-        self.ui_simRespData_del_btn.clicked.connect(
-            lambda: self.delete_file('simRespData', keepfile=True))
-        simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
+        # self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
+        # self.ui_simRespData_del_btn.clicked.connect(
+        #     lambda: self.delete_file('simRespData', keepfile=True))
+        # simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
 
-        self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
-                             self.ui_simRespData_btn,
-                             self.ui_simRespData_del_btn])
+        # self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
+        #                      self.ui_simRespData_btn,
+        #                      self.ui_simRespData_del_btn])
 
-        # --- Start simulation button ---
-        self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
-        self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
-        self.ui_startSim_btn.setStyleSheet(
-            "background-color: rgb(94,63,153);"
-            "height: 20px;")
-        simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
+        # # --- Start simulation button ---
+        # self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
+        # self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
+        # self.ui_startSim_btn.setStyleSheet(
+        #     "background-color: rgb(94,63,153);"
+        #     "height: 20px;")
+        # simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
 
         # --- Setup experiment button -----------------------------------------
         self.ui_setRTP_btn = QtWidgets.QPushButton('RTP setup')
@@ -3302,10 +3336,10 @@ class RtpApp(RTP):
 
 #     watch_file_pattern = r'nr_\d+.*\.nii'
 
-#     # Set RTP_PHYSIO to RtpPhysioDummy
-#     # from rtpspy import RtpPhysioDummy
+#     # Set RTP_PHYSIO to RtpTTLPhysioDummy
+#     # from rtpspy import RtpTTLPhysioDummy
 #     # sample_freq = 40
-#     # rtp_app.rtp_objs['PHYSIO'] = RtpPhysioDummy(
+#     # rtp_app.rtp_objs['TTLPHYSIO'] = RtpTTLPhysioDummy(
 #     #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
 
 #     # RTP parameters
@@ -3367,7 +3401,7 @@ if __name__ == '__main__':
 
     # --- Set logging ---------------------------------------------------------
     dstr = datetime.now().strftime("%Y%m%dT%H%M%S")
-    log_file = Path(f'log/RrpApp_{dstr}.log')
+    log_file = Path(f'log/RtpApp_{dstr}.log')
 
     if not log_file.parent.is_dir():
         log_file.parent.mkdir()
