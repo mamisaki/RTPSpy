@@ -2407,7 +2407,7 @@ class RtpApp(RTP):
                 else:
                     filt = "*.BRIK* *.nii*;;*.*"
                 fname = self.select_file_dlg(
-                    dlgMdg, startdir, filt, parent=self.rtp_gui )
+                    dlgMdg, startdir, filt, parent=self.rtp_gui)
                 if fname[0] == '':
                     return -1
 
@@ -2640,7 +2640,8 @@ class RtpApp(RTP):
         RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
 
         # --- check ROIs groups ---
-        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Display the masks in AFNI")
+        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
+            "Display the masks in AFNI")
         ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
         self.ui_objs.append(self.ui_ChkMask_grpBx)
@@ -2983,7 +2984,6 @@ class RtpApp(RTP):
             lambda: self.delete_file('AllProc'))
         procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, ri0, 3)
         self.ui_objs.append(self.ui_delAllProcImgs_btn)
-
 
         if self.run_extApp:
             # --- External App tab --------------------------------------------
