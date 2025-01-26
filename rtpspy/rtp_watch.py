@@ -7,7 +7,6 @@ Support only for Siemens XA30 DICOM
 @author: mmisaki@libr.net
 """
 
-
 # %% import ==================================================================#
 from pathlib import Path
 import os
@@ -60,7 +59,7 @@ class RtpWatch(RTP):
         watch_dir=None,
         watch_file_pattern=r".+\.dcm",
         file_type="Dicom",
-        read_timeout=1,
+        read_timeout=3,
         polling_observer=False,
         polling_timeout=1,
         **kwargs,
@@ -89,11 +88,7 @@ class RtpWatch(RTP):
         """
         super().__init__(**kwargs)  # call __init__() in RTP base class
 
-        self._supported_file_types = [
-            'Dicom',
-            'Nifti',
-            'AFNI_BRIK'
-        ]
+        self._supported_file_types = ["Dicom", "Nifti", "AFNI_BRIK"]
         # Initialize parameters
         self.watch_dir = watch_dir
         self.watch_file_pattern = watch_file_pattern
@@ -113,7 +108,7 @@ class RtpWatch(RTP):
             errmsg = f"file_type = {self.file_type} is not supported."
             errmsg += " Reset file_type to 'Nifti'"
             self._logger.error(errmsg)
-            self.file_type = 'Nifti'
+            self.file_type = "Nifti"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
@@ -163,8 +158,7 @@ class RtpWatch(RTP):
             self.watch_file_pattern, callback=self.do_proc
         )
 
-        self._observer.schedule(self._event_handler, self.watch_dir,
-                                recursive=True)
+        self._observer.schedule(self._event_handler, self.watch_dir, recursive=True)
         self._observer.start()
         self._logger.info(
             "Start observer monitoring "
@@ -293,13 +287,11 @@ class RtpWatch(RTP):
                     fmri_img.set_data_dtype = self.proc_data.dtype
                     fmri_img.set_filename(save_name)
 
-                self.keep_processed_image(
-                    fmri_img, save_temp=self.online_saving)
+                self.keep_processed_image(fmri_img, save_temp=self.online_saving)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -316,8 +308,16 @@ class RtpWatch(RTP):
         while dcm is None and time.time() - st < self._read_timeout:
             # Wait until the file is readable.
             try:
+                # Check if the file is complete.
                 dcm = pydicom.dcmread(file_path)
-                _ = dcm.pixel_array
+                rows = int(dcm.Rows)
+                cols = int(dcm.Columns)
+                bits_allocated = int(dcm.BitsAllocated)
+                frames = int(dcm.get("NumberOfFrames", 1))  # Default to 1 if not set
+                pixel_data_size = rows * cols * (bits_allocated // 8) * frames
+                assert len(dcm.PixelData) == pixel_data_size
+                break
+
             except Exception:
                 time.sleep(0.01)
 
@@ -327,8 +327,8 @@ class RtpWatch(RTP):
             return
 
         manufacturer = dcm.Manufacturer.lower()
-        if 'siemens' in manufacturer:
-            if 'XA' in dcm.SoftwareVersions.upper():
+        if "siemens" in manufacturer:
+            if "XA" in dcm.SoftwareVersions.upper():
                 fmri_img = self._proc_SiemensXADicom(file_path, dcm)
             else:
                 fmri_img = self._proc_SiemensMosaicDicom(file_path, dcm)
@@ -347,11 +347,10 @@ class RtpWatch(RTP):
             self.nii_save_filename = f"sub-{sub}_ser-{int(ser)}"
             if len(serDesc):
                 self.nii_save_filename += f"_desc-{serDesc}"
-            self.nii_save_filename = \
-                self._make_path_safe(self.nii_save_filename)
+            self.nii_save_filename = self._make_path_safe(self.nii_save_filename)
             self.scan_name = f"Ser-{ser}"
 
-        nii_fname = self.nii_save_filename + f"_{vol_num+1:04d}.nii.gz"
+        nii_fname = self.nii_save_filename + f"_{vol_num + 1:04d}.nii.gz"
         fmri_img.set_filename(nii_fname)
 
         return fmri_img
@@ -399,8 +398,7 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -412,10 +410,7 @@ class RtpWatch(RTP):
         try:
             imageType = "\\".join(dcm.ImageType)
             # Ignore non fMRI file
-            if (
-                "FMRI" not in imageType
-                and "epfid2d" not in dcm.SequenceName
-            ):
+            if "FMRI" not in imageType and "epfid2d" not in dcm.SequenceName:
                 self._logger.debug(f"{file_path.name} is not a fMRI file.")
                 return
 
@@ -448,8 +443,7 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -461,7 +455,6 @@ class RtpWatch(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def process_nibabel(self, file_path, vol_num):
-
         file_path = Path(file_path)
         fsize = file_path.stat().st_size
         time.sleep(0.001)
@@ -495,8 +488,7 @@ class RtpWatch(RTP):
                 save_filename = file_path.stem
             save_filename = re.sub(r"\+orig.*", "", save_filename) + ".nii.gz"
             self.nii_save_filename = save_filename
-            self.nii_save_filename = \
-                self._make_path_safe(self.nii_save_filename)
+            self.nii_save_filename = self._make_path_safe(self.nii_save_filename)
 
             fmri_img = nib.Nifti1Image(
                 load_img.dataobj, load_img.affine, header=load_img.header
@@ -511,8 +503,7 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -556,8 +547,7 @@ class RtpWatch(RTP):
         img_pos = []
         for frame in dcm.PerFrameFunctionalGroupsSequence:
             img_pos.append(frame.PlanePositionSequence[0].ImagePositionPatient)
-        img_pos = np.concatenate([np.array(pos)[None, :] for pos in img_pos],
-                                 axis=0)
+        img_pos = np.concatenate([np.array(pos)[None, :] for pos in img_pos], axis=0)
 
         pix_data_len = int(
             (
@@ -654,13 +644,7 @@ class RtpWatch(RTP):
         """
         # --- Wait for PixelData to be ready ----------------------------------
         pix_data_len = int(
-            (
-                dcm.Rows
-                * dcm.Columns
-                * dcm.BitsAllocated
-                * dcm.SamplesPerPixel
-            )
-            / 8
+            (dcm.Rows * dcm.Columns * dcm.BitsAllocated * dcm.SamplesPerPixel) / 8
         )
         while True:  # Wait for PixelData to be ready
             try:
@@ -675,19 +659,21 @@ class RtpWatch(RTP):
 
         # --- Reshape mosaic to volume ----------------------------------------
         asconv_headers = re.findall(
-            r'### ASCCONV BEGIN(.*)### ASCCONV END ###',
-            dcm[(0x0029, 0x1020)].value.decode(encoding='ISO-8859-1'),
-            re.DOTALL)[0]
+            r"### ASCCONV BEGIN(.*)### ASCCONV END ###",
+            dcm[(0x0029, 0x1020)].value.decode(encoding="ISO-8859-1"),
+            re.DOTALL,
+        )[0]
 
-        size_z = int(re.findall(r'sSliceArray\.lSize\s*=\s*(\d+)',
-                                asconv_headers)[0])
+        size_z = int(re.findall(r"sSliceArray\.lSize\s*=\s*(\d+)", asconv_headers)[0])
 
         # get the locations of the slices
         slice_location = [None] * size_z
         for index in range(size_z):
             axial_result = re.findall(
-                r'sSliceArray\.asSlice\[%s\]\.sPosition\.dTra\s*=\s*([-+]?[0-9]*\.?[0-9]*)' % index,
-                asconv_headers)
+                r"sSliceArray\.asSlice\[%s\]\.sPosition\.dTra\s*=\s*([-+]?[0-9]*\.?[0-9]*)"
+                % index,
+                asconv_headers,
+            )
             if len(axial_result) > 0:
                 axial = float(axial_result[0])
             else:
@@ -696,8 +682,8 @@ class RtpWatch(RTP):
 
         invert = False
         invert_result = re.findall(
-            r'sSliceArray\.ucImageNumbTra\s*=\s*([-+]?0?x?[0-9]+)',
-            asconv_headers)
+            r"sSliceArray\.ucImageNumbTra\s*=\s*([-+]?0?x?[0-9]+)", asconv_headers
+        )
         if len(invert_result) > 0:
             invert_value = int(invert_result[0], 16)
             if invert_value >= 0:
@@ -706,14 +692,14 @@ class RtpWatch(RTP):
         # return the correct slice types
         if slice_location[0] <= slice_location[1]:
             if not invert:
-                MosaicType = 'ASCENDING'
+                MosaicType = "ASCENDING"
             else:
-                MosaicType = 'DESCENDING'
+                MosaicType = "DESCENDING"
         else:
             if not invert:
-                MosaicType = 'DESCENDING'
+                MosaicType = "DESCENDING"
             else:
-                MosaicType = 'ASCENDING'
+                MosaicType = "ASCENDING"
 
         number_x = number_y = int(np.ceil(np.sqrt(size_z)))
         size_x = int(dcm.Columns / number_x)
@@ -724,14 +710,16 @@ class RtpWatch(RTP):
             if z_index >= size_z:
                 break
             for x_index in range(0, number_x):
-                if MosaicType == 'ASCENDING':
-                    img_array[z_index, :, :] = \
-                        pixel_array[size_y * y_index:size_y * (y_index + 1),
-                                    size_x * x_index:size_x * (x_index + 1)]
+                if MosaicType == "ASCENDING":
+                    img_array[z_index, :, :] = pixel_array[
+                        size_y * y_index : size_y * (y_index + 1),
+                        size_x * x_index : size_x * (x_index + 1),
+                    ]
                 else:
-                    img_array[size_z - (z_index + 1), :, :] = \
-                        pixel_array[size_y * y_index:size_y * (y_index + 1),
-                                    size_x * x_index:size_x * (x_index + 1)]
+                    img_array[size_z - (z_index + 1), :, :] = pixel_array[
+                        size_y * y_index : size_y * (y_index + 1),
+                        size_x * x_index : size_x * (x_index + 1),
+                    ]
                 z_index += 1
                 if z_index >= size_z:
                     break
@@ -745,14 +733,18 @@ class RtpWatch(RTP):
         image_pos = dcm.ImagePositionPatient
         ds = dcm.SpacingBetweenSlices
         affine = np.array(
-            [[-img_ori1[0]*dc, -img_ori2[0]*dr, -ds*nrm[0], -image_pos[0]],
-             [-img_ori1[1]*dc, -img_ori2[1]*dr, -ds*nrm[1], -image_pos[1]],
-             [img_ori1[2]*dc, img_ori2[2]*dr, ds*nrm[2], image_pos[2]],
-             [0, 0, 0, 1]])
+            [
+                [-img_ori1[0] * dc, -img_ori2[0] * dr, -ds * nrm[0], -image_pos[0]],
+                [-img_ori1[1] * dc, -img_ori2[1] * dr, -ds * nrm[1], -image_pos[1]],
+                [img_ori1[2] * dc, img_ori2[2] * dr, ds * nrm[2], image_pos[2]],
+                [0, 0, 0, 1],
+            ]
+        )
 
-        affine[0:3, [3]] += np.dot(affine[0:3, 0:2],
-                                   np.array([[(dcm.Columns - size_x) / 2],
-                                             [(dcm.Rows - size_y) / 2]]))
+        affine[0:3, [3]] += np.dot(
+            affine[0:3, 0:2],
+            np.array([[(dcm.Columns - size_x) / 2], [(dcm.Rows - size_y) / 2]]),
+        )
 
         # Transpose and flip to LPI
         point = np.array([[0, img_array.shape[1] - 1, 0, 1]]).T
@@ -863,7 +855,7 @@ class RtpWatch(RTP):
                 self._logger.error(f"file_type = {val} is not supported")
                 return
 
-            if reset_fn is None and hasattr(self, 'ui_watchFType_cmbBx'):
+            if reset_fn is None and hasattr(self, "ui_watchFType_cmbBx"):
                 self.ui_watchFType_cmbBx.setCurrentText(val)
 
         elif attr == "watch_file_pattern":
@@ -912,13 +904,11 @@ class RtpWatch(RTP):
         setattr(self, attr, val)
         if echo:
             print(
-                "{}.".format(self.__class__.__name__) + attr, "=",
-                getattr(self, attr)
+                "{}.".format(self.__class__.__name__) + attr, "=", getattr(self, attr)
             )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
-
         ui_rows = []
         self.ui_objs = []
 
@@ -948,10 +938,12 @@ class RtpWatch(RTP):
         self.ui_watchFType_cmbBx.addItems(self._supported_file_types)
         self.ui_watchFType_cmbBx.setCurrentText(self.file_type)
         self.ui_watchFType_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('file_type',
-                               self.ui_watchFType_cmbBx.currentText(),
-                               self.ui_watchFType_cmbBx.setCurrentIndex))
+            lambda idx: self.set_param(
+                "file_type",
+                self.ui_watchFType_cmbBx.currentText(),
+                self.ui_watchFType_cmbBx.setCurrentIndex,
+            )
+        )
         ui_rows.append((var_lb, self.ui_watchFType_cmbBx))
         self.ui_objs.extend([var_lb, self.ui_watchFType_cmbBx])
 
@@ -986,8 +978,7 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_dcmreadTimeout_dSpBx])
 
         # polling_observer check
-        self.ui_pollingObserver_chb = QtWidgets.QCheckBox(
-            "Use PollingObserver")
+        self.ui_pollingObserver_chb = QtWidgets.QCheckBox("Use PollingObserver")
         self.ui_pollingObserver_chb.setChecked(self.polling_observer)
         self.ui_pollingObserver_chb.stateChanged.connect(
             lambda: self.set_param(
@@ -1016,8 +1007,7 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_pollingTimeout_dSpBx])
 
         # clean_ready
-        self.ui_cleanReady_chb = QtWidgets.QCheckBox(
-            "Clean watch dir at ready")
+        self.ui_cleanReady_chb = QtWidgets.QCheckBox("Clean watch dir at ready")
         self.ui_cleanReady_chb.setChecked(self.clean_ready)
         self.ui_cleanReady_chb.stateChanged.connect(
             lambda state: setattr(self, "clean_ready", state > 0)
@@ -1067,7 +1057,6 @@ class RtpWatch(RTP):
 
 # %% __main__ (test) ==========================================================
 if __name__ == "__main__":
-
     test_dir = Path(__file__).resolve().parent.parent / "tests"
 
     # # Parse arguments
@@ -1086,10 +1075,17 @@ if __name__ == "__main__":
     # test_work_dir = args.test_work_dir
     # TR = args.TR
 
-    src_data = test_dir / '20240916.OrangePhantom.7T2024091600PH'
-    watch_file_pattern = r'.+\.dcm'
+    src_data = test_dir / "20240916.OrangePhantom.7T2024091600PH"
+    src_data = (
+        Path.home()
+        / "Dropbox"
+        / "RTPSpyTestsData"
+        / "20240916.OrangePhantom.7T2024091600PH"
+    )
+    src_data = Path.home() / "Dropbox" / "RTPSpyTestsData" / "P000183"
+    watch_file_pattern = r".+\.dcm"
     test_work_dir = test_dir
-    file_type = 'Dicom'
+    file_type = "Dicom"
 
     # --- Prepare the test data -----------------------------------------------
     try:
@@ -1108,7 +1104,7 @@ if __name__ == "__main__":
 
         # Set export directory
         test_work_dir = Path(test_work_dir)
-        watch_dir = test_work_dir / 'watch'
+        watch_dir = test_work_dir / "watch"
         if not watch_dir.is_dir():
             watch_dir.mkdir()
         else:
@@ -1133,8 +1129,7 @@ if __name__ == "__main__":
 
     except Exception:
         exc_type, exc_obj, exc_tb = sys.exc_info()
-        errstr = ''.join(
-            traceback.format_exception(exc_type, exc_obj, exc_tb))
+        errstr = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
         sys.stderr.write(errstr)
         sys.exit()
 
