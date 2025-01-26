@@ -121,7 +121,7 @@ class SharedMemoryRingBuffer:
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, length, mmap_file=None, initial_value=np.nan):
+    def __init__(self, length, data_file=None, cpos_file=None, initial_value=np.nan):
         """Initialization creates an mmap file with the given 'name' in
         /dev/shm if available; otherwise, it is created in temporary directory.
         The name may be sanitized for use as a file name. The file is opened in
@@ -133,65 +133,92 @@ class SharedMemoryRingBuffer:
         ----------
         length : int
             Buffer length
-        mode : str
-            'w' : read/write mode.
-            'r' : read only mode.
-        mmap_file " Path or str, optional
-            Path to an mmap file.
+        data_file : Path or str, optional
+            Path to a data mmap file.
+        cpos_file : Path or str, optional
+            Path to a current position mmap file.
         initial_value : float, optional
             The value used to initialize the buffer data. The default is nan.
         """
         # Set logger
-        self._logger = logging.getLogger('SharedMemoryRingBuffer')
+        self._logger = logging.getLogger("SharedMemoryRingBuffer")
 
         # Set properties
-        self._length = length
+        self.length = int(length)
 
-        if mmap_file is None:
-            # Create mmap file
-            if Path('/dev/shm').is_dir() and os.access('/dev/shm', os.W_OK):
-                self._mmap_fd = NamedTemporaryFile(
-                    prefix='rtpspy_buffer_', dir='/dev/shm')
-            else:
-                self._mmap_fd = NamedTemporaryFile(
-                    prefix='rtpspy_buffer_')
-            
-            # Keep length space
-            self._mmap_fd.write(b'\x00' * (length * np.dtype(float).itemsize))
-            self._mmap_fd.flush()
-            self.mmap_file = Path(self._mmap_fd.name)
-
-        else:
-            if not Path(mmap_file).is_file():
-                errstr = f"Not found mmap_file: {mmap_file}.\n"
-                self._logger.error(errstr)
-                return None
-            self.mmap_file = Path(mmap_file)
-
-        # Open mmap data
         try:
+            if data_file is not None and cpos_file is not None:
+                if not Path(data_file).is_file():
+                    errstr = f"Not found data_file: {data_file}.\n"
+                    self._logger.error(errstr)
+                    return None
+                elif not Path(cpos_file).is_file():
+                    errstr = f"Not found cpos_file: {cpos_file}.\n"
+                    self._logger.error(errstr)
+                    return None
+                self._data_mmap_fd = open(data_file, "r+b")
+                self._cpos_mmap_fd = open(cpos_file, "r+b")
+                initial_value = None
+                self._creator = False
+            else:
+                # Create mmap file
+                if Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK):
+                    self._data_mmap_fd = NamedTemporaryFile(
+                        mode="w+b",
+                        prefix=f"rtpspy_{os.getpid()}_rbuffer_",
+                        dir="/dev/shm",
+                        delete=False,
+                    )
+                    self._cpos_mmap_fd = NamedTemporaryFile(
+                        mode="w+b",
+                        prefix=f"rtpspy_{os.getpid()}_rbuffer_cpos_",
+                        dir="/dev/shm",
+                        delete=False,
+                    )
+                else:
+                    self._data_mmap_fd = NamedTemporaryFile(
+                        prefix=f"rtpspy_{os.getpid()}_rbuffer_", delete=False
+                    )
+                    self._cpos_mmap_fd = NamedTemporaryFile(
+                        prefix=f"rtpspy_{os.getpid()}_rbuffer_cpos_", delete=False
+                    )
+
+                # Keep data space
+                self._data_mmap_fd.write(
+                    b"\x00" * (self.length * np.dtype(float).itemsize)
+                )
+                self._data_mmap_fd.flush()
+                self.data_mmap_file = Path(self._data_mmap_fd.name)
+
+                self._cpos_mmap_fd.write(b"\x00" * (np.dtype(np.int64).itemsize))
+                self._cpos_mmap_fd.flush()
+                self.cpos_mmap_file = Path(self._cpos_mmap_fd.name)
+
+                self._creator = True
+
+            # Refer data as numpy.memmap
             self._data = np.memmap(
-                self.mmap_file, dtype=float, mode='w+', shape=(length,)
+                self._data_mmap_fd, dtype=float, mode="w+", shape=(self.length,)
             )
+            if initial_value is not None:
+                self._data[:] = initial_value
+                self._data.flush()
+
+            self._cpos = np.memmap(
+                self._cpos_mmap_fd, dtype=np.int64, mode="w+", shape=(1,)
+            )
+            if initial_value is not None:
+                self._cpos[0] = 0
+                self._cpos.flush()
+
+            # Save process id
+            self.pid = os.getpid()
+
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errstr = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errstr)
             return None
-        
-        self._data[:] = initial_value
-        self._data.flush()
-
-        self._cpos_mmap_file = self.mmap_file.parent / (
-            self.mmap_file.name + '_currentPos')
-        # An mmap data for the current position
-        self._cpos = np.memmap(
-            self._cpos_mmap_file, dtype=np.int64, mode='w+',
-            shape=(1,)
-        )
-        self._cpos[0] = 0
-        self._cpos.flush()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def append(self, x):
@@ -199,7 +226,7 @@ class SharedMemoryRingBuffer:
         try:
             cpos = self._cpos[0]
             self._data[cpos] = x
-            self._cpos[:] = (cpos + 1) % self._length
+            self._cpos[:] = (cpos + 1) % self.length
             self._data.flush()
             self._cpos.flush()
 
@@ -226,16 +253,15 @@ class SharedMemoryRingBuffer:
             return None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __delete__(self):
-        try:
-            if self._tmp_dir is not None:
-                self._tmp_dir.cleanup(ignore_cleanup_errors=True)
-            else:
-                if self.mmap_file.is_file():
-                    self.mmap_file.unlink()
+    def __del__(self):
+        if self._creator:
+            if self.data_mmap_file.is_file():
+                self.data_mmap_file.unlink()
+                self._logger.debug(f"Delete tmoporary file: {self.data_mmap_file}")
 
-        except Exception:
-            pass
+            if self.cpos_mmap_file.is_file():
+                self.cpos_mmap_file.unlink()
+                self._logger.debug(f"Delete tmoporary file: {self.cpos_mmap_file}")
 
 
 # %% NumatoGPIORecoding class =================================================
@@ -489,6 +515,7 @@ class DummyRecording:
         sim_data_len = np.inf
 
         if sim_card_f is not None:
+            sim_card_f = Path(sim_card_f)
             if not sim_card_f.is_file():
                 self._logger.error(f"Not found {sim_card_f} for card dummy signal.")
             else:
@@ -499,6 +526,7 @@ class DummyRecording:
                     self._logger.error(f"Error reading {sim_card_f}")
 
         if sim_resp_f is not None:
+            sim_resp_f = Path(sim_resp_f)
             if not sim_resp_f.is_file():
                 self._logger.error(f"Not found {sim_resp_f} for card dummy signal.")
             else:
@@ -605,7 +633,7 @@ class DummyRecording:
 
 
 # %% TTLPhysioPlot ============================================================
-class TTLPhysioPlot():
+class TTLPhysioPlot:
     """View class for dispaying TTL and physio recording signals"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -804,7 +832,7 @@ class TTLPhysioPlot():
                 self._ln_ttl[0].set_ydata(ttl)
 
                 # Adjust crad/resp ylim for the latest adjust_period seconds
-                adjust_period = 3 * self.recorder.sample_freq
+                adjust_period = int(np.round(3 * self.recorder.sample_freq))
 
                 # Card
                 self._ln_card[0].set_ydata(card)
@@ -931,7 +959,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
-        device=None,
+        device="None",
         sample_freq=100,
         buf_len_sec=3600,
         sport=None,
@@ -1008,8 +1036,7 @@ class RtpTTLPhysio(RTP):
         self._scan_onset = SharedMemoryRingBuffer(1, initial_value=-1.0)
 
         # Prepare data buffer files for sharing among multiple processes
-        self._rbuf_names = [
-            "ttl_onsets", "ttl_offsets", "card", "resp", "tstamp"]
+        self._rbuf_names = ["ttl_onsets", "ttl_offsets", "card", "resp", "tstamp"]
         self._rbuf_lock = Lock()
 
         buf_len = self.buf_len_sec * self.sample_freq
@@ -1020,7 +1047,8 @@ class RtpTTLPhysio(RTP):
             else:
                 initial_value = np.nan
             self._rbuf[label] = SharedMemoryRingBuffer(
-                buf_len, initial_value=initial_value)
+                buf_len, initial_value=initial_value
+            )
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
@@ -1034,6 +1062,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_device(self, device, sport=None):
+        """Change or reset recording device."""
         if device not in ("Numato", "GE", "Dummy", "None"):
             self._logger.error(f"Device {device} is not supported.")
             return
@@ -1060,6 +1089,7 @@ class RtpTTLPhysio(RTP):
 
         if device == "None":
             self._recorder = None
+
         elif device == "Dummy" or self._recorder is None:
             self._device = "Dummy"
             self._recorder = DummyRecording(
@@ -1085,8 +1115,12 @@ class RtpTTLPhysio(RTP):
         self._scan_onset.append(onset)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def start_recording(self, restart=False):
-        """Start recording loop in a separate process"""
+    def start_recording(self):
+        """Start recording loop in a separate process
+        If the recording device has been changed, use reset_device instead of
+        start_recording. The reset_device function internally calls
+        start_recording.
+        """
         self._rec_proc_pipe, cmd_pipe = Pipe()
         os_name = platform.system()
         if os_name == "Linux":
@@ -1126,8 +1160,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(
-        self, main_win=None, win_shape=(450, 450), plot_len_sec=10,
-        disable_close=False
+        self, main_win=None, win_shape=(450, 450), plot_len_sec=10, disable_close=False
     ):
         # if platform.system() == "Darwin":
         #     return
@@ -1140,7 +1173,7 @@ class RtpTTLPhysio(RTP):
             x = 0
             y = 0
         plot_geometry = (x, y, win_shape[0], win_shape[1])
-    
+
         if self._plot is None:
             self._plot = TTLPhysioPlot(
                 self,
@@ -1188,7 +1221,20 @@ class RtpTTLPhysio(RTP):
         self.wait_ttl_on = False
         self.scan_onset = 0
 
-        # Start reading process
+        # Check if the self._rbuf are on the same process
+        cpid = os.getpid()
+        for lab, rbuf in self._rbuf.items():
+            if cpid != rbuf.pid:
+                # Get access to rbuf on another process.
+                length = rbuf.length
+                data_file = rbuf.data_mmap_file
+                cpos_file = rbuf.cpos_mmap_file
+                rbuf_rev = SharedMemoryRingBuffer(
+                    length, data_file=data_file, cpos_file=cpos_file
+                )
+                self._rbuf[lab] = rbuf_rev
+
+        # Start reading process. The data is shared by queues.
         _recoder_pipe, cmd_pipe_recorder = Pipe()
         _read_proc = Process(
             target=self._recorder.read_signal_loop,
@@ -1244,7 +1290,19 @@ class RtpTTLPhysio(RTP):
             # No recording
             return None
 
-        # Get data
+        # Check if the self._rbuf are on the same process
+        cpid = os.getpid()
+        for lab, rbuf in self._rbuf.items():
+            if cpid != rbuf.pid:
+                # Reset access to rbuf on another process.
+                length = rbuf.length
+                data_file = rbuf.data_mmap_file
+                cpos_file = rbuf.cpos_mmap_file
+                rbuf_rev = SharedMemoryRingBuffer(
+                    length, data_file=data_file, cpos_file=cpos_file
+                )
+                self._rbuf[lab] = rbuf_rev
+
         with self._rbuf_lock:
             ttl_onsets = self._rbuf["ttl_onsets"].get().copy()
             ttl_offsets = self._rbuf["ttl_offsets"].get().copy()
@@ -1607,6 +1665,17 @@ class RtpTTLPhysio(RTP):
     def __del__(self):
         self.end()
 
+        for rbuf in self._rbuf.values():
+            data_file = rbuf.data_mmap_file
+            for rmf in data_file.parent.glob(f"rtpspy_{os.getpid()}_rbuffer_*"):
+                rmf.unlink()
+                self._logger.debug(f"Remove temporary file {rmf}.")
+
+            cpos_file = rbuf.cpos_mmap_file
+            for rmf in cpos_file.parent.glob(f"rtpspy_{os.getpid()}_rbuffer_*"):
+                rmf.unlink()
+                self._logger.debug(f"Remove temporary file {rmf}.")
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, params, reset_fn=None, echo=False):
         reset_device = False
@@ -1936,7 +2005,9 @@ if __name__ == "__main__":
     LOG_FILE = f"{Path(__file__).stem}.log"
     parser = argparse.ArgumentParser(description="RTP physio")
     parser.add_argument("--device", default="Numato", help="Device type")
-    parser.add_argument("--sample_freq", default=100, help="sampling frequency (Hz)")
+    parser.add_argument(
+        "--sample_freq", default=100, type=float, help="sampling frequency (Hz)"
+    )
     parser.add_argument("--card_file", help="Cardiac signal file for dummy device")
     parser.add_argument("--resp_file", help="Respiration signal file for dummy device")
     parser.add_argument("--win_shape", default="450x450", help="Plot window position")
@@ -1968,7 +2039,10 @@ if __name__ == "__main__":
 
     # Create RtpTTLPhysio instance
     rtp_ttl_physio = RtpTTLPhysio(
-        sample_freq=sample_freq, device=device, sim_data=(card_file, resp_file)
+        device=device,
+        sample_freq=sample_freq,
+        sim_card_f=card_file,
+        sim_resp_f=resp_file,
     )
 
     rtp_ttl_physio.open_plot()
