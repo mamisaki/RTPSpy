@@ -142,22 +142,22 @@ class SharedMemoryRingBuffer:
             The value used to initialize the buffer data. The default is nan.
         """
         # Set logger
-        self._logger = logging.getLogger('SharedMemoryRingBuffer')
+        self._logger = logging.getLogger("SharedMemoryRingBuffer")
 
         # Set properties
         self._length = length
 
         if mmap_file is None:
             # Create mmap file
-            if Path('/dev/shm').is_dir() and os.access('/dev/shm', os.W_OK):
+            if Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK):
                 self._mmap_fd = NamedTemporaryFile(
-                    prefix='rtpspy_buffer_', dir='/dev/shm')
+                    prefix="rtpspy_buffer_", dir="/dev/shm"
+                )
             else:
-                self._mmap_fd = NamedTemporaryFile(
-                    prefix='rtpspy_buffer_')
-            
+                self._mmap_fd = NamedTemporaryFile(prefix="rtpspy_buffer_")
+
             # Keep length space
-            self._mmap_fd.write(b'\x00' * (length * np.dtype(float).itemsize))
+            self._mmap_fd.write(b"\x00" * (length * np.dtype(float).itemsize))
             self._mmap_fd.flush()
             self.mmap_file = Path(self._mmap_fd.name)
 
@@ -171,24 +171,23 @@ class SharedMemoryRingBuffer:
         # Open mmap data
         try:
             self._data = np.memmap(
-                self.mmap_file, dtype=float, mode='w+', shape=(length,)
+                self.mmap_file, dtype=float, mode="w+", shape=(length,)
             )
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
+            errstr = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errstr)
             return None
-        
+
         self._data[:] = initial_value
         self._data.flush()
 
         self._cpos_mmap_file = self.mmap_file.parent / (
-            self.mmap_file.name + '_currentPos')
+            self.mmap_file.name + "_currentPos"
+        )
         # An mmap data for the current position
         self._cpos = np.memmap(
-            self._cpos_mmap_file, dtype=np.int64, mode='w+',
-            shape=(1,)
+            self._cpos_mmap_file, dtype=np.int64, mode="w+", shape=(1,)
         )
         self._cpos[0] = 0
         self._cpos.flush()
@@ -605,7 +604,7 @@ class DummyRecording:
 
 
 # %% TTLPhysioPlot ============================================================
-class TTLPhysioPlot():
+class TTLPhysioPlot:
     """View class for dispaying TTL and physio recording signals"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -931,7 +930,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
-        device=None,
+        device='None',
         sample_freq=100,
         buf_len_sec=3600,
         sport=None,
@@ -1008,8 +1007,7 @@ class RtpTTLPhysio(RTP):
         self._scan_onset = SharedMemoryRingBuffer(1, initial_value=-1.0)
 
         # Prepare data buffer files for sharing among multiple processes
-        self._rbuf_names = [
-            "ttl_onsets", "ttl_offsets", "card", "resp", "tstamp"]
+        self._rbuf_names = ["ttl_onsets", "ttl_offsets", "card", "resp", "tstamp"]
         self._rbuf_lock = Lock()
 
         buf_len = self.buf_len_sec * self.sample_freq
@@ -1020,7 +1018,8 @@ class RtpTTLPhysio(RTP):
             else:
                 initial_value = np.nan
             self._rbuf[label] = SharedMemoryRingBuffer(
-                buf_len, initial_value=initial_value)
+                buf_len, initial_value=initial_value
+            )
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
@@ -1060,6 +1059,7 @@ class RtpTTLPhysio(RTP):
 
         if device == "None":
             self._recorder = None
+
         elif device == "Dummy" or self._recorder is None:
             self._device = "Dummy"
             self._recorder = DummyRecording(
@@ -1126,8 +1126,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(
-        self, main_win=None, win_shape=(450, 450), plot_len_sec=10,
-        disable_close=False
+        self, main_win=None, win_shape=(450, 450), plot_len_sec=10, disable_close=False
     ):
         # if platform.system() == "Darwin":
         #     return
@@ -1140,7 +1139,7 @@ class RtpTTLPhysio(RTP):
             x = 0
             y = 0
         plot_geometry = (x, y, win_shape[0], win_shape[1])
-    
+
         if self._plot is None:
             self._plot = TTLPhysioPlot(
                 self,
