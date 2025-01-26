@@ -1076,13 +1076,13 @@ if __name__ == "__main__":
     # TR = args.TR
 
     src_data = test_dir / "20240916.OrangePhantom.7T2024091600PH"
-    src_data = (
-        Path.home()
-        / "Dropbox"
-        / "RTPSpyTestsData"
-        / "20240916.OrangePhantom.7T2024091600PH"
-    )
-    src_data = Path.home() / "Dropbox" / "RTPSpyTestsData" / "P000183"
+    # src_data = (
+    #     Path.home()
+    #     / "Dropbox"
+    #     / "RTPSpyTestsData"
+    #     / "20240916.OrangePhantom.7T2024091600PH"
+    # )
+    # src_data = Path.home() / "Dropbox" / "RTPSpyTestsData" / "P000183"
     watch_file_pattern = r".+\.dcm"
     test_work_dir = test_dir
     file_type = "Dicom"
