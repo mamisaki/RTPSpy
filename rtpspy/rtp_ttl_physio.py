@@ -637,17 +637,14 @@ class TTLPhysioPlot:
     """View class for dispaying TTL and physio recording signals"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(
-        self,
-        recorder,
-        plot_geometry,
-        plot_len_sec=10,
-        disable_close=False,
-    ):
+    def __init__(self, recorder):
         super().__init__()
 
         self._logger = logging.getLogger("TTLPhysioPlot")
         self.recorder = recorder
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def open(self, plot_geometry, plot_len_sec=10, disable_close=False):
         self._plot_len_sec = plot_len_sec
         self.disable_close = disable_close
         self.is_scanning = False
@@ -657,13 +654,33 @@ class TTLPhysioPlot:
         plt_winname = "Physio signals"
         self.plt_win = MatplotlibWindow()
         self.plt_win.setWindowTitle(plt_winname)
-
-        # set position
         self.plt_win.setGeometry(*plot_geometry)
         self.init_plot()
 
         # show window
         self.plt_win.show()
+
+        # Plot process
+        self._plt_proc_pipe, cmd_pipe = Pipe()
+        self._pltTh = threading.Thread(
+            target=self._run, args=(cmd_pipe,), daemon=True)
+        self._pltTh.start()
+
+        # 
+        # os_name = platform.system()
+        # if os_name == "Linux":
+        #     self._plt_proc = Process(
+        #         target=self._run, args=(cmd_pipe, plot_geometry)
+        #     )
+        # elif os_name == "Darwin":
+        #     ctx = mp.get_context("fork")
+        #     self._plt_proc = ctx.Process(
+        #         target=self._run, args=(cmd_pipe, self._rbuf_lock)
+        #     )
+        # else:
+        #     assert False
+
+        # self._plt_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_plot(self):
@@ -675,10 +692,6 @@ class TTLPhysioPlot:
             left=0.05, bottom=0.1, right=0.91, top=0.98, hspace=0.35
         )
 
-        self.reset_plot()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def reset_plot(self):
         signal_freq = self.recorder.sample_freq
         buf_size = int(np.round(self._plot_len_sec * signal_freq))
         sig_xi = np.arange(buf_size) * 1.0 / signal_freq
@@ -717,15 +730,16 @@ class TTLPhysioPlot:
         self._ax_resp.set_xlabel("second")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show(self):
-        self.plt_win.show()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run(self):
+    def _run(self, cmd_pipe):
         signal_freq = self.recorder.sample_freq
 
         while self.plt_win.isVisible() and not self._cancel:
-            time.sleep(0.001)
+            if cmd_pipe.poll():
+                cmd = cmd_pipe.recv()
+                if cmd == "QUIT":
+                    self._logger.debug("Recieve QUIT in _run.")
+                    break
+
             try:
                 # Get signals
                 plt_data = self.recorder.get_plot_signals(self._plot_len_sec + 1)
@@ -925,8 +939,16 @@ class TTLPhysioPlot:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_thread(self):
-        if self.plt_win.isVisible():
-            self.plt_win.close()
+        self.plt_win.close()
+        del self.plt_win
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def close(self):
+        if not hasattr(self, "_pltTh") or not self._pltTh.is_alive():
+            return
+
+        self._plt_proc_pipe.send("QUIT")
+        self._pltTh.join(2)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_position(self, size=None, pos=None):
@@ -941,7 +963,7 @@ class TTLPhysioPlot:
         if self.disable_close:
             event.ignore()
         else:
-            event.accept()
+            self.close()
 
 
 # %% ==========================================================================
@@ -1162,8 +1184,8 @@ class RtpTTLPhysio(RTP):
     def open_plot(
         self, main_win=None, win_shape=(450, 450), plot_len_sec=10, disable_close=False
     ):
-        # if platform.system() == "Darwin":
-        #     return
+        if self._plot is None:
+            self._plot = TTLPhysioPlot(self)
 
         if main_win is not None:
             main_geom = main_win.geometry()
@@ -1174,39 +1196,16 @@ class RtpTTLPhysio(RTP):
             y = 0
         plot_geometry = (x, y, win_shape[0], win_shape[1])
 
-        if self._plot is None:
-            self._plot = TTLPhysioPlot(
-                self,
-                plot_geometry,
-                plot_len_sec=plot_len_sec,
-                disable_close=disable_close,
-            )
-
-        self._plot.show()
-        self._pltTh = threading.Thread(target=self._plot.run, daemon=True)
-        # self._pltTh = QtCore.QThread()
-        # self._plot.moveToThread(self._pltTh)
-        # self._pltTh.started.connect(self._plot.run)
-        # self._plot.finished.connect(self._pltTh.quit)
-        self._pltTh.start()
+        self._plot.open(
+            plot_geometry, plot_len_sec=plot_len_sec, disable_close=disable_close
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
-        if not hasattr(self, "_pltTh") or not self._pltTh.is_alive():
+        if not hasattr(self, "_plot"):
             return
-
-        self._plot._cancel = True
-        self._pltTh.join(1)
-
-        # if platform.system() == 'Darwin':
-        #     self._pltTh.terminate()
-        # else:
-        #     if not self._pltTh.wait(1000):  # wait ms
-        #         self._pltTh.terminate()
-
-        del self._plot
-        self._plot = None
-        del self._pltTh
+               
+        self._plot.close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
