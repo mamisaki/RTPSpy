@@ -312,7 +312,8 @@ class RTP(object):
                     'ui_' in var_name or \
                     isinstance(val, RTP) or \
                     isinstance(val, serial.Serial) or \
-                    isinstance(val, QtCore.QThread):
+                    isinstance(val, QtCore.QThread) or \
+                    isinstance(val, threading.Thread)    :
                 continue
 
             if isinstance(val, Path):

@@ -637,33 +637,50 @@ class TTLPhysioPlot:
     """View class for dispaying TTL and physio recording signals"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(
-        self,
-        recorder,
-        plot_geometry,
-        plot_len_sec=10,
-        disable_close=False,
-    ):
+    def __init__(self, recorder):
         super().__init__()
 
         self._logger = logging.getLogger("TTLPhysioPlot")
         self.recorder = recorder
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def open(self, plot_geometry, plot_len_sec=10, disable_close=False):
         self._plot_len_sec = plot_len_sec
         self.disable_close = disable_close
         self.is_scanning = False
         self._cancel = False
 
         # Initialize figure
-        plt_winname = "Physio signals"
+        plt_winname = f"Physio signals ({self.recorder._device})"
         self.plt_win = MatplotlibWindow()
         self.plt_win.setWindowTitle(plt_winname)
-
-        # set position
         self.plt_win.setGeometry(*plot_geometry)
         self.init_plot()
 
         # show window
         self.plt_win.show()
+
+        # Plot process
+        self._plt_proc_pipe, cmd_pipe = Pipe()
+        self._pltTh = threading.Thread(
+            target=self._run, args=(cmd_pipe,), daemon=True)
+        self._pltTh.start()
+
+        # 
+        # os_name = platform.system()
+        # if os_name == "Linux":
+        #     self._plt_proc = Process(
+        #         target=self._run, args=(cmd_pipe, plot_geometry)
+        #     )
+        # elif os_name == "Darwin":
+        #     ctx = mp.get_context("fork")
+        #     self._plt_proc = ctx.Process(
+        #         target=self._run, args=(cmd_pipe, self._rbuf_lock)
+        #     )
+        # else:
+        #     assert False
+
+        # self._plt_proc.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_plot(self):
@@ -675,10 +692,6 @@ class TTLPhysioPlot:
             left=0.05, bottom=0.1, right=0.91, top=0.98, hspace=0.35
         )
 
-        self.reset_plot()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def reset_plot(self):
         signal_freq = self.recorder.sample_freq
         buf_size = int(np.round(self._plot_len_sec * signal_freq))
         sig_xi = np.arange(buf_size) * 1.0 / signal_freq
@@ -717,15 +730,17 @@ class TTLPhysioPlot:
         self._ax_resp.set_xlabel("second")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show(self):
-        self.plt_win.show()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run(self):
+    def _run(self, cmd_pipe):
         signal_freq = self.recorder.sample_freq
 
         while self.plt_win.isVisible() and not self._cancel:
             time.sleep(0.001)
+            if cmd_pipe.poll():
+                cmd = cmd_pipe.recv()
+                if cmd == "QUIT":
+                    self._logger.debug("Recieve QUIT in _run.")
+                    break
+
             try:
                 # Get signals
                 plt_data = self.recorder.get_plot_signals(self._plot_len_sec + 1)
@@ -925,8 +940,16 @@ class TTLPhysioPlot:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_thread(self):
-        if self.plt_win.isVisible():
-            self.plt_win.close()
+        self.plt_win.close()
+        del self.plt_win
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def close(self):
+        if not hasattr(self, "_pltTh") or not self._pltTh.is_alive():
+            return
+
+        self._plt_proc_pipe.send("QUIT")
+        self._pltTh.join(2)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_position(self, size=None, pos=None):
@@ -941,7 +964,7 @@ class TTLPhysioPlot:
         if self.disable_close:
             event.ignore()
         else:
-            event.accept()
+            self.close()
 
 
 # %% ==========================================================================
@@ -959,7 +982,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
-        device="Numato",
+        device=None,
         sample_freq=100,
         buf_len_sec=3600,
         sport=None,
@@ -984,9 +1007,10 @@ class RtpTTLPhysio(RTP):
             'GE'; GE MRI serial port signal.
             'Dummy'; Simulate signal recording using pre-recorded files.
             'NULL'; No signal recorder.
-            The default is Numato. If sim_card_f and sim_resp_f are provided, set
-            to Dummy. Otherwise, search for 'Numato', then 'GE', and if neither
-            is found, set to NULL.
+            The default is None. If device is None, the program searches for
+            'Numato', followed by 'GE'. If neither is found, it checks for a
+            Dummy (if sim_card_f and sim_resp_f are provided). If none of
+            these are found, the value is set to NULL.
         sample_freq : float, optional
             Sampling frequency (Hz).
         buf_len_sec : float, optional
@@ -1058,12 +1082,13 @@ class RtpTTLPhysio(RTP):
         self._retrots = RtpRetroTS()
 
         # Set device and start recording
-        self.reset_device(device, sport=sport)
+        self.set_device(device, sport=sport)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def reset_device(self, device, sport=None):
+    def set_device(self, device, sport=None):
         """Change or reset recording device."""
-        if device not in ("Numato", "GE", "Dummy", "None"):
+        if device is not None and \
+                device not in ("Numato", "GE", "Dummy", "NULL"):
             self._logger.error(f"Device {device} is not supported.")
             return
 
@@ -1071,37 +1096,50 @@ class RtpTTLPhysio(RTP):
             self.stop_recording()
 
         # --- Set recorder device ---
-        self._device = device
+        if device is None:
+            try_devices = ["Numato", "GE", "Dummy"]
+        else:
+            try_devices = [device]
 
-        if device == "Numato":
-            self._recorder = NumatoGPIORecoding(
-                self._ttl_onset_que,
-                self._ttl_offset_que,
-                self._physio_que,
-                sport,
-                rec_sample_freq=self.sample_freq,
-            )
-            if self._recorder._sig_sport is None:
+        for dev in try_devices:
+            if dev == "Numato":
+                self._recorder = NumatoGPIORecoding(
+                    self._ttl_onset_que,
+                    self._ttl_offset_que,
+                    self._physio_que,
+                    sport,
+                    rec_sample_freq=self.sample_freq,
+                )
+                if self._recorder._sig_sport is None:
+                    self._recorder = None
+
+            elif dev == "GE":
                 self._recorder = None
 
-        elif device == "GE":
-            self._recorder = None
+            elif dev == "Dummy":
+                if self.sim_card_f is not None and \
+                        Path(self.sim_card_f).is_file() and \
+                        self.sim_resp_f is not None and \
+                        Path(self.sim_resp_f).is_file():
+                    self._recorder = DummyRecording(
+                        self._ttl_onset_que,
+                        self._ttl_offset_que,
+                        self._physio_que,
+                        sim_card_f=self.sim_card_f,
+                        sim_resp_f=self.sim_resp_f,
+                        sample_freq=self.sample_freq,
+                    )
 
-        if device == "None":
-            self._recorder = None
+            elif dev == "NULL":
+                self._recorder = None
 
-        elif device == "Dummy" or self._recorder is None:
-            self._device = "Dummy"
-            self._recorder = DummyRecording(
-                self._ttl_onset_que,
-                self._ttl_offset_que,
-                self._physio_que,
-                sim_card_f=self.sim_card_f,
-                sim_resp_f=self.sim_resp_f,
-                sample_freq=self.sample_freq,
-            )
-
-        if self._recorder is not None:
+            if self._recorder is not None:
+                self._device = dev
+                break
+        
+        if self._recorder is None:
+            self._device = 'NULL'
+        else:
             self.start_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1117,8 +1155,8 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_recording(self):
         """Start recording loop in a separate process
-        If the recording device has been changed, use reset_device instead of
-        start_recording. The reset_device function internally calls
+        If the recording device has been changed, use set_device instead of
+        start_recording. The set_device function internally calls
         start_recording.
         """
         self._rec_proc_pipe, cmd_pipe = Pipe()
@@ -1162,8 +1200,8 @@ class RtpTTLPhysio(RTP):
     def open_plot(
         self, main_win=None, win_shape=(450, 450), plot_len_sec=10, disable_close=False
     ):
-        # if platform.system() == "Darwin":
-        #     return
+        if self._plot is None:
+            self._plot = TTLPhysioPlot(self)
 
         if main_win is not None:
             main_geom = main_win.geometry()
@@ -1174,39 +1212,16 @@ class RtpTTLPhysio(RTP):
             y = 0
         plot_geometry = (x, y, win_shape[0], win_shape[1])
 
-        if self._plot is None:
-            self._plot = TTLPhysioPlot(
-                self,
-                plot_geometry,
-                plot_len_sec=plot_len_sec,
-                disable_close=disable_close,
-            )
-
-        self._plot.show()
-        self._pltTh = threading.Thread(target=self._plot.run, daemon=True)
-        # self._pltTh = QtCore.QThread()
-        # self._plot.moveToThread(self._pltTh)
-        # self._pltTh.started.connect(self._plot.run)
-        # self._plot.finished.connect(self._pltTh.quit)
-        self._pltTh.start()
+        self._plot.open(
+            plot_geometry, plot_len_sec=plot_len_sec, disable_close=disable_close
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
-        if not hasattr(self, "_pltTh") or not self._pltTh.is_alive():
+        if not hasattr(self, "_plot"):
             return
-
-        self._plot._cancel = True
-        self._pltTh.join(1)
-
-        # if platform.system() == 'Darwin':
-        #     self._pltTh.terminate()
-        # else:
-        #     if not self._pltTh.wait(1000):  # wait ms
-        #         self._pltTh.terminate()
-
-        del self._plot
-        self._plot = None
-        del self._pltTh
+               
+        self._plot.close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
@@ -1651,7 +1666,7 @@ class RtpTTLPhysio(RTP):
                 self.set_config(conf)
 
             elif call[0] == "SET_REC_DEV":
-                self.reset_device(call[1])
+                self.set_device(call[1])
 
         elif call == "QUIT":
             self.end()
@@ -1712,7 +1727,7 @@ class RtpTTLPhysio(RTP):
                     reset_device = True
 
         if reset_device:
-            self.reset_device(self._device)
+            self.set_device(self._device)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):

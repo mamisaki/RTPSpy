@@ -21,7 +21,6 @@ dependencies:
   - pyserial
   - python=3.10
   - pytorch
-  - scikit-image
   - scikit-sparse
   - torchvision
   - watchdog
