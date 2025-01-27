@@ -959,7 +959,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
-        device="None",
+        device="Numato",
         sample_freq=100,
         buf_len_sec=3600,
         sport=None,
@@ -984,7 +984,7 @@ class RtpTTLPhysio(RTP):
             'GE'; GE MRI serial port signal.
             'Dummy'; Simulate signal recording using pre-recorded files.
             'NULL'; No signal recorder.
-            The default is None. If sim_card_f and sim_resp_f are provided, set
+            The default is Numato. If sim_card_f and sim_resp_f are provided, set
             to Dummy. Otherwise, search for 'Numato', then 'GE', and if neither
             is found, set to NULL.
         sample_freq : float, optional
