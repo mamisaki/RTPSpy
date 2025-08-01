@@ -462,6 +462,7 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
         for mod in props.keys():
             if mod in objs:
                 obj = objs[mod]
+                
                 for var_name, val in props[mod].items():
                     if not hasattr(obj, var_name) or var_name is None:
                         continue
