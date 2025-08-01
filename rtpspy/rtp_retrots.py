@@ -51,7 +51,7 @@ class RtpRetroTS():
                 resp, self.respiration_cutoff_frequency)
 
             cardiac_peak = self.peak_finder(
-                card, self.respiration_cutoff_frequency,
+                card, self.cardiac_cutoff_frequency,
                 detend_window=self.cardiac_detend_window)
 
         # Phase estimate and create regressors
