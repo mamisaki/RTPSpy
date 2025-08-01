@@ -123,10 +123,11 @@ if __name__ == "__main__":
         logger.debug("### Start preparing the dummy physio recorder ###")
         # Set RtpTTLPhysio
         rtp_app.rtp_objs["TTLPHYSIO"].stop_recording()
-        rtp_app.rtp_objs["TTLPHYSIO"].set_param(
-            {"sample_freq": 40, "sim_card_f": ecg_f, "sim_resp_f": resp_f}
-        )
-        rtp_app.rtp_objs["TTLPHYSIO"].reset_device("Dummy")
+        for k, val in {
+            "sample_freq": 40, "sim_card_f": ecg_f, "sim_resp_f": resp_f
+        }.items():
+            rtp_app.rtp_objs["TTLPHYSIO"].set_param(k, val)
+        rtp_app.rtp_objs["TTLPHYSIO"].set_device("Dummy")
 
         # Wait for the rtp_physio to start recording
         while not rtp_app.rtp_objs["TTLPHYSIO"].is_recording():
