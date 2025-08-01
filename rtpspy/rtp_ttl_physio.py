@@ -1137,6 +1137,27 @@ class RtpTTLPhysio(RTP):
         ]
         self._rbuf_lock = Lock()
 
+        # Start RPC socket server
+        self.socket_srv = RPCSocketServer(
+            self.RPC_handler, socket_name="RtpTTLPhysioSocketServer"
+        )
+
+        self._retrots = RtpRetroTS()
+
+        # Set device and start recording
+        self.set_device(device, sport=sport)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_ring_buffers(self):
+        """Initialize ring buffers for sharing data among processes."""
+        # Delete existing buffers if they exist
+        if hasattr(self, "_rbuf"):
+            for rbuf in self._rbuf.values():
+                try:
+                    del rbuf
+                except Exception:
+                    pass
+
         buf_len = self.buf_len_sec * self.sample_freq
         self._rbuf = {}
         for label in self._rbuf_names:
@@ -1147,16 +1168,6 @@ class RtpTTLPhysio(RTP):
             self._rbuf[label] = SharedMemoryRingBuffer(
                 buf_len, initial_value=initial_value
             )
-
-        # Start RPC socket server
-        self.socket_srv = RPCSocketServer(
-            self.RPC_handler, socket_name="RtpTTLPhysioSocketServer"
-        )
-
-        self._retrots = RtpRetroTS()
-
-        # Set device and start recording
-        self.set_device(device, sport=sport)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_device(self, device, sport=None):
@@ -1239,6 +1250,15 @@ class RtpTTLPhysio(RTP):
         start_recording. The set_device function internally calls
         start_recording.
         """
+        self._init_ring_buffers()
+
+        # Empty _physio_ques before starting a new recording process
+        while not self._physio_que.empty():
+            try:
+                self._physio_que.get_nowait()
+            except Exception:
+                break
+
         self._rec_proc_pipe, cmd_pipe = Pipe()
         os_name = platform.system()
         if os_name == "Linux":
@@ -1695,6 +1715,9 @@ class RtpTTLPhysio(RTP):
                 int(np.nanmax(tstamp) // TR) < Nvol
                 and time.time() - st < timeout
             ):
+                self._logger.debug(
+                    f"Received data for {np.nanmax(tstamp) / TR}/{Nvol}"
+                )
                 # Wait until Nvol samples
                 time.sleep(0.001)
                 data = self.dump()
