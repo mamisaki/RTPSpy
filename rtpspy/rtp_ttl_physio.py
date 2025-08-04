@@ -64,7 +64,7 @@ except Exception:
 mpl.rcParams["font.size"] = 8
 
 
-# %% Constants
+# %% Constants ================================================================
 DEFAULT_SERIAL_TIMEOUT = 0.001
 DEFAULT_SERIAL_BAUDRATE = 19200
 DEFAULT_BUFFER_SIZE = 3600  # seconds
@@ -75,7 +75,7 @@ YAXIS_ADJUST_RANGE = 25
 MIN_YAXIS_RANGE = 50
 
 
-# %% Helper functions
+# %% Helper functions =========================================================
 def log_exception(logger, msg="Exception occurred"):
     """Helper function to log exceptions with traceback."""
     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -981,7 +981,7 @@ class TTLPhysioPlot:
                 card_ex_filtered = lfilter(b, 1, card_ex_filtered)
                 card_ex_filtered = np.flipud(card_ex_filtered)
                 card_filtered = card_ex_filtered[xt_ex_mask]
-                self._ln_card_flitered[0].set_ydata(card_filtered)
+                self._ln_card_filtered[0].set_ydata(card_filtered)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
@@ -1075,7 +1075,7 @@ class TTLPhysioPlot:
             self.close()
 
 
-# %% ==========================================================================
+# %% RtpTTLPhysio =============================================================
 class RtpTTLPhysio(RTP):
     """
     Interface for external signals, including TTL and physiological signals.
@@ -2204,6 +2204,13 @@ if __name__ == "__main__":
     # Open app
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    if debug:
+        test_dir = Path(__file__).absolute().parent.parent / "tests"
+        card_file = test_dir / "ECG.1D"
+        resp_file = test_dir / "Resp.1D"
+        sample_freq = 40
+        device = "Dummy"
 
     # Create RtpTTLPhysio instance
     rtp_ttl_physio = RtpTTLPhysio(
