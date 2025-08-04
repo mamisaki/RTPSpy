@@ -48,8 +48,8 @@ except Exception:
 mpl.rcParams['font.size'] = 8
 
 
-# %% call_rt_physio ===========================================================
-def call_rt_physio(data, pkl=False, get_return=False, logger=None):
+# %% call_RtpTTLPhysio ===========================================================
+def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
     """
     Parameters:
         data:
@@ -1476,7 +1476,7 @@ if __name__ == '__main__':
     #             last_tr = time.time()
     #             print(retroTSReg)
 
-    #         # retroTSReg = call_rt_physio(
+    #         # retroTSReg = call_RtpTTLPhysio(
     #         #     ('localhost', rpc_port),
     #         #     ('GET_RETROTS', 50, 2, 0),
     #         #     pkl=True, get_return=True)
