@@ -134,7 +134,7 @@ class RtpGUI(QtWidgets.QMainWindow):
             dictionary of RTP module instances
         """
 
-        # --- Watch/Work dir controls -----------------------------------------
+        # region: Watch/Work dir controls -------------------------------------
         # Watching Directory Label
         self.labelWatchDir = QtWidgets.QLabel(self.mainWidget)
         self.labelWatchDir.setText("rtfMRI watching directory")
@@ -160,8 +160,9 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Set working directory button
         self.btnSetWorkDir = QtWidgets.QPushButton('Set', self.mainWidget)
         self.btnSetWorkDir.clicked.connect(self.set_workDir)
+        # endregion: Watch/Work dir controls ----------------------------------
 
-        # --- Devices and plot checkbox ---------------------------------------
+        # region: Devices and plot checkbox -----------------------------------
         # Show motion
         if 'VOLREG' in rtp_objs:
             self.chbShowMotion = QtWidgets.QCheckBox('Show motion',
@@ -190,7 +191,9 @@ class RtpGUI(QtWidgets.QMainWindow):
             self.chbUseGPU.setCheckState(onGPU * 2)
             self.chbUseGPU.stateChanged.connect(self.enable_GPU)
 
-        # --- Experiment control space ----------------------------------------
+        # endregion: Devices and plot checkbox --------------------------------
+
+        # region: Experiment control space ------------------------------------
         # Will be used by a RtpApp obejct to place a experiment controls.
         # This needs to be defined before the app_obj.ui_set_param() call.
         self.hBoxExpCtrls = QtWidgets.QHBoxLayout()
@@ -285,8 +288,10 @@ class RtpGUI(QtWidgets.QMainWindow):
         # --- Parameter list tab ---
         self.listAllParams = QtWidgets.QWidget(self.mainWidget)
         self.listParam_txtBrws = QtWidgets.QTextBrowser(self.listAllParams)
+        
+        #  endregion: Experiment control space --------------------------------
 
-        # --- log console -----------------------------------------------------
+        # region: log console -------------------------------------------------
         self.logOutput_txtEd = QtWidgets.QTextEdit(self.mainWidget)
         self.logOutput_txtEd.setReadOnly(True)
         self.logOutput_txtEd.setAcceptRichText(True)
@@ -295,6 +300,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.logOutput_txtEd.font().setFamily("Courier")
         self.logOutput_txtEd.font().setPointSize(9)
         self.logOutput_txtEd.setMinimumHeight(128)
+        # endregion: log console ----------------------------------------------
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def layout_ui(self):
