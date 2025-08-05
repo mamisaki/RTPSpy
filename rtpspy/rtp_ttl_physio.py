@@ -651,7 +651,7 @@ class TTLPhysioPlot:
         self._cancel = False
 
         # Initialize figure
-        plt_winname = "Physio signals"
+        plt_winname = f"Physio signals ({self.recorder._device})"
         self.plt_win = MatplotlibWindow()
         self.plt_win.setWindowTitle(plt_winname)
         self.plt_win.setGeometry(*plot_geometry)
@@ -733,6 +733,7 @@ class TTLPhysioPlot:
         signal_freq = self.recorder.sample_freq
 
         while self.plt_win.isVisible() and not self._cancel:
+            time.sleep(0.001)
             if cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 if cmd == "QUIT":
@@ -980,7 +981,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
-        device="None",
+        device=None,
         sample_freq=100,
         buf_len_sec=3600,
         sport=None,
@@ -1005,9 +1006,10 @@ class RtpTTLPhysio(RTP):
             'GE'; GE MRI serial port signal.
             'Dummy'; Simulate signal recording using pre-recorded files.
             'NULL'; No signal recorder.
-            The default is None. If sim_card_f and sim_resp_f are provided, set
-            to Dummy. Otherwise, search for 'Numato', then 'GE', and if neither
-            is found, set to NULL.
+            The default is None. If device is None, the program searches for
+            'Numato', followed by 'GE'. If neither is found, it checks for a
+            Dummy (if sim_card_f and sim_resp_f are provided). If none of
+            these are found, the value is set to NULL.
         sample_freq : float, optional
             Sampling frequency (Hz).
         buf_len_sec : float, optional
@@ -1079,12 +1081,13 @@ class RtpTTLPhysio(RTP):
         self._retrots = RtpRetroTS()
 
         # Set device and start recording
-        self.reset_device(device, sport=sport)
+        self.set_device(device, sport=sport)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def reset_device(self, device, sport=None):
+    def set_device(self, device, sport=None):
         """Change or reset recording device."""
-        if device not in ("Numato", "GE", "Dummy", "None"):
+        if device is not None and \
+                device not in ("Numato", "GE", "Dummy", "NULL"):
             self._logger.error(f"Device {device} is not supported.")
             return
 
@@ -1092,37 +1095,50 @@ class RtpTTLPhysio(RTP):
             self.stop_recording()
 
         # --- Set recorder device ---
-        self._device = device
+        if device is None:
+            try_devices = ["Numato", "GE", "Dummy"]
+        else:
+            try_devices = [device]
 
-        if device == "Numato":
-            self._recorder = NumatoGPIORecoding(
-                self._ttl_onset_que,
-                self._ttl_offset_que,
-                self._physio_que,
-                sport,
-                rec_sample_freq=self.sample_freq,
-            )
-            if self._recorder._sig_sport is None:
+        for dev in try_devices:
+            if dev == "Numato":
+                self._recorder = NumatoGPIORecoding(
+                    self._ttl_onset_que,
+                    self._ttl_offset_que,
+                    self._physio_que,
+                    sport,
+                    rec_sample_freq=self.sample_freq,
+                )
+                if self._recorder._sig_sport is None:
+                    self._recorder = None
+
+            elif dev == "GE":
                 self._recorder = None
 
-        elif device == "GE":
-            self._recorder = None
+            elif dev == "Dummy":
+                if self.sim_card_f is not None and \
+                        Path(self.sim_card_f).is_file() and \
+                        self.sim_resp_f is not None and \
+                        Path(self.sim_resp_f).is_file():
+                    self._recorder = DummyRecording(
+                        self._ttl_onset_que,
+                        self._ttl_offset_que,
+                        self._physio_que,
+                        sim_card_f=self.sim_card_f,
+                        sim_resp_f=self.sim_resp_f,
+                        sample_freq=self.sample_freq,
+                    )
 
-        if device == "None":
-            self._recorder = None
+            elif dev == "NULL":
+                self._recorder = None
 
-        elif device == "Dummy" or self._recorder is None:
-            self._device = "Dummy"
-            self._recorder = DummyRecording(
-                self._ttl_onset_que,
-                self._ttl_offset_que,
-                self._physio_que,
-                sim_card_f=self.sim_card_f,
-                sim_resp_f=self.sim_resp_f,
-                sample_freq=self.sample_freq,
-            )
-
-        if self._recorder is not None:
+            if self._recorder is not None:
+                self._device = dev
+                break
+        
+        if self._recorder is None:
+            self._device = 'NULL'
+        else:
             self.start_recording()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1138,8 +1154,8 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_recording(self):
         """Start recording loop in a separate process
-        If the recording device has been changed, use reset_device instead of
-        start_recording. The reset_device function internally calls
+        If the recording device has been changed, use set_device instead of
+        start_recording. The set_device function internally calls
         start_recording.
         """
         self._rec_proc_pipe, cmd_pipe = Pipe()
@@ -1649,7 +1665,7 @@ class RtpTTLPhysio(RTP):
                 self.set_config(conf)
 
             elif call[0] == "SET_REC_DEV":
-                self.reset_device(call[1])
+                self.set_device(call[1])
 
         elif call == "QUIT":
             self.end()
@@ -1710,7 +1726,7 @@ class RtpTTLPhysio(RTP):
                     reset_device = True
 
         if reset_device:
-            self.reset_device(self._device)
+            self.set_device(self._device)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
