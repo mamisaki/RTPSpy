@@ -666,7 +666,6 @@ class TTLPhysioPlot:
             target=self._run, args=(cmd_pipe,), daemon=True)
         self._pltTh.start()
 
-        # 
         # os_name = platform.system()
         # if os_name == "Linux":
         #     self._plt_proc = Process(
@@ -675,7 +674,7 @@ class TTLPhysioPlot:
         # elif os_name == "Darwin":
         #     ctx = mp.get_context("fork")
         #     self._plt_proc = ctx.Process(
-        #         target=self._run, args=(cmd_pipe, self._rbuf_lock)
+        #         target=self._run, args=(cmd_pipe, self._rbuf_lock), daemon=True
         #     )
         # else:
         #     assert False
