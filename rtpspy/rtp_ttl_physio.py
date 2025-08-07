@@ -179,10 +179,10 @@ class SharedMemoryRingBuffer:
 
         try:
             if (
-                data_file is not None and
-                data_file.exists() and
-                cpos_file is not None and
-                cpos_file.exists()
+                data_file is not None
+                and data_file.exists()
+                and cpos_file is not None
+                and cpos_file.exists()
             ):
                 self._load_existing_files(data_file, cpos_file)
             else:
@@ -634,7 +634,8 @@ class DummyRecording:
     def set_sim_data(self, sim_card_f, sim_resp_f, sample_freq):
         if not sim_card_f.is_file():
             self._logger.error(
-                f"Not found {sim_card_f} for cardiac dummy signal.")
+                f"Not found {sim_card_f} for cardiac dummy signal."
+            )
             return
         else:
             try:
@@ -646,7 +647,8 @@ class DummyRecording:
 
         if not sim_resp_f.is_file():
             self._logger.error(
-                f"Not found {sim_resp_f} for respiration dummy signal.")
+                f"Not found {sim_resp_f} for respiration dummy signal."
+            )
             return
         else:
             try:
@@ -986,9 +988,8 @@ class TTLPhysioPlot:
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
                     ymin = (
-                        np.floor(
-                            np.nanmin(card_filtered[-adjust_period:]) / 25
-                        ) * 25
+                        np.floor(np.nanmin(card_filtered[-adjust_period:]
+                                           ) / 25) * 25
                     )
                     ymax = (
                         np.ceil(np.nanmax(card_filtered[-adjust_period:]) / 25)
@@ -1091,13 +1092,13 @@ class RtpTTLPhysio(RTP):
     def __init__(
         self,
         device=None,
-        sample_freq=100,
+        sample_freq=DEFAULT_SAMPLE_FREQ,
         buf_len_sec=3600,
         sport=None,
         sim_card_f=None,
         sim_resp_f=None,
         save_ttl=True,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
         del self.work_dir  # This is set by RTP base class but not used here.
@@ -1456,7 +1457,7 @@ class RtpTTLPhysio(RTP):
         # Show actual sampling frequency
         self._logger.debug(
             "Actual physio sampling rate: "
-            f"{1 / np.mean(np.diff(tstamp)):.2f}Hz"
+            f"{1 / np.mean(np.diff(tstamp)):.2f} Hz"
         )
 
         data = {
@@ -1695,7 +1696,12 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_retrots(
-        self, TR, Nvol=np.inf, tshift=0, resample_phys_fs=100, timeout=2
+        self,
+        TR,
+        Nvol=np.inf,
+        tshift=0,
+        resample_phys_fs=DEFAULT_SAMPLE_FREQ,
+        timeout=2,
     ):
         onset = self.scan_onset
         if onset == 0:
@@ -1827,9 +1833,7 @@ class RtpTTLPhysio(RTP):
                 self._logger.debug(f"Remove temporary file {rmf}.")
 
             cpos_file = rbuf.cpos_mmap_file
-            for rmf in cpos_file.parent.glob(
-                f"rtpspy_{os.getpid()}_cpos_*"
-            ):
+            for rmf in cpos_file.parent.glob(f"rtpspy_{os.getpid()}_cpos_*"):
                 rmf.unlink()
                 self._logger.debug(f"Remove temporary file {rmf}.")
 
@@ -2167,8 +2171,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RTP physio")
     parser.add_argument("--device", default="Numato", help="Device type")
     parser.add_argument(
-        "--sample_freq", default=100, type=float,
-        help="sampling frequency (Hz)"
+        "--sample_freq",
+        default=DEFAULT_SAMPLE_FREQ,
+        type=float,
+        help="sampling frequency (Hz)",
     )
     parser.add_argument(
         "--card_file", help="Cardiac signal file for dummy device"
