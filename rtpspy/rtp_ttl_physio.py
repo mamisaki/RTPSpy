@@ -1306,7 +1306,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
-        if not hasattr(self, "_plot"):
+        if not hasattr(self, "_plot") or self._plot is None:
             return
 
         self._plot.close()
