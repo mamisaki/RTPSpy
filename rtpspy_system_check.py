@@ -24,10 +24,13 @@ if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description="rtp_system_check")
     parser.add_argument(
-        "--log_file", help="Write log to specified file," + " instead of console."
+        "--log_file",
+        help="Write log to specified file instead of console.",
     )
     parser.add_argument(
-        "--keep_masks", action="store_true", help="Keep existing processd mask files"
+        "--keep_masks",
+        action="store_true",
+        help="Keep existing processed mask files",
     )
     parser.add_argument("--debug", action="store_true")
 
@@ -62,29 +65,49 @@ if __name__ == "__main__":
 
     try:
         # --- Filenames -------------------------------------------------------
-        # test data directory
+        # Test data directory  # Fixed: capitalized "test"
         test_dir = Path(__file__).absolute().parent / "tests"
 
         # Set test data files
         testdata_f = test_dir / "func_epi.nii.gz"
+        assert testdata_f.is_file(), (
+            f"Functional test data file not found: {testdata_f}"
+        )
         anat_f = test_dir / "anat_mprage.nii.gz"
+        assert anat_f.is_file(), (
+            f"Anatomical test data file not found: {anat_f}"
+        )
         template_f = test_dir / "MNI152_2009_template.nii.gz"
+        assert template_f.is_file(), (
+            f"Template file not found: {template_f}"
+        )
         ROI_template_f = test_dir / "MNI152_2009_template_LAmy.nii.gz"
+        assert ROI_template_f.is_file(), (
+            f"ROI template file not found: {ROI_template_f}"
+        )
         WM_template_f = test_dir / "MNI152_2009_template_WM.nii.gz"
+        assert WM_template_f.is_file(), (
+            f"WM template file not found: {WM_template_f}"
+        )
         Vent_template_f = test_dir / "MNI152_2009_template_Vent.nii.gz"
+        assert Vent_template_f.is_file(), (
+            f"Vent template file not found: {Vent_template_f}"
+        )
         ecg_f = test_dir / "ECG.1D"
+        assert ecg_f.is_file(), f"ECG file not found: {ecg_f}"
         resp_f = test_dir / "Resp.1D"
+        assert resp_f.is_file(), f"Resp file not found: {resp_f}"
 
         work_dir = test_dir / "work"
         if not work_dir.is_dir():
             work_dir.mkdir()
 
-        # Prepare watch dir
+        # Prepare watch directory  # Fixed: "dir" -> "directory"
         watch_dir = test_dir / "watch"
         if not watch_dir.is_dir():
             watch_dir.mkdir()
         else:
-            # Clean up watch_dir
+            # Clean up watch directory
             for ff in watch_dir.glob("*"):
                 if ff.is_dir():
                     for fff in ff.glob("*"):
@@ -103,7 +126,7 @@ if __name__ == "__main__":
             no_FastSeg = False
             rtp_app.fastSeg_batch_size = 1  # Adjust the size according to GPU
         else:
-            logger.info("GPU is not avilable.")
+            logger.info("GPU is not available.")
             no_FastSeg = True
 
         rtp_app.make_masks(
@@ -123,12 +146,15 @@ if __name__ == "__main__":
         logger.debug("### Start preparing the dummy physio recorder ###")
         # Set RtpTTLPhysio
         rtp_app.rtp_objs["TTLPHYSIO"].stop_recording()
-        rtp_app.rtp_objs["TTLPHYSIO"].set_param(
-            {"sample_freq": 40, "sim_card_f": ecg_f, "sim_resp_f": resp_f}
-        )
-        rtp_app.rtp_objs["TTLPHYSIO"].reset_device("Dummy")
+        for k, val in {
+            "sample_freq": 40,
+            "sim_card_f": ecg_f,
+            "sim_resp_f": resp_f,
+        }.items():
+            rtp_app.rtp_objs["TTLPHYSIO"].set_param(k, val)
+        rtp_app.rtp_objs["TTLPHYSIO"].set_device("Dummy")
 
-        # Wait for the rtp_physio to start recording
+        # Wait for the RTP physio to start recording
         while not rtp_app.rtp_objs["TTLPHYSIO"].is_recording():
             time.sleep(0.1)
 
@@ -186,7 +212,7 @@ if __name__ == "__main__":
                 # Wait for next TR
                 time.sleep(0.001)
 
-            # Copy volume file to watch_dir
+            # Copy volume file to watch directory
             save_filename = watch_dir / f"system_test_nr_{ii + 1:04d}.nii.gz"
             nib.save(
                 nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
@@ -212,6 +238,5 @@ if __name__ == "__main__":
     except Exception:
         logger.error("x" * 80)
         logger.error("RTPSpy system check failed.")
-        exc_type, exc_obj, exc_tb = sys.exc_info()
         exc_type, exc_obj, exc_tb = sys.exc_info()
         traceback.print_exception(exc_type, exc_obj, exc_tb)

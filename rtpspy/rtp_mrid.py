@@ -26,7 +26,7 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
-from rtpspy.rtp_physio_gpio import call_rt_physio
+from rtpspy.rtp_physio_gpio import call_RtpTTLPhysio
 from rpc_socket_server import RPCSocketServer
 
 if '__file__' not in locals():
@@ -384,9 +384,9 @@ class RtpDcm2Nii:
         # Start physio saving if FMRI
         imageType = '\\'.join(dcm.ImageType)
         if 'FMRI' in imageType:
-            if call_rt_physio('ping'):
-                call_rt_physio('START_SCAN')
-                call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
+            if call_RtpTTLPhysio('ping'):
+                call_RtpTTLPhysio('START_SCAN')
+                call_RtpTTLPhysio(('SET_SCAN_START_BACKWARD', self._TR), pkl=True)
             self._NVol = 0
 
         self._isRun_series = True
@@ -401,8 +401,8 @@ class RtpDcm2Nii:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._NVol > 1 and call_rt_physio('ping'):
-                    call_rt_physio('END_SCAN')
+                if self._NVol > 1 and call_RtpTTLPhysio('ping'):
+                    call_RtpTTLPhysio('END_SCAN')
                     # Save physio data
                     if self._TR is not None:
                         series_duration = self._NVol * self._TR
@@ -413,7 +413,7 @@ class RtpDcm2Nii:
 
                     args = ('SAVE_PHYSIO_DATA', None, series_duration,
                             fname_fmt)
-                    call_rt_physio(args, pkl=True)
+                    call_RtpTTLPhysio(args, pkl=True)
 
                     # Reset physio parameters
                     self._NVol = 0

@@ -25,11 +25,11 @@ from watchdog.events import FileSystemEventHandler
 import pydicom
 
 from dicom_converter import DicomConverter
-from rtpspy.rtp_ttl_physio import call_rt_physio
+from rtpspy.rtp_ttl_physio import call_RtpTTLPhysio
 from rpc_socket_server import RPCSocketServer
 
-if '__file__' not in locals():
-    __file__ = 'this.py'
+if "__file__" not in locals():
+    __file__ = "this.py"
 
 
 # %% class RtpDicomMonitor ====================================================
@@ -51,12 +51,21 @@ class RtpDicomMonitor:
       NumberofTemporalPositions. A TCPServer thread receives such a request via
       a network socket.
     """
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, watch_dir, work_root, ftype='SiemensXADicom',
-                 watch_file_pattern=r'.+\.dcm',
-                 study_prefix='', study_ID_field=None,
-                 series_timeout=10, make_brik=False, polling_observer=False,
-                 **kwargs):
+    def __init__(
+        self,
+        watch_dir,
+        work_root,
+        ftype="SiemensXADicom",
+        watch_file_pattern=r".+\.dcm",
+        study_prefix="",
+        study_ID_field=None,
+        series_timeout=10,
+        make_brik=False,
+        polling_observer=False,
+        **kwargs,
+    ):
         """
         Parameters
         ----------
@@ -88,7 +97,7 @@ class RtpDicomMonitor:
             Flag to use a PollingObserver if the dcm_dir is not on a local
             file system. The default is False.
         """
-        self._logger = logging.getLogger('RtpDicomMonitor')
+        self._logger = logging.getLogger("RtpDicomMonitor")
 
         # Initialize parameters
         self.watch_dir = watch_dir
@@ -104,8 +113,7 @@ class RtpDicomMonitor:
         self._polling_timeout = 3
 
         # Prepare a DicomConverter
-        self.dcm_converter = DicomConverter(
-            ftype=ftype, study_prefix=study_prefix)
+        self.dcm_converter = DicomConverter(study_prefix=study_prefix)
 
         # Intialize session parameters
         self._current_study = -1
@@ -127,16 +135,18 @@ class RtpDicomMonitor:
 
         # Start RPC socket server
         self.socekt_srv = RPCSocketServer(
-            self.RPC_handler,
-            socket_name='RtpDicomMonitorSocketServer')
+            self.RPC_handler, socket_name="RtpDicomMonitorSocketServer"
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
         """main loop"""
         self._logger.info(
-            '\n' + '#' * 80 + '\n' +
-            f'#==== Start RtpDicomMonitor {time.ctime()} ====='
-            )
+            "\n"
+            + "#" * 80
+            + "\n"
+            + f"#==== Start RtpDicomMonitor {time.ctime()} ====="
+        )
 
         # Start watchdog
         self.start_watching(callback=self.do_proc)
@@ -153,20 +163,25 @@ class RtpDicomMonitor:
                 if self._isRun_series and self._last_dicom_header:
                     # Check if the series ends
                     ser_end = False
-                    if hasattr(self._last_dicom_header,
-                               'NumberOfTemporalPositions'):
+                    if hasattr(
+                        self._last_dicom_header, "NumberOfTemporalPositions"
+                    ):
                         nt = int(
-                            self._last_dicom_header.NumberOfTemporalPositions)
+                            self._last_dicom_header.NumberOfTemporalPositions
+                        )
                         if self._NVol == nt:
                             ser_end = True
 
-                    if not ser_end and self._last_dicom_time is not None and \
-                            time.time() - self._last_dicom_time > time_out:
+                    if (
+                        not ser_end
+                        and self._last_dicom_time is not None
+                        and time.time() - self._last_dicom_time > time_out
+                    ):
                         ser_end = True
                         # No new image for time_out seconds.
                         self._logger.info(
                             f"No new DICOM file for {time_out}s. Close series."
-                            )
+                        )
 
                     if ser_end:
                         self.end_series()
@@ -178,18 +193,18 @@ class RtpDicomMonitor:
 
             except Exception:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
-                errstr = ''.join(
-                    traceback.format_exception(exc_type, exc_obj, exc_tb))
+                errstr = "".join(
+                    traceback.format_exception(exc_type, exc_obj, exc_tb)
+                )
                 self._logger.error(errstr)
 
         self.exit()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_watching(self, callback):
-        """ Start watchdog observer monitoring the watch_dir directory.
-        """
+        """Start watchdog observer monitoring the watch_dir directory."""
         if not self.watch_dir.is_dir():
-            self._logger.error(f'No directory: {self.watch_dir}')
+            self._logger.error(f"No directory: {self.watch_dir}")
             return
 
         # Start observer
@@ -198,20 +213,22 @@ class RtpDicomMonitor:
         else:
             self._observer = Observer()
 
-        self._event_handler = \
-            RtpDicomMonitor._FileHandler(
-                self.watch_file_pattern, callback=callback)
+        self._event_handler = RtpDicomMonitor._FileHandler(
+            self.watch_file_pattern, callback=callback
+        )
 
-        self._observer.schedule(self._event_handler, self.watch_dir,
-                                recursive=True)
+        self._observer.schedule(
+            self._event_handler, self.watch_dir, recursive=True
+        )
         self._observer.start()
         self._logger.info(
-            "Start observer monitoring " +
-            f"{self.watch_dir}/**/{self.watch_file_pattern}")
+            "Start observer monitoring "
+            + f"{self.watch_dir}/**/{self.watch_file_pattern}"
+        )
 
     # /////////////////////////////////////////////////////////////////////////
     class _FileHandler(FileSystemEventHandler):
-        """ File handling class """
+        """File handling class"""
 
         def __init__(self, watch_file_pattern, callback):
             """
@@ -235,7 +252,7 @@ class RtpDicomMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_watching(self):
-        if hasattr(self, '_observer'):
+        if hasattr(self, "_observer"):
             if self._observer.is_alive():
                 self._observer.stop()
                 self._observer.join()
@@ -245,10 +262,10 @@ class RtpDicomMonitor:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
         # Remove characters that are not safe for paths
-        cleaned_string = re.sub(r'[\\/:"*?<>|]+', '_', input_string)
+        cleaned_string = re.sub(r'[\\/:"*?<>|]+', "_", input_string)
 
         # Replace spaces and other non-alphanumeric characters with underscores
-        cleaned_string = re.sub(r'[^a-zA-Z0-9._-]', '_', cleaned_string)
+        cleaned_string = re.sub(r"[^a-zA-Z0-9._-]", "_", cleaned_string)
 
         # Ensure the resulting string is within length limits
         if len(cleaned_string) > max_length:
@@ -272,8 +289,9 @@ class RtpDicomMonitor:
 
         if studyID is None:
             dateTime = datetime.strptime(
-                    dcm.StudyDate+dcm.StudyTime, '%Y%m%d%H%M%S.%f')
-            studyID = study_prefix+dateTime.strftime('%Y%m%d%H%M%S')
+                dcm.StudyDate + dcm.StudyTime, "%Y%m%d%H%M%S.%f"
+            )
+            studyID = study_prefix + dateTime.strftime("%Y%m%d%H%M%S")
 
         studyID = self._make_path_safe(studyID)
 
@@ -286,8 +304,7 @@ class RtpDicomMonitor:
         """
         self._last_dicom_time = time.time()  # Record new file arrival time
         dicom_file = Path(dicom_file)
-        if self._last_proc_f is not None and \
-                self._last_proc_f == dicom_file:
+        if self._last_proc_f is not None and self._last_proc_f == dicom_file:
             return
         self._last_proc_f = dicom_file
 
@@ -310,22 +327,22 @@ class RtpDicomMonitor:
             self._logger.error(f"Failed to read {dicom_file} as DICOM")
             return
 
-        imageType = '\\'.join(dcm.ImageType)
+        imageType = "\\".join(dcm.ImageType)
 
         # Ignore derived file
-        if 'DERIVED' in imageType:
+        if "DERIVED" in imageType:
             self._logger.debug(f"{dicom_file.name} is a derived file.")
             return
 
         seriesDescription = dcm.SeriesDescription
 
         # Ignore MoCoSeries
-        if seriesDescription == 'MoCoSeries':
+        if seriesDescription == "MoCoSeries":
             self._logger.debug(f"{dicom_file.name} is a MoCo series.")
             return
 
         # Ignore Phase image
-        if seriesDescription.endswith('_Pha'):
+        if seriesDescription.endswith("_Pha"):
             self._logger.debug(f"{dicom_file.name} is a Phase series.")
             return
 
@@ -334,7 +351,8 @@ class RtpDicomMonitor:
             if self._last_dicom_header == dcm:
                 # The same dicom contents
                 self._logger.debug(
-                    f'Same DICOM contents. Skip {dicom_file.name}.')
+                    f"Same DICOM contents. Skip {dicom_file.name}."
+                )
                 return
 
         #  --- Process --------------------------------------------------------
@@ -353,8 +371,10 @@ class RtpDicomMonitor:
                     self._current_series = dcm.SeriesInstanceUID
                     self.init_series(dcm)
 
-            elif self._current_series != -1 and \
-                    self._current_series != dcm.SeriesInstanceUID:
+            elif (
+                self._current_series != -1
+                and self._current_series != dcm.SeriesInstanceUID
+            ):
                 # New series wihtout closing the previous one
                 self.end_series()
                 self._current_series = dcm.SeriesInstanceUID
@@ -364,16 +384,17 @@ class RtpDicomMonitor:
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errstr = "".join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb)
+            )
             self._logger.error(errstr)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_study(self, dcm):
         studyID = self._make_study_id(dcm, self.study_prefix)
         self._logger.info(
-            '+' * 6 +
-            f" Create a new study {studyID} +++\n#" + '+' * 79)
+            "+" * 6 + f" Create a new study {studyID} +++\n#" + "+" * 79
+        )
 
         # Create a study directory if one does not exist
         self._study_dir = self.work_root / studyID
@@ -386,17 +407,22 @@ class RtpDicomMonitor:
             self.init_study(self, dcm)
 
         self._logger.info(
-            '-' * 6 + f" Create a new series {dcm.SeriesNumber} ---\n#" +
-            '-' * 79)
+            "-" * 6
+            + f" Create a new series {dcm.SeriesNumber} ---\n#"
+            + "-" * 79
+        )
 
         # Set TR and TE in pixdim and db_name field
-        if 'RepetitionTime' in dcm:
+        if "RepetitionTime" in dcm:
             TR = float(dcm.RepetitionTime)
-        elif 'SharedFunctionalGroupsSequence' in dcm:
-            if 'MRTimingAndRelatedParametersSequence' in \
-                    dcm.SharedFunctionalGroupsSequence[0]:
+        elif "SharedFunctionalGroupsSequence" in dcm:
+            if (
+                "MRTimingAndRelatedParametersSequence"
+                in dcm.SharedFunctionalGroupsSequence[0]
+            ):
                 MRTiming = dcm.SharedFunctionalGroupsSequence[
-                    0].MRTimingAndRelatedParametersSequence[0]
+                    0
+                ].MRTimingAndRelatedParametersSequence[0]
                 TR = float(MRTiming.RepetitionTime)
         else:
             TR = self.series_timeout
@@ -405,13 +431,14 @@ class RtpDicomMonitor:
         self._series_nr = int(dcm.SeriesNumber)
 
         # Set physio saving if FMRI
-        imageType = '\\'.join(dcm.ImageType)
-        if ftype == 'SiemensXADicom':
-            if 'FMRI' in imageType and int(dcm.NumberOfTemporalPositions) > 5:
-                if call_rt_physio('ping'):
-                    call_rt_physio('START_SCAN')
-                    call_rt_physio(('SET_SCAN_START_BACKWARD', self._TR),
-                                    pkl=True)
+        imageType = "\\".join(dcm.ImageType)
+        if ftype == "SiemensXADicom":
+            if "FMRI" in imageType and int(dcm.NumberOfTemporalPositions) > 5:
+                if call_RtpTTLPhysio("ping"):
+                    call_RtpTTLPhysio("START_SCAN")
+                    call_RtpTTLPhysio(
+                        ("SET_SCAN_START_BACKWARD", self._TR), pkl=True
+                    )
                     self._save_physio = True
 
         self._NVol = 0
@@ -427,19 +454,27 @@ class RtpDicomMonitor:
         get_lock = self._process_lock.acquire(timeout=1)
         if get_lock:
             try:
-                if self._save_physio and call_rt_physio('ping'):
-                    call_rt_physio('END_SCAN')
+                if self._save_physio and call_RtpTTLPhysio("ping"):
+                    call_RtpTTLPhysio("END_SCAN")
                     # Save physio data
                     if self._TR is not None:
                         series_duration = self._NVol * self._TR
                     else:
                         series_duration = None
-                    fname_fmt = str(self._study_dir) + '/' + '{}_ser-' + \
-                        f"{int(self._series_nr):02d}.1D"
+                    fname_fmt = (
+                        str(self._study_dir)
+                        + "/"
+                        + "{}_ser-"
+                        + f"{int(self._series_nr):02d}.1D"
+                    )
 
-                    args = ('SAVE_PHYSIO_DATA', None, series_duration,
-                            fname_fmt)
-                    call_rt_physio(args, pkl=True)
+                    args = (
+                        "SAVE_PHYSIO_DATA",
+                        None,
+                        series_duration,
+                        fname_fmt,
+                    )
+                    call_RtpTTLPhysio(args, pkl=True)
 
                     # Reset physio parameters
                     self._save_physio = False
@@ -447,8 +482,10 @@ class RtpDicomMonitor:
                 last_ser = self._last_dicom_header.SeriesNumber
                 last_ser_de = self._last_dicom_header.SeriesDescription
                 self._logger.info(
-                    f"Close series {last_ser} ({last_ser_de})\n#" +
-                    '-' * 80 + '\n#\n#')
+                    f"Close series {last_ser} ({last_ser_de})\n#"
+                    + "-" * 80
+                    + "\n#\n#"
+                )
 
                 # Run DICOM convert process
                 dicom_dir = self._last_proc_f.parent
@@ -472,8 +509,9 @@ class RtpDicomMonitor:
 
             except Exception:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
-                errstr = ''.join(
-                    traceback.format_exception(exc_type, exc_obj, exc_tb))
+                errstr = "".join(
+                    traceback.format_exception(exc_type, exc_obj, exc_tb)
+                )
                 self._logger.error(errstr)
 
             self._process_lock.release()
@@ -484,49 +522,53 @@ class RtpDicomMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RPC_handler(self, call):
-        if 'CLOSE_SERIES' in call:
+        if "CLOSE_SERIES" in call:
             self.end_series()
 
-        elif 'GET_SERIES_NAME' in call:
+        elif "GET_SERIES_NAME" in call:
             if self._study_dir is None or self._series_nr is None:
-                return 'None'.encode('utf-8')
+                return "None".encode("utf-8")
 
             retstr = f"{str(self._study_dir)}/ser-{int(self._series_nr):02d}"
-            return retstr.encode('utf-8')
+            return retstr.encode("utf-8")
 
-        elif 'SET_WATCH_DIR' in call:
-            self.watch_dir = Path(call.split(';')[1])
+        elif "SET_WATCH_DIR" in call:
+            self.watch_dir = Path(call.split(";")[1])
             self.stop_watching()
             self.start_watching(callback=self.do_proc)
 
-        elif call == 'SET_WATCH_FILEPAT':
-            self.watch_file_pattern = call.split(';')[1]
+        elif call == "SET_WATCH_FILEPAT":
+            self.watch_file_pattern = call.split(";")[1]
             self.stop_watching()
             self.start_watching(callback=self.do_proc)
 
-        elif 'SET_WORK_ROOT' in call:
-            self.work_root = call.split(';')[1]
+        elif "SET_WORK_ROOT" in call:
+            self.work_root = call.split(";")[1]
 
-        elif call == 'SET_WATCH_FTYPE':
-            self.dcm_converter.ftype = call.split(';')[1]
+        elif call == "SET_WATCH_FTYPE":
+            self.dcm_converter.ftype = call.split(";")[1]
 
-        elif call == 'QUIT':
+        elif call == "QUIT":
             self._cancel = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def exit(self):
         # This can be called multiple times. To avoid multiple exits, keep a
         # completion record of the exit process.
-        if not self._end_complete:
+        if hasattr(self, "_end_complete") and not self._end_complete:
             self.stop_watching()
-            if hasattr(self, '_RPCserver'):
+            if hasattr(self, "_RPCserver"):
                 self._RPCserver._cancel = True
                 self._RPCserver.shutdown()
                 self._RPCserver_thread.join()
 
             try:
-                self._logger.info('\n==== Close RtpDicomMonitor ====' +
-                                  '\n#' + '=' * 80 + '\n#\n#')
+                self._logger.info(
+                    "\n==== Close RtpDicomMonitor ===="
+                    + "\n#"
+                    + "=" * 80
+                    + "\n#\n#"
+                )
             except Exception:
                 pass
 
@@ -539,37 +581,48 @@ class RtpDicomMonitor:
 
 
 # %% __main__ =================================================================
-if __name__ == '__main__':
-    RTMRI_DIR = Path('/RTMRI/RTExport')
-    WORK_DIR = Path('/data/rt')
+if __name__ == "__main__":
+    RTMRI_DIR = Path("/RTMRI/RTExport")
+    WORK_DIR = Path("/data/rt")
 
     dstr = datetime.now().strftime("%Y%m%d")
-    LOG_FILE = Path(f'log/RtpDicomMonitor_{dstr}.log')
+    LOG_FILE = Path(f"log/RtpDicomMonitor_{dstr}.log")
     if not LOG_FILE.parent.is_dir():
         os.makedirs(LOG_FILE.parent)
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description='RTPSpy DICOM monitor')
-    parser.add_argument('--watch_dir', default=RTMRI_DIR,
-                        help='Watch directory, where MRI data is exported in' +
-                        'real time')
-    parser.add_argument('--work_root', default=WORK_DIR,
-                        help='Converted data output directory root')
-    parser.add_argument('--watch_file_pattern', default=r'.+\.dcm',
-                        help='watch file pattern (regexp)')
-    parser.add_argument('--ftype', default='SiemensXADicom',
-                        help='DICOM file type')
-    parser.add_argument('--study_prefix', help='Study ID prefix')
-    parser.add_argument('--study_ID_field', help='Study ID DICOM field')
-    parser.add_argument('--series_timeout', default=10,
-                        help='Timeout period to close a series')
-    parser.add_argument('--make_brik', action='store_true',
-                        help='Make BRIK files')
-    parser.add_argument('--polling_observer', action='store_true',
-                        help='Use Polling observer')
-    parser.add_argument('--log_file', default=LOG_FILE,
-                        help='Log file path')
-    parser.add_argument('--debug', action='store_true')
+    parser = argparse.ArgumentParser(description="RTPSpy DICOM monitor")
+    parser.add_argument(
+        "--watch_dir",
+        default=RTMRI_DIR,
+        help="Watch directory, where MRI data is exported in" + "real time",
+    )
+    parser.add_argument(
+        "--work_root",
+        default=WORK_DIR,
+        help="Converted data output directory root",
+    )
+    parser.add_argument(
+        "--watch_file_pattern",
+        default=r".+\.dcm",
+        help="watch file pattern (regexp)",
+    )
+    parser.add_argument(
+        "--ftype", default="SiemensXADicom", help="DICOM file type"
+    )
+    parser.add_argument("--study_prefix", help="Study ID prefix")
+    parser.add_argument("--study_ID_field", help="Study ID DICOM field")
+    parser.add_argument(
+        "--series_timeout", default=10, help="Timeout period to close a series"
+    )
+    parser.add_argument(
+        "--make_brik", action="store_true", help="Make BRIK files"
+    )
+    parser.add_argument(
+        "--polling_observer", action="store_true", help="Use Polling observer"
+    )
+    parser.add_argument("--log_file", default=LOG_FILE, help="Log file path")
+    parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
     watch_dir = Path(args.watch_dir)
@@ -586,16 +639,25 @@ if __name__ == '__main__':
 
     # Logger
     logging.basicConfig(
-        level=logging.INFO, filename=log_file, filemode='a',
-        format='%(asctime)s.%(msecs)03d,[%(levelname)s],%(name)s,%(message)s',
-        datefmt='%Y-%m-%dT%H:%M:%S')
+        level=logging.INFO,
+        filename=log_file,
+        filemode="a",
+        format="%(asctime)s.%(msecs)03d,[%(levelname)s],%(name)s,%(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
 
     # Create the server
     rtp_dicom_monitor = RtpDicomMonitor(
-        watch_dir, work_root, ftype, watch_file_pattern=watch_file_pattern,
-        study_prefix=study_prefix, study_ID_field=study_ID_field,
-        series_timeout=series_timeout, make_brik=make_brik,
-        polling_observer=polling_observer)
+        watch_dir,
+        work_root,
+        ftype,
+        watch_file_pattern=watch_file_pattern,
+        study_prefix=study_prefix,
+        study_ID_field=study_ID_field,
+        series_timeout=series_timeout,
+        make_brik=make_brik,
+        polling_observer=polling_observer,
+    )
 
     # Run mainloop
     try:
