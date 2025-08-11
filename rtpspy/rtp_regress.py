@@ -572,7 +572,7 @@ class RtpRegress(RTP):
                     flat_data[self.Y_mean_mask.cpu().numpy()] = \
                         resid.cpu().numpy()
                     vol_data[self.maskV] = flat_data
-                    # temporay nibabel image for retroactive process
+                    # temporary nibabel image for retroactive process
                     retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
                                                      header=fmri_img.header)
                     if dstr is not None:
