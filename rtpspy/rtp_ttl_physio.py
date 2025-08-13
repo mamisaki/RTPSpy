@@ -94,7 +94,9 @@ def create_temp_file(prefix, dir_path="/dev/shm", delete=False):
 
 
 # %% call_RtpTTLPhysio ========================================================
-def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
+def call_RtpTTLPhysio(
+    data, pkl=False, host=None, get_return=False, logger=None
+):
     """
     RPC interface for an RtpTTLPhysio instance
 
@@ -113,7 +115,10 @@ def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
         with open(config_f, "r", encoding="utf-8") as fid:
             rtpspy_config = json.load(fid)
         port = rtpspy_config["RtpTTLPhysioSocketServer_port"]
-        sock.connect(("localhost", port))
+        if host is not None:
+            sock.connect((host, port))
+        else:
+            sock.connect(("localhost", port))
     except ConnectionRefusedError:
         time.sleep(1)
         if data == "ping":
@@ -717,6 +722,10 @@ class DummyRecording:
 
             time.sleep(0.01)
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_config(self, config):
+        self._logger.debug(f"Set config: {config}")
+        self._config = config
 
 # %% TTLPhysioPlot ============================================================
 class TTLPhysioPlot:
@@ -1141,7 +1150,9 @@ class RtpTTLPhysio(RTP):
 
         # Start RPC socket server
         self.socket_srv = RPCSocketServer(
-            self.RPC_handler, socket_name="RtpTTLPhysioSocketServer"
+            self.RPC_handler,
+            socket_name="RtpTTLPhysioSocketServer",
+            allow_remote_access=True
         )
 
         self._retrots = RtpRetroTS()
@@ -1172,7 +1183,7 @@ class RtpTTLPhysio(RTP):
             )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_device(self, device, sport=None):
+    def set_device(self, device=None, sport=None):
         """Change or reset recording device."""
         if device is not None and device not in (
             "Numato",
@@ -1184,7 +1195,7 @@ class RtpTTLPhysio(RTP):
             return
 
         if self._recorder is not None:
-            self.stop_recording()
+            self.stop_recording(close_plot=False)
 
         # --- Set recorder device ---
         if device is None:
@@ -1456,10 +1467,10 @@ class RtpTTLPhysio(RTP):
         ttl_offsets = np.sort(ttl_offsets)
 
         # Show actual sampling frequency
-        self._logger.debug(
-            "Actual physio sampling rate: "
-            f"{1 / np.mean(np.diff(tstamp)):.2f} Hz"
-        )
+        # self._logger.debug(
+        #     "Actual physio sampling rate: "
+        #     f"{1 / np.mean(np.diff(tstamp)):.2f} Hz"
+        # )
 
         data = {
             "ttl_onsets": ttl_onsets,
@@ -1775,7 +1786,10 @@ class RtpTTLPhysio(RTP):
         """
         self._logger.debug("Process RPC %s", call)
 
-        if call == "GET_RECORDING_PARMAS":
+        if call == "ping":
+            return pack_data("pong")
+
+        elif call == "GET_RECORDING_PARAMS":
             return pack_data(self.sample_freq)
 
         elif call == "WAIT_TTL_ON":
@@ -1793,25 +1807,45 @@ class RtpTTLPhysio(RTP):
                 self._plot.is_scanning = False
 
         elif type(call) is tuple:  # Call with arguments
-            if call[0] == "SAVE_PHYSIO_DATA":
-                onset, len_sec, prefix = call[1:]
-                self.save_physio_data(onset, len_sec, prefix)
+            try:
+                if call[0] == "SAVE_PHYSIO_DATA":
+                    onset, len_sec, prefix = call[1:]
+                    self.save_physio_data(onset, len_sec, prefix)
 
-            elif call[0] == "SET_SCAN_START_BACKWARD":
-                TR = call[1]
-                self.set_scan_onset_bkwd(TR)
+                elif call[0] == "SET_SCAN_START_BACKWARD":
+                    TR = call[1]
+                    self.set_scan_onset_bkwd(TR)
 
-            elif call[0] == "SET_GEOMETRY":
-                if self._plot is not None:
-                    geometry = call[1]
-                    self._plot.set_position(geometry)
+                elif call[0] == "SET_GEOMETRY":
+                    if self._plot is not None:
+                        geometry = call[1]
+                        self._plot.set_position(geometry)
 
-            elif call[0] == "SET_CONFIG":
-                conf = call[1]
-                self.set_config(conf)
+                elif call[0] == "SET_CONFIG":
+                    conf = call[1]
+                    self.set_config(conf)
 
-            elif call[0] == "SET_REC_DEV":
-                self.set_device(call[1])
+                elif call[0] == "SET_CARD_F":
+                    self.sim_card_f = call[1]
+
+                elif call[0] == "SET_RESP_F":
+                    self.sim_resp_f = call[1]
+
+                elif call[0] == "SET_SAMPLE_FREQ":
+                    self.sample_freq = float(call[1])
+
+                elif call[0] == "SET_REC_DEV":
+                    self.set_device(call[1])
+
+                elif call[0] == "START_DUMMY_FEEDING_WITH_FILES":
+                    self.sim_card_f = call[1][0]
+                    self.sim_resp_f = call[1][1]
+                    self.sample_freq = float(call[1][2])
+                    self.set_device("Dummy")
+
+            except Exception as e:
+                self._logger.error(f"Error processing {call}: {e}")
+                return pack_data("Error")
 
         elif call == "QUIT":
             self.end()
