@@ -30,3 +30,4 @@ afni_module/libmri.a
 afni_module/librtp.so
 build/*
 afni_module/librtp.dylib
+simulation_data
