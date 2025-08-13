@@ -64,8 +64,7 @@ The instructions below are intended to install the package in the home directory
 
 ### Clone the package  
 ```
-cd ~
-git clone https://github.com/mamisaki/RTPSpy.git
+git clone https://github.com/mamisaki/RTPSpy.git ~/RTPSpy
 git clone https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
 ```
 
