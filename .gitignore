@@ -11,7 +11,7 @@ __pycache__/
 *$py.class
 rsync*
 afni_module/afni
-rtpspy/FastSurfer
+rtpspy/FastSurfer/*
 tests/watch/*
 tests/work/*
 tests/dicom/*
@@ -30,3 +30,4 @@ afni_module/libmri.a
 afni_module/librtp.so
 build/*
 afni_module/librtp.dylib
+simulation_data
