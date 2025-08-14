@@ -158,7 +158,9 @@ class RtpWatch(RTP):
             self.watch_file_pattern, callback=self.do_proc
         )
 
-        self._observer.schedule(self._event_handler, self.watch_dir, recursive=True)
+        self._observer.schedule(
+            self._event_handler, self.watch_dir, recursive=True
+        )
         self._observer.start()
         self._logger.info(
             "Start observer monitoring "
@@ -287,11 +289,13 @@ class RtpWatch(RTP):
                     fmri_img.set_data_dtype = self.proc_data.dtype
                     fmri_img.set_filename(save_name)
 
-                self.keep_processed_image(fmri_img, save_temp=self.online_saving)
+                self.keep_processed_image(
+                    fmri_img, save_temp=self.online_saving)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errmsg = "".join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -313,7 +317,7 @@ class RtpWatch(RTP):
                 rows = int(dcm.Rows)
                 cols = int(dcm.Columns)
                 bits_allocated = int(dcm.BitsAllocated)
-                frames = int(dcm.get("NumberOfFrames", 1))  # Default to 1 if not set
+                frames = int(dcm.get("NumberOfFrames", 1))
                 pixel_data_size = rows * cols * (bits_allocated // 8) * frames
                 assert len(dcm.PixelData) == pixel_data_size
                 break
@@ -347,7 +351,8 @@ class RtpWatch(RTP):
             self.nii_save_filename = f"sub-{sub}_ser-{int(ser)}"
             if len(serDesc):
                 self.nii_save_filename += f"_desc-{serDesc}"
-            self.nii_save_filename = self._make_path_safe(self.nii_save_filename)
+            self.nii_save_filename = self._make_path_safe(
+                self.nii_save_filename)
             self.scan_name = f"Ser-{ser}"
 
         nii_fname = self.nii_save_filename + f"_{vol_num + 1:04d}.nii.gz"
@@ -398,7 +403,8 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(
+                exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -443,7 +449,8 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(
+                exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -488,7 +495,8 @@ class RtpWatch(RTP):
                 save_filename = file_path.stem
             save_filename = re.sub(r"\+orig.*", "", save_filename) + ".nii.gz"
             self.nii_save_filename = save_filename
-            self.nii_save_filename = self._make_path_safe(self.nii_save_filename)
+            self.nii_save_filename = self._make_path_safe(
+                self.nii_save_filename)
 
             fmri_img = nib.Nifti1Image(
                 load_img.dataobj, load_img.affine, header=load_img.header
@@ -503,7 +511,8 @@ class RtpWatch(RTP):
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errmsg = "".join(traceback.format_exception(
+                exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
 
@@ -547,7 +556,8 @@ class RtpWatch(RTP):
         img_pos = []
         for frame in dcm.PerFrameFunctionalGroupsSequence:
             img_pos.append(frame.PlanePositionSequence[0].ImagePositionPatient)
-        img_pos = np.concatenate([np.array(pos)[None, :] for pos in img_pos], axis=0)
+        img_pos = np.concatenate(
+            [np.array(pos)[None, :] for pos in img_pos], axis=0)
 
         pix_data_len = int(
             (
@@ -644,7 +654,8 @@ class RtpWatch(RTP):
         """
         # --- Wait for PixelData to be ready ----------------------------------
         pix_data_len = int(
-            (dcm.Rows * dcm.Columns * dcm.BitsAllocated * dcm.SamplesPerPixel) / 8
+            (dcm.Rows * dcm.Columns * dcm.BitsAllocated *
+             dcm.SamplesPerPixel) / 8
         )
         while True:  # Wait for PixelData to be ready
             try:
@@ -664,13 +675,15 @@ class RtpWatch(RTP):
             re.DOTALL,
         )[0]
 
-        size_z = int(re.findall(r"sSliceArray\.lSize\s*=\s*(\d+)", asconv_headers)[0])
+        size_z = int(
+            re.findall(r"sSliceArray\.lSize\s*=\s*(\d+)", asconv_headers)[0])
 
         # get the locations of the slices
         slice_location = [None] * size_z
         for index in range(size_z):
             axial_result = re.findall(
-                r"sSliceArray\.asSlice\[%s\]\.sPosition\.dTra\s*=\s*([-+]?[0-9]*\.?[0-9]*)"
+                r"sSliceArray\.asSlice\[%s\]\.s"
+                r"Position\.dTra\s*=\s*([-+]?[0-9]*\.?[0-9]*)"
                 % index,
                 asconv_headers,
             )
@@ -682,7 +695,8 @@ class RtpWatch(RTP):
 
         invert = False
         invert_result = re.findall(
-            r"sSliceArray\.ucImageNumbTra\s*=\s*([-+]?0?x?[0-9]+)", asconv_headers
+            r"sSliceArray\.ucImageNumbTra\s*=\s*([-+]?0?x?[0-9]+)",
+            asconv_headers
         )
         if len(invert_result) > 0:
             invert_value = int(invert_result[0], 16)
@@ -712,13 +726,13 @@ class RtpWatch(RTP):
             for x_index in range(0, number_x):
                 if MosaicType == "ASCENDING":
                     img_array[z_index, :, :] = pixel_array[
-                        size_y * y_index : size_y * (y_index + 1),
-                        size_x * x_index : size_x * (x_index + 1),
+                        size_y * y_index: size_y * (y_index + 1),
+                        size_x * x_index: size_x * (x_index + 1),
                     ]
                 else:
                     img_array[size_z - (z_index + 1), :, :] = pixel_array[
-                        size_y * y_index : size_y * (y_index + 1),
-                        size_x * x_index : size_x * (x_index + 1),
+                        size_y * y_index: size_y * (y_index + 1),
+                        size_x * x_index: size_x * (x_index + 1),
                     ]
                 z_index += 1
                 if z_index >= size_z:
@@ -734,16 +748,26 @@ class RtpWatch(RTP):
         ds = dcm.SpacingBetweenSlices
         affine = np.array(
             [
-                [-img_ori1[0] * dc, -img_ori2[0] * dr, -ds * nrm[0], -image_pos[0]],
-                [-img_ori1[1] * dc, -img_ori2[1] * dr, -ds * nrm[1], -image_pos[1]],
-                [img_ori1[2] * dc, img_ori2[2] * dr, ds * nrm[2], image_pos[2]],
+                [-img_ori1[0] * dc,
+                 -img_ori2[0] * dr,
+                 -ds * nrm[0],
+                 -image_pos[0]],
+                [-img_ori1[1] * dc,
+                 -img_ori2[1] * dr,
+                 -ds * nrm[1],
+                 -image_pos[1]],
+                [img_ori1[2] * dc,
+                 img_ori2[2] * dr,
+                 ds * nrm[2],
+                 image_pos[2]],
                 [0, 0, 0, 1],
             ]
         )
 
         affine[0:3, [3]] += np.dot(
             affine[0:3, 0:2],
-            np.array([[(dcm.Columns - size_x) / 2], [(dcm.Rows - size_y) / 2]]),
+            np.array(
+                [[(dcm.Columns - size_x) / 2], [(dcm.Rows - size_y) / 2]]),
         )
 
         # Transpose and flip to LPI
@@ -904,7 +928,8 @@ class RtpWatch(RTP):
         setattr(self, attr, val)
         if echo:
             print(
-                "{}.".format(self.__class__.__name__) + attr, "=", getattr(self, attr)
+                "{}.".format(self.__class__.__name__) + attr,
+                "=", getattr(self, attr)
             )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -978,7 +1003,8 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_dcmreadTimeout_dSpBx])
 
         # polling_observer check
-        self.ui_pollingObserver_chb = QtWidgets.QCheckBox("Use PollingObserver")
+        self.ui_pollingObserver_chb = QtWidgets.QCheckBox(
+            "Use PollingObserver")
         self.ui_pollingObserver_chb.setChecked(self.polling_observer)
         self.ui_pollingObserver_chb.stateChanged.connect(
             lambda: self.set_param(
@@ -1007,7 +1033,9 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_pollingTimeout_dSpBx])
 
         # clean_ready
-        self.ui_cleanReady_chb = QtWidgets.QCheckBox("Clean watch dir at ready")
+        self.ui_cleanReady_chb = QtWidgets.QCheckBox(
+            "Clean watch dir at ready"
+        )
         self.ui_cleanReady_chb.setChecked(self.clean_ready)
         self.ui_cleanReady_chb.stateChanged.connect(
             lambda state: setattr(self, "clean_ready", state > 0)

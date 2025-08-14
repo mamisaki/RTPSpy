@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TTL and Physiological Signal Recorder Class for RTP**
+TTL and Physiological Signal Recorder Class for RTP
 
 Model Classes:
     NumatoGPIORecording: Handles recording from a Numato GPIO device.
@@ -64,18 +64,49 @@ except Exception:
 mpl.rcParams["font.size"] = 8
 
 
+# %% Constants ================================================================
+DEFAULT_SERIAL_TIMEOUT = 0.001
+DEFAULT_SERIAL_BAUDRATE = 19200
+DEFAULT_BUFFER_SIZE = 3600  # seconds
+DEFAULT_SAMPLE_FREQ = 50  # Hz
+PLOT_UPDATE_INTERVAL = 1.0 / 60  # 60 FPS
+ADC_MAX_VALUE = 1024
+YAXIS_ADJUST_RANGE = 25
+MIN_YAXIS_RANGE = 50
+
+
+# %% Helper functions =========================================================
+def log_exception(logger, msg="Exception occurred"):
+    """Helper function to log exceptions with traceback."""
+    exc_type, exc_obj, exc_tb = sys.exc_info()
+    errstr = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
+    logger.error(f"{msg}: {errstr}")
+
+
+def create_temp_file(prefix, dir_path="/dev/shm", delete=False):
+    """Helper function to create temporary files."""
+    if Path(dir_path).is_dir() and os.access(dir_path, os.W_OK):
+        return NamedTemporaryFile(
+            mode="w+b", prefix=prefix, dir=dir_path, delete=delete
+        )
+    else:
+        return NamedTemporaryFile(prefix=prefix, delete=delete)
+
+
 # %% call_RtpTTLPhysio ========================================================
-def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
+def call_RtpTTLPhysio(
+    data, pkl=False, host=None, get_return=False, logger=None
+):
     """
     RPC interface for an RtpTTLPhysio instance
 
     Parameters:
         data:
             Sending data
-        pkl bool, optional):
+        pkl (bool, optional):
             To pack the data in pickle. Defaults to False.
         get_return (bool, optional):
-            Falg to receive a return. Defaults to False.
+            Flag to receive a return. Defaults to False.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -84,7 +115,10 @@ def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
         with open(config_f, "r", encoding="utf-8") as fid:
             rtpspy_config = json.load(fid)
         port = rtpspy_config["RtpTTLPhysioSocketServer_port"]
-        sock.connect(("localhost", port))
+        if host is not None:
+            sock.connect((host, port))
+        else:
+            sock.connect(("localhost", port))
     except ConnectionRefusedError:
         time.sleep(1)
         if data == "ping":
@@ -105,7 +139,7 @@ def call_RtpTTLPhysio(data, pkl=False, get_return=False, logger=None):
     if get_return:
         data = rpc_recv_data(sock, logger=logger)
         if data is None:
-            errmsg = f"Failed to recieve response to {data}"
+            errmsg = f"Failed to receive response to {data}"
             if logger:
                 logger.error(errmsg)
             else:
@@ -124,12 +158,10 @@ class SharedMemoryRingBuffer:
     def __init__(
         self, length, data_file=None, cpos_file=None, initial_value=np.nan
     ):
-        """Initialization creates an mmap file with the given 'name' in
-        /dev/shm if available; otherwise, it is created in temporary directory.
-        The name may be sanitized for use as a file name. The file is opened in
-        "w+" mode, and the data is initialized with initial_value. An mmap file
-        named {name}_currentPos is also created in the same place to indicate
-        the current position of the ring buffer if the length is > 1.
+        """Initialize SharedMemoryRingBuffer.
+
+        Creates an mmap file with the given 'name' in /dev/shm if available;
+        otherwise, it is created in temporary directory.
 
         Parameters
         ----------
@@ -142,151 +174,170 @@ class SharedMemoryRingBuffer:
         initial_value : float, optional
             The value used to initialize the buffer data. The default is nan.
         """
-        # Set logger
         self._logger = logging.getLogger("SharedMemoryRingBuffer")
-
-        # Set properties
         self.length = int(length)
+        self._data = None
+        self._cpos = None
+        self._data_mmap_fd = None
+        self._cpos_mmap_fd = None
+        self._creator = False
 
         try:
-            if data_file is not None and cpos_file is not None:
-                if not Path(data_file).is_file():
-                    errstr = f"Not found data_file: {data_file}.\n"
-                    self._logger.error(errstr)
-                    return None
-                elif not Path(cpos_file).is_file():
-                    errstr = f"Not found cpos_file: {cpos_file}.\n"
-                    self._logger.error(errstr)
-                    return None
-                self._data_mmap_fd = open(data_file, "r+b")
-                self._cpos_mmap_fd = open(cpos_file, "r+b")
-                initial_value = None
-                self._creator = False
+            if (
+                data_file is not None
+                and data_file.exists()
+                and cpos_file is not None
+                and cpos_file.exists()
+            ):
+                self._load_existing_files(data_file, cpos_file)
             else:
-                # Create mmap file
-                if (
-                    Path("/dev/shm").is_dir() and
-                    os.access("/dev/shm", os.W_OK)
-                ):
-                    self._data_mmap_fd = NamedTemporaryFile(
-                        mode="w+b",
-                        prefix=f"rtpspy_{os.getpid()}_rbuffer_",
-                        dir="/dev/shm",
-                        delete=False,
-                    )
-                    self._cpos_mmap_fd = NamedTemporaryFile(
-                        mode="w+b",
-                        prefix=f"rtpspy_{os.getpid()}_rbuffer_cpos_",
-                        dir="/dev/shm",
-                        delete=False,
-                    )
-                else:
-                    self._data_mmap_fd = NamedTemporaryFile(
-                        prefix=f"rtpspy_{os.getpid()}_rbuffer_", delete=False
-                    )
-                    self._cpos_mmap_fd = NamedTemporaryFile(
-                        prefix=f"rtpspy_{os.getpid()}_rbuffer_cpos_",
-                        delete=False,
-                    )
+                self._create_new_files()
 
-                # Keep data space
-                self._data_mmap_fd.write(
-                    b"\x00" * (self.length * np.dtype(float).itemsize)
-                )
-                self._data_mmap_fd.flush()
-                self.data_mmap_file = Path(self._data_mmap_fd.name)
-
-                self._cpos_mmap_fd.write(
-                    b"\x00" * (np.dtype(np.int64).itemsize)
-                )
-                self._cpos_mmap_fd.flush()
-                self.cpos_mmap_file = Path(self._cpos_mmap_fd.name)
-
-                self._creator = True
-
-            # Refer data as numpy.memmap
-            self._data = np.memmap(
-                self._data_mmap_fd, dtype=float, mode="w+",
-                shape=(self.length,)
-            )
-            if initial_value is not None:
-                self._data[:] = initial_value
-                self._data.flush()
-
-            self._cpos = np.memmap(
-                self._cpos_mmap_fd, dtype=np.int64, mode="w+", shape=(1,)
-            )
-            if initial_value is not None:
-                self._cpos[0] = 0
-                self._cpos.flush()
-
-            # Save process id
+            self._setup_memory_maps(initial_value)
             self.pid = os.getpid()
 
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
+        except Exception as e:
+            log_exception(
+                self._logger, "Failed to initialize SharedMemoryRingBuffer"
             )
-            self._logger.error(errstr)
-            return None
+            # Ensure object is in a valid state even if initialization fails
+            if self._data is None:
+                self._data = np.array([initial_value] * self.length)
+            if self._cpos is None:
+                self._cpos = np.array([0], dtype=np.int64)
+            raise e
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _load_existing_files(self, data_file, cpos_file):
+        """Load existing mmap files."""
+        if not Path(data_file).is_file():
+            raise FileNotFoundError(f"Not found data_file: {data_file}")
+        if not Path(cpos_file).is_file():
+            raise FileNotFoundError(f"Not found cpos_file: {cpos_file}")
+
+        self._data_mmap_fd = open(data_file, "r+b")
+        self._cpos_mmap_fd = open(cpos_file, "r+b")
+        self.data_mmap_file = Path(data_file)
+        self.cpos_mmap_file = Path(cpos_file)
+        self._creator = False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _create_new_files(self):
+        """Create new temporary mmap files."""
+        pid = os.getpid()
+        self._data_mmap_fd = create_temp_file(f"rtpspy_{pid}_rbuffer_")
+        self._cpos_mmap_fd = create_temp_file(f"rtpspy_{pid}_rbuffer_cpos_")
+
+        # Allocate space for data and position
+        data_size = self.length * np.dtype(float).itemsize
+        self._data_mmap_fd.write(b"\x00" * data_size)
+        self._data_mmap_fd.flush()
+        self.data_mmap_file = Path(self._data_mmap_fd.name)
+
+        pos_size = np.dtype(np.int64).itemsize
+        self._cpos_mmap_fd.write(b"\x00" * pos_size)
+        self._cpos_mmap_fd.flush()
+        self.cpos_mmap_file = Path(self._cpos_mmap_fd.name)
+
+        self._creator = True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _setup_memory_maps(self, initial_value):
+        """Setup numpy memory maps for data and position."""
+        self._data = np.memmap(
+            self._data_mmap_fd, dtype=float, mode="w+", shape=(self.length,)
+        )
+        self._cpos = np.memmap(
+            self._cpos_mmap_fd, dtype=np.int64, mode="w+", shape=(1,)
+        )
+
+        if initial_value is not None:
+            self._data[:] = initial_value
+            self._data.flush()
+            self._cpos[0] = 0
+            self._cpos.flush()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def append(self, x):
         """Append an element"""
         try:
+            # Check if attributes exist
+            if self._cpos is None or self._data is None:
+                self._logger.error("Ring buffer not properly initialized")
+                return
+
             cpos = self._cpos[0]
             self._data[cpos] = x
-            self._cpos[:] = (cpos + 1) % self.length
+            self._cpos[0] = (cpos + 1) % self.length
             self._data.flush()
             self._cpos.flush()
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
-            )
-            self._logger.error(errstr)
+            log_exception(self._logger, "Failed to append to ring buffer")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get(self):
         """Return list of elements"""
         try:
+            # Check if attributes exist
+            if self._cpos is None or self._data is None:
+                self._logger.error("Ring buffer not properly initialized")
+                return np.array([])
+
             cpos = self._cpos[0]
             if cpos == 0:
-                return self._data
+                return self._data.copy()
             else:
                 data = self._data
                 return np.concatenate([data[cpos:], data[:cpos]])
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
-            )
-            self._logger.error(errstr)
-            return None
+            log_exception(self._logger, "Failed to get ring buffer data")
+            return np.array([])
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
-        if self._creator:
-            if self.data_mmap_file.is_file():
-                self.data_mmap_file.unlink()
-                self._logger.debug(
-                    f"Delete tmoporary file: {self.data_mmap_file}"
-                )
+        try:
+            if hasattr(self, "_creator") and self._creator:
+                if (
+                    hasattr(self, "data_mmap_file")
+                    and self.data_mmap_file.is_file()
+                ):
+                    self.data_mmap_file.unlink()
+                    self._logger.debug(
+                        f"Delete temporary file: {self.data_mmap_file}"
+                    )
 
-            if self.cpos_mmap_file.is_file():
-                self.cpos_mmap_file.unlink()
-                self._logger.debug(
-                    f"Delete tmoporary file: {self.cpos_mmap_file}"
-                )
+                if (
+                    hasattr(self, "cpos_mmap_file")
+                    and self.cpos_mmap_file.is_file()
+                ):
+                    self.cpos_mmap_file.unlink()
+                    self._logger.debug(
+                        f"Delete temporary file: {self.cpos_mmap_file}"
+                    )
+
+            # Close file descriptors
+            if (
+                hasattr(self, "_data_mmap_fd")
+                and self._data_mmap_fd is not None
+            ):
+                self._data_mmap_fd.close()
+            if (
+                hasattr(self, "_cpos_mmap_fd")
+                and self._cpos_mmap_fd is not None
+            ):
+                self._cpos_mmap_fd.close()
+
+        except Exception:
+            # Don't raise exceptions in __del__
+            pass
 
 
 # %% NumatoGPIORecoding class =================================================
-class NumatoGPIORecoding:
+class NumatoGPIORecording:
     """
-    Receiving signal in USB GPIO device, Numato Lab 8 Channel USB GPIO (
+    Receiving signals from USB GPIO device, Numato Lab 8 Channel USB GPIO (
     https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
     ).
     Read IO0/DIO0 to receive the scan start TTL signal.
@@ -308,7 +359,7 @@ class NumatoGPIORecoding:
         ttl_offset_que,
         physio_que,
         sport,
-        rec_sample_freq=100,
+        rec_sample_freq=DEFAULT_SAMPLE_FREQ,
     ):
         """Initialize
 
@@ -362,78 +413,75 @@ class NumatoGPIORecoding:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def update_port_list(self):
-        # Get serial port list
+        """Get and sort available serial ports for supported devices."""
         self.dict_sig_sport = {}
         for pt in comports():
-            if np.any(
-                [
-                    re.match(devpat, pt.description) is not None
-                    for devpat in NumatoGPIORecoding.SUPPORT_DEVICES
-                ]
-            ):
+            if self._is_supported_device(pt.description):
                 self.dict_sig_sport[pt.device] = pt.description
 
-        # Sort self.dict_sig_sport by key
-        self.dict_sig_sport = {
-            k: self.dict_sig_sport[k]
-            for k in sorted(list(self.dict_sig_sport.keys()))
-        }
+        # Sort by device name
+        self.dict_sig_sport = dict(sorted(self.dict_sig_sport.items()))
 
-        # Check the availability of the current device
+        # Validate current device
         if hasattr(self, "_sig_sport") and self._sig_sport is not None:
             self.sig_sport = self._sig_sport
 
+    def _is_supported_device(self, description):
+        """Check if device description matches any supported patterns."""
+        return any(
+            re.match(pattern, description) is not None
+            for pattern in NumatoGPIORecording.SUPPORT_DEVICES
+        )
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_sig_port(self):
+        """Open serial port for signal communication."""
         if self._sig_sport is None:
             self._logger.warning("There is no Numato GPIO device.")
             return False
 
-        # Check the current port and close if it opens
-        if self._sig_ser is not None and self._sig_ser.is_open:
-            self._sig_ser.close()
-            self._sig_ser = None
-            time.sleep(1)  # Be sure to close
+        self._close_existing_port()
 
         try:
             self._sig_ser = serial.Serial(
-                self._sig_sport, 19200, timeout=0.001
+                self._sig_sport,
+                DEFAULT_SERIAL_BAUDRATE,
+                timeout=DEFAULT_SERIAL_TIMEOUT,
             )
             self._sig_ser.flushOutput()
             self._sig_ser.write(b"gpio clear 0\r")
+            self._logger.info(f"Open signal port {self._sig_sport}")
+            return True
 
         except serial.serialutil.SerialException:
             self._logger.error(f"Failed to open {self._sig_sport}")
-            self._sig_ser = None
-            return False
-
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
-            )
-            self._logger.error(f"Failed to open {self._sig_sport}: {errstr}")
+            log_exception(self._logger, f"Failed to open {self._sig_sport}")
+
+        self._sig_ser = None
+        return False
+
+    def _close_existing_port(self):
+        """Close existing serial port if open."""
+        if self._sig_ser is not None and self._sig_ser.is_open:
+            self._sig_ser.close()
             self._sig_ser = None
-            return False
-
-        self._logger.info(f"Open signal port {self._sig_sport}")
-
-        return True
+            time.sleep(1)  # Ensure port is closed
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_config(self):
+        """Get current device configuration."""
         self.update_port_list()
-        if len(self.dict_sig_sport):
-            dio_port = (
-                f"{self.sig_sport}:{self.dict_sig_sport[self.sig_sport]}"
-            )
+        if self.dict_sig_sport and self.sig_sport:
+            port_info = self.dict_sig_sport[self.sig_sport]
+            dio_port = f"{self.sig_sport}:{port_info}"
         else:
             dio_port = "None"
-        conf = {
+
+        return {
             "IO port": dio_port,
             "IO port list": self.dict_sig_sport,
         }
-        return conf
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, conf):
@@ -516,7 +564,7 @@ class NumatoGPIORecoding:
 
             if cmd_pipe is not None and cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
-                self._logger.debug(f"Recieve {cmd} in read_signal_loop.")
+                self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
                     cmd_pipe.send("END")
                     break
@@ -526,7 +574,7 @@ class NumatoGPIORecoding:
 
 # %% DummyRecording ===========================================================
 class DummyRecording:
-    """Dummy class of physio recording"""
+    """Dummy class for physio recording"""
 
     def __init__(
         self,
@@ -552,7 +600,7 @@ class DummyRecording:
             sim_card_f = Path(sim_card_f)
             if not sim_card_f.is_file():
                 self._logger.error(
-                    f"Not found {sim_card_f} for card dummy signal."
+                    f"Not found {sim_card_f} for cardiac dummy signal."
                 )
             else:
                 try:
@@ -565,7 +613,7 @@ class DummyRecording:
             sim_resp_f = Path(sim_resp_f)
             if not sim_resp_f.is_file():
                 self._logger.error(
-                    f"Not found {sim_resp_f} for card dummy signal."
+                    f"Not found {sim_resp_f} for respiration dummy signal."
                 )
             else:
                 try:
@@ -591,7 +639,7 @@ class DummyRecording:
     def set_sim_data(self, sim_card_f, sim_resp_f, sample_freq):
         if not sim_card_f.is_file():
             self._logger.error(
-                f"Not found {sim_card_f} for card dummy signal."
+                f"Not found {sim_card_f} for cardiac dummy signal."
             )
             return
         else:
@@ -604,7 +652,7 @@ class DummyRecording:
 
         if not sim_resp_f.is_file():
             self._logger.error(
-                f"Not found {sim_resp_f} for card dummy signal."
+                f"Not found {sim_resp_f} for respiration dummy signal."
             )
             return
         else:
@@ -658,7 +706,6 @@ class DummyRecording:
                 self._sim_data_pos = (
                     self._sim_data_pos + 1
                 ) % self._sim_data_len
-
                 self._physio_que.put((tstamp_physio, card, resp))
                 ct = time.time()
                 rec_delay = time.time() - st_physio_read
@@ -668,17 +715,21 @@ class DummyRecording:
 
             if cmd_pipe is not None and cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
-                self._logger.debug(f"Recieve {cmd} in read_signal_loop.")
+                self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
                     cmd_pipe.send("END")
                     break
 
             time.sleep(0.01)
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_config(self, config):
+        self._logger.debug(f"Set config: {config}")
+        self._config = config
 
 # %% TTLPhysioPlot ============================================================
 class TTLPhysioPlot:
-    """View class for dispaying TTL and physio recording signals"""
+    """View class for displaying TTL and physio recording signals"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, recorder):
@@ -759,8 +810,8 @@ class TTLPhysioPlot:
 
         # Set filtered card axis
         self._ax_card_filtered.clear()
-        self._ax_card_filtered.set_ylabel("Cardiogram(flitered)")
-        self._ln_card_flitered = self._ax_card_filtered.plot(
+        self._ax_card_filtered.set_ylabel("Cardiogram (filtered)")
+        self._ln_card_filtered = self._ax_card_filtered.plot(
             sig_xi, np.zeros(buf_size), "k-"
         )
         self._ax_card_filtered.set_xlim(sig_xi[0], sig_xi[-1])
@@ -783,7 +834,7 @@ class TTLPhysioPlot:
             if cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 if cmd == "QUIT":
-                    self._logger.debug("Recieve QUIT in _run.")
+                    self._logger.debug("Receive QUIT in _run.")
                     break
 
             try:
@@ -827,9 +878,8 @@ class TTLPhysioPlot:
                 # --- Resample in regular interval ----------------------------
                 try:
                     with warnings.catch_warnings():
-                        warnings.simplefilter(
-                            "ignore", category=RuntimeWarning
-                        )
+                        warnings.simplefilter("ignore",
+                                              category=RuntimeWarning)
                         f = interp1d(tstamp, card, bounds_error=False)
                         card_ex = f(xt_interval_ex)
                         card = card_ex[xt_ex_mask]
@@ -943,14 +993,13 @@ class TTLPhysioPlot:
                 card_ex_filtered = lfilter(b, 1, card_ex_filtered)
                 card_ex_filtered = np.flipud(card_ex_filtered)
                 card_filtered = card_ex_filtered[xt_ex_mask]
-                self._ln_card_flitered[0].set_ydata(card_filtered)
+                self._ln_card_filtered[0].set_ydata(card_filtered)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     # Adjust ylim
                     ymin = (
-                        np.floor(
-                            np.nanmin(card_filtered[-adjust_period:]) / 25
-                        ) * 25
+                        np.floor(np.nanmin(card_filtered[-adjust_period:]
+                                           ) / 25) * 25
                     )
                     ymax = (
                         np.ceil(np.nanmax(card_filtered[-adjust_period:]) / 25)
@@ -1037,14 +1086,14 @@ class TTLPhysioPlot:
             self.close()
 
 
-# %% ==========================================================================
+# %% RtpTTLPhysio =============================================================
 class RtpTTLPhysio(RTP):
     """
     Interface for external signals, including TTL and physiological signals.
     The recording class runs in a separate process, and the data are shared
     with the process of this class via Queue.
     The recording loop in _run_recording also runs in a separate process and
-    the data ara save in an mmap file in /dev/shm if available; otherwise,
+    the data are saved in an mmap file in /dev/shm if available; otherwise,
     they are stored in $HOME/.RTPSpy.
 
     """
@@ -1053,7 +1102,7 @@ class RtpTTLPhysio(RTP):
     def __init__(
         self,
         device=None,
-        sample_freq=100,
+        sample_freq=DEFAULT_SAMPLE_FREQ,
         buf_len_sec=3600,
         sport=None,
         sim_card_f=None,
@@ -1061,49 +1110,8 @@ class RtpTTLPhysio(RTP):
         save_ttl=True,
         **kwargs,
     ):
-        """Initialize the class
-        Set parameter values and list of serial ports.
-
-
-        The recorded data are shared via an mmap file in /dev/shm if available;
-        otherwise, they are stored in $HOME/.RTPSpy.
-
-        Parameters
-        ----------
-        device : str,  optional
-            Physiological signals' IO device name.
-            'Numato'; Numato Lab 8 Channel USB GPIO
-                https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/
-            'GE'; GE MRI serial port signal.
-            'Dummy'; Simulate signal recording using pre-recorded files.
-            'NULL'; No signal recorder.
-            The default is None. If device is None, the program searches for
-            'Numato', followed by 'GE'. If neither is found, it checks for a
-            Dummy (if sim_card_f and sim_resp_f are provided). If none of
-            these are found, the value is set to NULL.
-        sample_freq : float, optional
-            Sampling frequency (Hz).
-        buf_len_sec : float, optional
-            Length (seconds) of signal recording buffer. The default is 3600s
-            (60 min). The buffer size must be large enough to accommodate one
-            scanning run.
-        sport : str
-            Serial port name. The default is `None`, and the first available
-            port is assigned during initialization.
-        sim_card_f : str or Path
-            Pre-recorded cardiac signal file (a text file readable by
-            'numpy.loadtxt'). This is used for simulation when
-            'device='Dummy'.
-        sim_resp_f : str or Path
-            Pre-recorded respiration signal file (a text file readable by
-            'numpy.loadtxt'). This is used for simulation when
-            'device='Dummy'.
-        save_ttl : bool
-            Save TTL onset and offset times.
-        **kwargs : Additional arguments passed to the RTP base class.
-        """
         super().__init__(**kwargs)
-        del self.work_dir  # This is set by RTP base class.
+        del self.work_dir  # This is set by RTP base class but not used here.
 
         # Set parameters
         self.buf_len_sec = buf_len_sec
@@ -1115,7 +1123,7 @@ class RtpTTLPhysio(RTP):
         # Set state variables
         self.wait_ttl_on = False  # Waiting for TTL to signal scan start.
         self._plot = None  # View class of signal plot
-        self._recorder = None  # Singla recorder class
+        self._recorder = None  # Signal recorder class
 
         # Queues to retrieve recorded data from a recorder process
         self._ttl_onset_que = Queue()
@@ -1130,6 +1138,7 @@ class RtpTTLPhysio(RTP):
         self._scan_onset = SharedMemoryRingBuffer(1, initial_value=-1.0)
 
         # Prepare data buffer files for sharing among multiple processes
+        # Buffer names for sharing data across processes
         self._rbuf_names = [
             "ttl_onsets",
             "ttl_offsets",
@@ -1138,6 +1147,29 @@ class RtpTTLPhysio(RTP):
             "tstamp",
         ]
         self._rbuf_lock = Lock()
+
+        # Start RPC socket server
+        self.socket_srv = RPCSocketServer(
+            self.RPC_handler,
+            socket_name="RtpTTLPhysioSocketServer",
+            allow_remote_access=True
+        )
+
+        self._retrots = RtpRetroTS()
+
+        # Set device and start recording
+        self.set_device(device, sport=sport)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_ring_buffers(self):
+        """Initialize ring buffers for sharing data among processes."""
+        # Delete existing buffers if they exist
+        if hasattr(self, "_rbuf"):
+            for rbuf in self._rbuf.values():
+                try:
+                    del rbuf
+                except Exception:
+                    pass
 
         buf_len = self.buf_len_sec * self.sample_freq
         self._rbuf = {}
@@ -1150,18 +1182,8 @@ class RtpTTLPhysio(RTP):
                 buf_len, initial_value=initial_value
             )
 
-        # Start RPC socket server
-        self.socekt_srv = RPCSocketServer(
-            self.RPC_handler, socket_name="RtpTTLPhysioSocketServer"
-        )
-
-        self._retrots = RtpRetroTS()
-
-        # Set device and start recording
-        self.set_device(device, sport=sport)
-
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_device(self, device, sport=None):
+    def set_device(self, device=None, sport=None):
         """Change or reset recording device."""
         if device is not None and device not in (
             "Numato",
@@ -1173,7 +1195,7 @@ class RtpTTLPhysio(RTP):
             return
 
         if self._recorder is not None:
-            self.stop_recording()
+            self.stop_recording(close_plot=False)
 
         # --- Set recorder device ---
         if device is None:
@@ -1183,7 +1205,7 @@ class RtpTTLPhysio(RTP):
 
         for dev in try_devices:
             if dev == "Numato":
-                self._recorder = NumatoGPIORecoding(
+                self._recorder = NumatoGPIORecording(
                     self._ttl_onset_que,
                     self._ttl_offset_que,
                     self._physio_que,
@@ -1241,6 +1263,15 @@ class RtpTTLPhysio(RTP):
         start_recording. The set_device function internally calls
         start_recording.
         """
+        self._init_ring_buffers()
+
+        # Empty _physio_ques before starting a new recording process
+        while not self._physio_que.empty():
+            try:
+                self._physio_que.get_nowait()
+            except Exception:
+                break
+
         self._rec_proc_pipe, cmd_pipe = Pipe()
         os_name = platform.system()
         if os_name == "Linux":
@@ -1306,7 +1337,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_plot(self):
-        if not hasattr(self, "_plot"):
+        if not hasattr(self, "_plot") or self._plot is None:
             return
 
         self._plot.close()
@@ -1345,12 +1376,12 @@ class RtpTTLPhysio(RTP):
         )
         _read_proc.start()
 
-        # Que reading loop
+        # Queue reading loop
         while True:
             if cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 if cmd == "QUIT":
-                    self._logger.debug("Recieve QUIT in _run_recording.")
+                    self._logger.debug("Receive QUIT in _run_recording.")
                     _recoder_pipe.send("QUIT")
                     if _recoder_pipe.poll(timeout=3):
                         _recoder_pipe.recv()
@@ -1418,10 +1449,8 @@ class RtpTTLPhysio(RTP):
         ttl_offsets = ttl_offsets[~np.isnan(ttl_offsets)]
 
         tmask = (
-            ~np.isnan(tstamp) &
-            ~np.isnan(card) &
-            ~np.isnan(resp) &
-            (tstamp > 0)
+            ~np.isnan(tstamp) & ~np.isnan(card) &
+            ~np.isnan(resp) & (tstamp > 0)
         )
         card = card[tmask]
         resp = resp[tmask]
@@ -1438,10 +1467,10 @@ class RtpTTLPhysio(RTP):
         ttl_offsets = np.sort(ttl_offsets)
 
         # Show actual sampling frequency
-        self._logger.debug(
-            "Actual physio sampling rate: "
-            f"{1 / np.mean(np.diff(tstamp)):.2f}Hz"
-        )
+        # self._logger.debug(
+        #     "Actual physio sampling rate: "
+        #     f"{1 / np.mean(np.diff(tstamp)):.2f} Hz"
+        # )
 
         data = {
             "ttl_onsets": ttl_onsets,
@@ -1669,8 +1698,7 @@ class RtpTTLPhysio(RTP):
                 interval_thresh = np.nanmin(ttl_interval) * 1.5
 
             long_intervals = np.argwhere(
-                ttl_interval > interval_thresh
-            ).ravel()
+                ttl_interval > interval_thresh).ravel()
             if len(long_intervals) == 0:
                 ser_onset = ttl_onsets[0]
             else:
@@ -1680,7 +1708,12 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_retrots(
-        self, TR, Nvol=np.inf, tshift=0, reasmple_phys_fs=100, timeout=2
+        self,
+        TR,
+        Nvol=np.inf,
+        tshift=0,
+        resample_phys_fs=DEFAULT_SAMPLE_FREQ,
+        timeout=2,
     ):
         onset = self.scan_onset
         if onset == 0:
@@ -1700,7 +1733,10 @@ class RtpTTLPhysio(RTP):
                 int(np.nanmax(tstamp) // TR) < Nvol
                 and time.time() - st < timeout
             ):
-                # Waint until Nvol samples
+                self._logger.debug(
+                    f"Received data for {np.nanmax(tstamp) / TR}/{Nvol}"
+                )
+                # Wait until Nvol samples
                 time.sleep(0.001)
                 data = self.dump()
                 tstamp = data["tstamp"] - onset
@@ -1721,10 +1757,10 @@ class RtpTTLPhysio(RTP):
         tstamp = tstamp[dataMask]
 
         # Resample
-        if reasmple_phys_fs is None or reasmple_phys_fs > self.sample_freq:
+        if resample_phys_fs is None or resample_phys_fs > self.sample_freq:
             physFS = self.sample_freq
         else:
-            physFS = reasmple_phys_fs
+            physFS = resample_phys_fs
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -1739,8 +1775,7 @@ class RtpTTLPhysio(RTP):
             Card = Card[~np.isnan(Card)]
 
         retroTSReg = self._retrots.RetroTs(
-            Resp, Card, TR, physFS, tshift, Nvol
-        )
+            Resp, Card, TR, physFS, tshift, Nvol)
 
         return retroTSReg
 
@@ -1751,7 +1786,10 @@ class RtpTTLPhysio(RTP):
         """
         self._logger.debug("Process RPC %s", call)
 
-        if call == "GET_RECORDING_PARMAS":
+        if call == "ping":
+            return pack_data("pong")
+
+        elif call == "GET_RECORDING_PARAMS":
             return pack_data(self.sample_freq)
 
         elif call == "WAIT_TTL_ON":
@@ -1769,25 +1807,45 @@ class RtpTTLPhysio(RTP):
                 self._plot.is_scanning = False
 
         elif type(call) is tuple:  # Call with arguments
-            if call[0] == "SAVE_PHYSIO_DATA":
-                onset, len_sec, prefix = call[1:]
-                self.save_physio_data(onset, len_sec, prefix)
+            try:
+                if call[0] == "SAVE_PHYSIO_DATA":
+                    onset, len_sec, prefix = call[1:]
+                    self.save_physio_data(onset, len_sec, prefix)
 
-            elif call[0] == "SET_SCAN_START_BACKWARD":
-                TR = call[1]
-                self.set_scan_onset_bkwd(TR)
+                elif call[0] == "SET_SCAN_START_BACKWARD":
+                    TR = call[1]
+                    self.set_scan_onset_bkwd(TR)
 
-            elif call[0] == "SET_GEOMETRY":
-                if self._plot is not None:
-                    geometry = call[1]
-                    self._plot.set_position(geometry)
+                elif call[0] == "SET_GEOMETRY":
+                    if self._plot is not None:
+                        geometry = call[1]
+                        self._plot.set_position(geometry)
 
-            elif call[0] == "SET_CONFIG":
-                conf = call[1]
-                self.set_config(conf)
+                elif call[0] == "SET_CONFIG":
+                    conf = call[1]
+                    self.set_config(conf)
 
-            elif call[0] == "SET_REC_DEV":
-                self.set_device(call[1])
+                elif call[0] == "SET_CARD_F":
+                    self.sim_card_f = call[1]
+
+                elif call[0] == "SET_RESP_F":
+                    self.sim_resp_f = call[1]
+
+                elif call[0] == "SET_SAMPLE_FREQ":
+                    self.sample_freq = float(call[1])
+
+                elif call[0] == "SET_REC_DEV":
+                    self.set_device(call[1])
+
+                elif call[0] == "START_DUMMY_FEEDING_WITH_FILES":
+                    self.sim_card_f = call[1][0]
+                    self.sim_resp_f = call[1][1]
+                    self.sample_freq = float(call[1][2])
+                    self.set_device("Dummy")
+
+            except Exception as e:
+                self._logger.error(f"Error processing {call}: {e}")
+                return pack_data("Error")
 
         elif call == "QUIT":
             self.end()
@@ -1795,7 +1853,7 @@ class RtpTTLPhysio(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end(self):
         self.stop_recording()
-        self.socekt_srv.shutdown()
+        self.socket_srv.shutdown()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -1810,46 +1868,48 @@ class RtpTTLPhysio(RTP):
                 self._logger.debug(f"Remove temporary file {rmf}.")
 
             cpos_file = rbuf.cpos_mmap_file
-            for rmf in cpos_file.parent.glob(
-                f"rtpspy_{os.getpid()}_rbuffer_*"
-            ):
+            for rmf in cpos_file.parent.glob(f"rtpspy_{os.getpid()}_cpos_*"):
                 rmf.unlink()
                 self._logger.debug(f"Remove temporary file {rmf}.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_param(self, params, reset_fn=None, echo=False):
+    def set_param(self, attr, val, reset_fn=None, echo=False):
         reset_device = False
-        for attr, val in params.items():
-            self._logger.debug(f"set_param: {attr} = {val}")
 
-            if attr == "device":
-                if self._device != val:
+        self._logger.debug(f"set_param: {attr} = {val}")
+
+        if attr == "device":
+            if self._device != val:
+                if self._rec_proc is not None:
                     reset_device = True
 
-            elif attr == "sample_freq":
-                setattr(self, attr, val)
+        elif attr == "sample_freq":
+            setattr(self, attr, val)
+            if self._rec_proc is not None:
                 reset_device = True
 
-            elif attr == "buf_len_sec":
-                setattr(self, attr, val)
+        elif attr == "buf_len_sec":
+            setattr(self, attr, val)
+            if self._rec_proc is not None:
                 reset_device = True
 
-            elif attr == "save_ttl":
-                setattr(self, attr, val)
+        elif attr == "save_ttl":
+            setattr(self, attr, val)
 
-            elif attr == "sport":
-                setattr(self, attr, val)
+        elif attr == "sport":
+            setattr(self, attr, val)
+            if self._rec_proc is not None:
                 reset_device = True
 
-            elif attr == "sim_card_f":
-                setattr(self, attr, val)
-                if self._device == "Dummy":
-                    reset_device = True
+        elif attr == "sim_card_f":
+            setattr(self, attr, val)
+            if self._device == "Dummy" and self._rec_proc is not None:
+                reset_device = True
 
-            elif attr == "sim_resp_f":
-                setattr(self, attr, val)
-                if self._device == "Dummy":
-                    reset_device = True
+        elif attr == "sim_resp_f":
+            setattr(self, attr, val)
+            if self._device == "Dummy" and self._rec_proc is not None:
+                reset_device = True
 
         if reset_device:
             self.set_device(self._device)
@@ -2147,9 +2207,9 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="Numato", help="Device type")
     parser.add_argument(
         "--sample_freq",
-        default=100,
+        default=DEFAULT_SAMPLE_FREQ,
         type=float,
-        help="sampling frequency (Hz)"
+        help="sampling frequency (Hz)",
     )
     parser.add_argument(
         "--card_file", help="Cardiac signal file for dummy device"
@@ -2185,6 +2245,13 @@ if __name__ == "__main__":
     # Open app
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    if debug:
+        test_dir = Path(__file__).absolute().parent.parent / "tests"
+        card_file = test_dir / "ECG.1D"
+        resp_file = test_dir / "Resp.1D"
+        sample_freq = 40
+        device = "Dummy"
 
     # Create RtpTTLPhysio instance
     rtp_ttl_physio = RtpTTLPhysio(
