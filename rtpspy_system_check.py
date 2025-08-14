@@ -21,7 +21,7 @@ from rtpspy import RtpApp
 
 # %% main =====================================================================
 if __name__ == "__main__":
-    # Parse arguments
+    # region: Parse arguments -------------------------------------------------
     parser = argparse.ArgumentParser(description="rtp_system_check")
     parser.add_argument(
         "--log_file",
@@ -43,6 +43,7 @@ if __name__ == "__main__":
         log_level = logging.DEBUG
     else:
         log_level = logging.INFO
+    # endregion: Parse arguments ----------------------------------------------
 
     # -------------------------------------------------------------------------
     print("=" * 80)
@@ -64,7 +65,7 @@ if __name__ == "__main__":
     logger = logging.getLogger("rtpspy_system_check")
 
     try:
-        # --- Filenames -------------------------------------------------------
+        # region: Set paths ---------------------------------------------------
         # Test data directory  # Fixed: capitalized "test"
         test_dir = Path(__file__).absolute().parent / "tests"
 
@@ -115,11 +116,12 @@ if __name__ == "__main__":
                     ff.rmdir()
                 else:
                     ff.unlink()
+        # endregion: Set paths ------------------------------------------------
 
-        # --- Create RtpApp instance -----------------------------------------
+        # Create RtpApp instance
         rtp_app = RtpApp(work_dir=work_dir)
 
-        # --- Make mask images ------------------------------------------------
+        # region: Make mask images --------------------------------------------
         logger.debug("### Start creating mask images ###")
         if torch.cuda.is_available() or torch.backends.mps.is_available():
             logger.info("GPU is utilized.")
@@ -141,8 +143,9 @@ if __name__ == "__main__":
         )
 
         logger.debug("### End creating mask images ###")
+        # endregion: Make mask images -----------------------------------------
 
-        # --- Set up RTP ------------------------------------------------------
+        # region: Set up RTP --------------------------------------------------
         logger.debug("### Start preparing the dummy physio recorder ###")
         # Set RtpTTLPhysio
         rtp_app.rtp_objs["TTLPHYSIO"].stop_recording()
@@ -190,8 +193,9 @@ if __name__ == "__main__":
         proc_chain = rtp_app.ready_to_run()
 
         logger.debug("### End RTP setup ###")
+        # endregion: Set up RTP -----------------------------------------------
 
-        # --- Simulate scan (Copy data volume-by-volume) ----------------------
+        # region: Simulate scan (Copy data volume-by-volume) ------------------
         logger.debug("### Start simulating real-time fMRI imaging ###")
         # Load data
         img = nib.load(testdata_f)
@@ -223,6 +227,7 @@ if __name__ == "__main__":
                 proc_chain.do_proc(save_filename)
 
         logger.debug("### End simulating real-time fMRI imaging ###")
+        # endregion: Simulate scan (Copy data volume-by-volume) ---------------
 
         logger.debug("### Close RTP ###")
         rtp_app.end_run()
