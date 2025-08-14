@@ -31,3 +31,4 @@ afni_module/librtp.so
 build/*
 afni_module/librtp.dylib
 simulation_data
+RTMRI_simulation

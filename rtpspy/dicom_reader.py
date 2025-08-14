@@ -300,6 +300,14 @@ class DicomReader():
             elif hasattr(dcm, 'AcquisitionDateTime'):
                 scan_info['AcquisitionTime'] = dcm.AcquisitionDateTime[8:]
             scan_info['SeriesDescription'] = dcm.SeriesDescription
+            if hasattr(dcm, 'StudyDescription'):
+                scan_info['StudyDescription'] = dcm.StudyDescription
+            if hasattr(dcm, 'ImageType'):
+                scan_info['ImageType'] = ':'.join(dcm.ImageType)
+            if hasattr(dcm, 'PatientID'):
+                scan_info['PatientID'] = dcm.PatientID
+            if hasattr(dcm, 'PatientName'):
+                scan_info['PatientName'] = dcm.PatientName
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -539,7 +547,11 @@ if __name__ == '__main__':
     acq_time = np.array([content_times[idx] for idx in sidx])
 
     dcmReader = DicomReader()
-    dcm_f = Path('/RTMRI/ba3beee3a4aaa60032bfa6c4314ca5fde0112dff_MP0_2023_20231018/1.3.12.2.1107.5.2.43.166321.30000023101809592153400000020_9cadb06a-8a32-449c-b34f-ef42e750dfa8')
+    dcm_f = Path(
+        '/RTMRI/ba3beee3a4aaa60032bfa6c4314ca5fde0112dff_MP0_2023_20231018/'
+        '1.3.12.2.1107.5.2.43.166321.30000023101809592153400000020_9cadb06a-'
+        '8a32-449c-b34f-ef42e750dfa8'
+    )
     dcm = dcmReader.safe_read_dicom_file(dcm_f)
     # 20230902140053.387500
     # 'Wed Oct 18 03:10:45 2023'

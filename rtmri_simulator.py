@@ -21,16 +21,21 @@ import threading
 import time
 import shutil
 import pickle
-import re
-import random
 import logging
 import socket
 from pathlib import Path
 from datetime import datetime
+import json
+
+import numpy as np
+import pandas as pd
 
 from rtpspy.dicom_reader import DicomReader
+import traceback
 from rtpspy.rpc_socket_server import (
-    get_port_by_name, rpc_send_data, rpc_recv_data
+    get_port_by_name,
+    rpc_send_data,
+    rpc_recv_data,
 )
 
 
@@ -60,14 +65,15 @@ class RTMRISimulator:
 
         # Initialize variables
         self.current_session_path = None
-        self.dicom_series = []
-        self.current_series_index = 0
+        self.dicom_series = None
+        self.current_series_nr = 0
 
         self.selected_card_file = None
         self.selected_resp_file = None
-        self.rpc_port = None
+        self.physio_rpc_port = None
 
         # Initialize status variables
+        self.current_image_nr = 0
         self.simulation_running = False
         self.simulation_thread = None
         self.scanning_cancelled = False
@@ -76,21 +82,27 @@ class RTMRISimulator:
         self.logger = logging.getLogger("RTMRISimulator")
 
         # Configuration
+        src_data_dir = Path(__file__).parent / "simulation_data"
+        if not src_data_dir.exists():
+            src_data_dir.mkdir(parents=True)
+        simulation_output_dir = Path(__file__).parent / "RTMRI_simulation"
+        if not simulation_output_dir.exists():
+            simulation_output_dir.mkdir(parents=True)
+
         self.config = {
-            "src_data_dir": Path(__file__).parent / "simulation_data",
-            "simulation_output_dir": (
-                Path(__file__).parent / "RTMRI_simulation"),
-            "tr_seconds": 2.0,
+            "src_data_dir": src_data_dir,
+            "simulation_output_dir": simulation_output_dir,
             "auto_advance": False,
-            "copy_delay_ms": 100,
-            "physio_rpc_port": None,
-            "ttl_rpc_port": None,
+            "series_interval": 10,
         }
 
-        self.setup_gui()
-        self.load_initial_data()
+        # Restore config
+        self.load_config()
 
-    # Setup the GUI components ++++++++++++++++++++++++++++++++++++++++++++++++
+        self.setup_gui()
+        self.load_dicom_sessions()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_gui(self):
         """Create the main GUI interface"""
         # Create main frame with scrollbar
@@ -144,14 +156,10 @@ class RTMRISimulator:
         # Source data path
         src_path_frame = ttk.Frame(session_frame)
         src_path_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Label(src_path_frame, text="Source Root:").pack(
-            side=tk.LEFT
-        )
+        ttk.Label(src_path_frame, text="Source Root:").pack(side=tk.LEFT)
 
         # Current source data path (scrollable)
-        self.src_dir_var = tk.StringVar(
-            value=str(self.config["src_data_dir"])
-        )
+        self.src_dir_var = tk.StringVar(value=str(self.config["src_data_dir"]))
         src_path_entry = tk.Entry(
             src_path_frame,
             textvariable=self.src_dir_var,
@@ -188,11 +196,9 @@ class RTMRISimulator:
         for col in columns:
             self.session_tree.heading(col, text=col)
             if col == "Name":
-                self.session_tree.column(col, width=200)
-            elif col == "Study Description":
-                self.session_tree.column(col, width=150)
-            else:
-                self.session_tree.column(col, width=80)
+                self.session_tree.column(col, width=40)
+            elif col == "Files":
+                self.session_tree.column(col, width=50, anchor=tk.CENTER)
 
         session_scrollbar = ttk.Scrollbar(
             session_list_frame,
@@ -257,17 +263,19 @@ class RTMRISimulator:
         current_session_label.pack(side=tk.LEFT, padx=(5, 0))
 
         # Series treeview
-        series_columns = ("Series", "Description", "Files")
+        series_columns = ("Series", "Files", "Image Type", "Description")
         self.series_tree = ttk.Treeview(
             series_frame, columns=series_columns, show="headings", height=10
         )
 
         for col in series_columns:
             self.series_tree.heading(col, text=col)
-            if col == "Description":
-                self.series_tree.column(col, width=150)
-            else:
-                self.series_tree.column(col, width=80)
+            if col == "Series":
+                self.series_tree.column(col, width=10)
+            elif col == "Files":
+                self.series_tree.column(col, width=4, anchor=tk.CENTER)
+            elif col == "Image Type":
+                self.series_tree.column(col, width=160)
 
         series_scrollbar = ttk.Scrollbar(
             series_frame, orient=tk.VERTICAL, command=self.series_tree.yview
@@ -279,28 +287,32 @@ class RTMRISimulator:
         )
         series_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Bind series selection event to update TR state
+        # Bind series selection event to update Simulation panel
         self.series_tree.bind("<<TreeviewSelect>>", self.on_series_select)
         # endregion: Series information ---------------------------------------
 
-    # Setup the simulation control panel ++++++++++++++++++++++++++++++++++++++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_simulation_panel(self, parent):
         """Setup the simulation control panel"""
         sim_frame = ttk.LabelFrame(parent, text="Simulation Control")
         sim_frame.pack(fill=tk.BOTH, pady=(0, 5))
 
         # region: Output path -------------------------------------------------
-        outpath_frame = ttk.Frame(sim_frame)
-        outpath_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.outpath_frame = ttk.Frame(sim_frame)
+        self.outpath_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        ttk.Label(outpath_frame, text="Output:").pack(side=tk.LEFT, padx=2)
+        # Top row for label, entry, and set button
+        top_row = ttk.Frame(self.outpath_frame)
+        top_row.pack(fill=tk.X, pady=(0, 5))
+
+        ttk.Label(top_row, text="Output:").pack(side=tk.LEFT, padx=2)
 
         # Show output path
         self.output_dir_var = tk.StringVar(
             value=str(self.config["simulation_output_dir"])
         )
         output_path_entry = tk.Entry(
-            outpath_frame,
+            top_row,
             textvariable=self.output_dir_var,
             font=("Arial", 10),
             state="readonly",
@@ -310,39 +322,45 @@ class RTMRISimulator:
         output_path_entry.pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
-            outpath_frame,
+            top_row,
             text="Set",
             command=self.set_output_directory,
         ).pack(side=tk.LEFT, padx=2)
 
+        # Clear
+        ttk.Button(
+            self.outpath_frame,
+            text="Clear",
+            command=self.clear_output_directory,
+        ).pack(side=tk.BOTTOM, padx=2)
+
         # endregion: Output path ----------------------------------------------
 
+        # region: Simulation control ------------------------------------------
         # Parameters
         params_frame = ttk.Frame(sim_frame)
         params_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # TR setting
-        ttk.Label(params_frame, text="TR (sec):").grid(
-            row=0, column=0, sticky=tk.W
-        )
-        self.tr_var = tk.StringVar(value="")  # Start empty
-        self.tr_spinbox = ttk.Spinbox(
-            params_frame,
-            from_=0.1,
-            to=10.0,
-            increment=0.1,
-            width=8,
-            textvariable=self.tr_var,
-            state=tk.DISABLED,  # Start disabled
-        )
-        self.tr_spinbox.grid(row=0, column=1, sticky=tk.W, padx=5)
-
         # Auto advance setting
-        auto_advance_value = self.config["auto_advance"]
-        self.auto_advance_var = tk.BooleanVar(value=auto_advance_value)
+        aa_frame = ttk.Frame(params_frame)
+        aa_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.auto_advance_var = tk.BooleanVar(
+            value=self.config["auto_advance"]
+        )
         ttk.Checkbutton(
-            params_frame, text="Auto-advance", variable=self.auto_advance_var
-        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=5)
+            aa_frame, text="Auto-advance", variable=self.auto_advance_var
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Series interval box
+        self.series_interval_var = tk.IntVar(
+            value=self.config["series_interval"])
+        ttk.Label(aa_frame, text="Series Interval:").pack(side=tk.LEFT, padx=5)
+        ttk.Entry(
+            aa_frame,
+            textvariable=self.series_interval_var,
+            width=5
+        ).pack(side=tk.LEFT, padx=5)
 
         # Current series display
         current_frame = ttk.LabelFrame(sim_frame, text="Current Status")
@@ -358,21 +376,14 @@ class RTMRISimulator:
         status_label.pack(padx=5, pady=5)
 
         # Progress bars
-        ttk.Label(current_frame, text="Series Progress:").pack(
-            anchor=tk.W, padx=5
+        self.series_progress_label = ttk.Label(
+            current_frame, text="Series Progress:"
         )
+        self.series_progress_label.pack(anchor=tk.W, padx=5)
         self.series_progress = ttk.Progressbar(
             current_frame, mode="determinate"
         )
         self.series_progress.pack(fill=tk.X, padx=5, pady=2)
-
-        ttk.Label(current_frame, text="Overall Progress:").pack(
-            anchor=tk.W, padx=5, pady=(5, 0)
-        )
-        self.overall_progress = ttk.Progressbar(
-            current_frame, mode="determinate"
-        )
-        self.overall_progress.pack(fill=tk.X, padx=5, pady=2)
 
         # Control buttons
         control_frame = ttk.LabelFrame(sim_frame, text="Controls")
@@ -386,6 +397,7 @@ class RTMRISimulator:
             main_btn_frame,
             text="Start Simulation",
             command=self.start_simulation,
+            state=tk.DISABLED,  # Initially disabled
         )
         self.start_btn.pack(fill=tk.X, pady=2)
 
@@ -397,23 +409,16 @@ class RTMRISimulator:
         )
         self.pause_btn.pack(fill=tk.X, pady=2)
 
-        self.stop_btn = ttk.Button(
+        self.step_btn = ttk.Button(
             main_btn_frame,
-            text="Stop",
-            command=self.stop_simulation,
-            state=tk.DISABLED,
+            text="Step Forward",
+            command=self.step_simulation,
+            state=tk.DISABLED,  # Initially disabled
         )
-        self.stop_btn.pack(fill=tk.X, pady=2)
+        self.step_btn.pack(fill=tk.X, pady=2)
+        # endregion: Simulation control ---------------------------------------
 
-        self.next_series_btn = ttk.Button(
-            main_btn_frame,
-            text="Next Series",
-            command=self.next_series,
-            state=tk.DISABLED,
-        )
-        self.next_series_btn.pack(fill=tk.X, pady=2)
-
-    # Setup the physiological data selection panel +++++++++++++++++++++++++++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_physio_panel(self, parent):
         """Setup the physiological data selection panel"""
         physio_frame = ttk.LabelFrame(parent, text="Physiological Data")
@@ -499,7 +504,7 @@ class RTMRISimulator:
         # Start Physio feeding button
         self.start_physio_btn = ttk.Button(
             button_col,
-            text="Start Physio",
+            text="Send Physio",
             command=self.start_physio_feeding,
         )
         self.start_physio_btn.pack(side=tk.LEFT, padx=5)
@@ -521,7 +526,7 @@ class RTMRISimulator:
         ).pack(side=tk.LEFT, padx=5)
         # endregion: Command buttons ------------------------------------------
 
-    # Setup the log panel +++++++++++++++++++++++++++++++++++++++++++++++++++++ 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_log_panel(self, parent):
         """Setup the log panel at the bottom"""
         log_frame = ttk.LabelFrame(parent, text="Log")
@@ -531,13 +536,6 @@ class RTMRISimulator:
             log_frame, height=10, wrap=tk.WORD
         )
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def load_initial_data(self):
-        """Load initial data"""
-        self.load_dicom_sessions()
-        # self.load_physio_files()
-        # self.log_initial_port_selections()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _find_sessions_recursive(
@@ -571,8 +569,7 @@ class RTMRISimulator:
                 session_name = str(current_dir.relative_to(base_dir))
 
             study_description = self._get_study_description(
-                all_dicom_files[:3]
-            )
+                all_dicom_files[:3])
 
             sessions.append(
                 {
@@ -659,11 +656,17 @@ class RTMRISimulator:
         return study_description
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def on_session_select(self, event):
+    def on_session_select(self, event=None):
         """Handle session selection"""
+        if self.simulation_running:
+            return
+
         selection = self.session_tree.selection()
         if not selection:
             self.current_session_var.set("No session selected")
+            # Disable simulation buttons when no session selected
+            self.start_btn.config(state=tk.DISABLED)
+            self.step_btn.config(state=tk.DISABLED)
             return
 
         item = self.session_tree.item(selection[0])
@@ -710,8 +713,7 @@ class RTMRISimulator:
                 )
                 return
 
-        self.selected_session_path = session_path
-        self.current_session_path = session_path  # Keep both in sync
+        self.current_session_path = session_path
 
         # Update current session display
         if study_description and study_description != "Unknown":
@@ -724,7 +726,7 @@ class RTMRISimulator:
 
         # Load series information in a separate thread
         loading_thread = threading.Thread(
-            target=self.load_series_info_threaded,
+            target=self._load_series_info_threaded,
             args=(session_path,),
             daemon=True,
         )
@@ -733,18 +735,21 @@ class RTMRISimulator:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_series_select(self, event):
         """Handle series selection and update simulation controls"""
+        if self.simulation_running:
+            return
+
         selection = self.series_tree.selection()
         if not selection:
-            # No series selected, disable TR and clear status
-            self.tr_spinbox.config(state=tk.DISABLED)
-            self.tr_var.set("")
+            # No series selected, disable buttons and clear status
             self.current_series_var.set("No series selected")
+            self.start_btn.config(state=tk.DISABLED)
+            self.step_btn.config(state=tk.DISABLED)
             return
 
         item = self.series_tree.item(selection[0])
         series_name = item["values"][0]  # Series column
-        series_description = item["values"][1]  # Description column
-        series_files = item["values"][2]  # Files column
+        series_files = item["values"][1]  # Files column
+        series_description = item["values"][-1]  # Description column
 
         # Update simulation control current status
         series_status = (
@@ -752,60 +757,24 @@ class RTMRISimulator:
         )
         self.current_series_var.set(series_status)
 
-        # Find the corresponding series data to check if functional
-        selected_series = None
-        for series in self.dicom_series:
-            if f"Series {series['number']}" == series_name:
-                selected_series = series
-                break
+        self.current_series_nr = int(series_name.split()[-1])
+        # Reset image number when series selection changes
+        self.current_image_nr = 0
 
-        # Check if this is a functional series
-        if selected_series:
-            image_type = selected_series.get("image_type")
-            is_functional_series = self.is_functional_series(
-                series_description, image_type
-            )
-            tr_value = selected_series.get("tr")
-        else:
-            is_functional_series = self.is_functional_series(
-                series_description
-            )
-            tr_value = None
+        # Reset series progress bar
+        num_files = (
+            self.dicom_series.SeriesNumber == self.current_series_nr
+        ).sum()
+        self.series_progress.config({"maximum": num_files})
+        self.series_progress.config({"value": 0})
+        self.series_progress_label.config(
+            text=f"Series Progress: 0/{num_files}")
 
-        if is_functional_series:
-            # Enable TR for functional series
-            self.tr_spinbox.config(state=tk.NORMAL)
-
-            # Set TR from DICOM if available, otherwise use default
-            if tr_value:
-                self.tr_var.set(f"{tr_value:.3f}")
-                self.log_message(
-                    f"Set TR to {tr_value:.3f}s from DICOM metadata"
-                )
-            elif not self.tr_var.get():  # Set default if empty
-                self.tr_var.set(str(self.config["tr_seconds"]))
-        else:
-            # Disable TR for non-functional series
-            self.tr_spinbox.config(state=tk.DISABLED)
-            self.tr_var.set("")
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def is_functional_series(self, series_description, image_type=None):
-        """Check if series is functional based on ImageType.
-        Uses same logic as rt_dicom_monitor.py
-        """
-        # Primary check: DICOM ImageType field
-        # (exact same logic as rt_dicom_monitor.py)
-        if image_type and "FMRI" in image_type:
-            return True
-
-        # Secondary check: Series description keywords (fallback only)
-        functional_keywords = ["fmri", "functional", "bold", "ep2d", "func"]
-
-        description_lower = series_description.lower()
-        return any(
-            keyword in description_lower for keyword in functional_keywords
-        )
+        # Enable simulation buttons when a series is selected
+        self.start_btn.config(state=tk.NORMAL)
+        self.step_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(text="Pause")
+        self.pause_btn.config(state=tk.DISABLED)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_series_loading_progress(self, show=True):
@@ -822,6 +791,9 @@ class RTMRISimulator:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def handle_rescan_click(self):
         """Handle Rescan/Cancel button click"""
+        if self.simulation_running:
+            return
+
         if self.rescan_btn.config("text")[4] == "Cancel":
             # Cancel current scan
             self.scanning_cancelled = True
@@ -832,15 +804,15 @@ class RTMRISimulator:
             self.refresh_series_info()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def get_cache_file_path(self, session_path):
+    def _get_cache_file_path(self, session_path):
         """Get the path for the cached series info file"""
         return session_path / ".rtmri_series_cache.pkl"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def save_series_info_cache(self, session_path, series_data):
+    def _save_series_info_cache(self, session_path, series_data):
         """Save series information to cache file"""
         try:
-            cache_file = self.get_cache_file_path(session_path)
+            cache_file = self._get_cache_file_path(session_path)
 
             # Convert Path objects to strings for serialization
             cache_data = {"timestamp": time.time(), "series": []}
@@ -866,89 +838,33 @@ class RTMRISimulator:
             self.err_message(f"Error saving cache: {e}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def load_series_info_cache(self, session_path):
-        """Load series information from cache if available and recent"""
-        try:
-            cache_file = self.get_cache_file_path(session_path)
-
-            if not cache_file.exists():
-                self.log_message("No cache file found")
-                return None
-
-            # Check if cache is recent (within last 7 days)
-            cache_age = time.time() - cache_file.stat().st_mtime
-            cache_age_hours = cache_age / 3600
-
-            if cache_age > 604800:  # 7 days
-                cache_age_days = cache_age / 86400
-                self.log_message(
-                    f"Cache is too old ({cache_age_days:.1f} days), "
-                    "will rescan"
-                )
-                return None
-
-            self.log_message(
-                f"Found cache file ({cache_age_hours:.1f} hours old), "
-                "loading..."
-            )
-
-            with open(cache_file, "rb") as f:
-                cache_data = pickle.load(f)
-
-            # Convert back to our format
-            self.dicom_series = []
-            for series_cache in cache_data["series"]:
-                # Convert file paths back to Path objects
-                files = [Path(f) for f in series_cache["files"]]
-
-                # Verify files still exist
-                existing_files = [f for f in files if f.exists()]
-                if len(existing_files) != len(files):
-                    self.log_message(
-                        "Some cached files no longer exist, will rescan"
-                    )
-                    return None
-
-                self.dicom_series.append(
-                    {
-                        "number": series_cache["number"],
-                        "description": series_cache["description"],
-                        "files": existing_files,
-                        "size": series_cache["size"],
-                        "tr": series_cache.get("tr"),
-                        "image_type": series_cache.get("image_type"),
-                        "is_functional": self.is_functional_series(
-                            series_cache["description"],
-                            series_cache.get("image_type"),
-                        ),
-                    }
-                )
-
-            # Populate the tree view (will be scheduled on main thread)
-            # Tree population moved to _populate_series_tree_from_cache()
-
-            message = f"Loaded {len(self.dicom_series)} series from cache"
-            self.log_message(message)
-            return True
-
-        except Exception as e:
-            self.err_message(f"Error loading cache: {e}")
-            return None
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _populate_series_tree_from_cache(self):
+    def _populate_series_tree(self):
         """Populate series tree from loaded cache data"""
-        for series in self.dicom_series:
-            series_data = (
-                f"Series {series['number']}",
-                series["description"],
-                len(series["files"]),
-            )
-            self.series_tree.insert("", "end", values=series_data)
+        if (
+            hasattr(self, "dicom_series")
+            and self.dicom_series is not None
+            and len(self.dicom_series) > 0
+        ):
+            ser_nums = sorted(self.dicom_series.SeriesNumber.unique())
+            for ser in ser_nums:
+                ser_rows = self.dicom_series[
+                    self.dicom_series.SeriesNumber == ser
+                ]
+                ser_row = ser_rows.iloc[0].squeeze()
+                series_data = (
+                    f"Series {ser}",
+                    len(ser_rows),
+                    ser_row.get("ImageType", ""),
+                    ser_row.get("SeriesDescription", ""),
+                )
+                self.series_tree.insert("", "end", values=series_data)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def refresh_series_info(self):
         """Refresh series information by rescanning"""
+        if self.simulation_running:
+            return
+
         if (
             not hasattr(self, "current_session_path")
             or not self.current_session_path
@@ -956,26 +872,17 @@ class RTMRISimulator:
             self.err_message("No session selected")
             return
 
-        # Delete cache file to force rescan
-        try:
-            cache_file = self.get_cache_file_path(self.current_session_path)
-            if cache_file.exists():
-                cache_file.unlink()
-                self.log_message("Cleared series cache")
-        except Exception as e:
-            self.err_message(f"Error clearing cache: {e}")
-
         # Start fresh scan
         self.log_message("Rescanning series information...")
         thread = threading.Thread(
-            target=self.load_series_info_threaded,
-            args=(self.current_session_path,),
+            target=self._load_series_info_threaded,
+            args=(self.current_session_path, True),
         )
         thread.daemon = True
         thread.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def load_series_info_threaded(self, session_path):
+    def _load_series_info_threaded(self, session_path, rescan=False):
         """Load series information in a separate thread with progress"""
         # Store current session path for refresh functionality
         self.current_session_path = session_path
@@ -995,64 +902,79 @@ class RTMRISimulator:
 
             # Check for cancellation
             if self.scanning_cancelled:
+                self.dicom_series = None
                 return
 
-            # Try to load from cache first
-            cached = self.load_series_info_cache(session_path)
-            if cached:
-                # Schedule tree population on main thread
-                self.root.after(0, self._populate_series_tree_from_cache)
-                self.root.after(0, self.show_series_loading_progress, False)
-                return
+            series_df = None
+            cache_file = self._get_cache_file_path(session_path)
 
-            # Check for cancellation before full scan
-            if self.scanning_cancelled:
-                return
+            # Try to load cache
+            if not rescan and cache_file.exists():
+                try:
+                    series_df = pd.read_csv(cache_file)
+                    self.log_message("Loaded series info from cache")
+                except Exception as e:
+                    self.log_message(f"Error loading cache: {e}")
+                    series_df = None
 
-            # If no cache, proceed with full scan
-            self.root.after(
-                0,
-                self.series_loading_label.config,
-                {"text": "Finding DICOM files..."},
-            )
-
-            # Find all DICOM files
-            dicom_files = list(session_path.glob("**/*.dcm"))
-
-            # Check for cancellation
-            if self.scanning_cancelled:
-                return
-
-            if not dicom_files:
+            if series_df is None:
+                # If no cache, proceed with full scan
                 self.root.after(
-                    0, self.log_message, "No DICOM files found in session"
+                    0,
+                    self.series_loading_label.config,
+                    {"text": "Finding DICOM files..."},
                 )
-                self.root.after(0, self.show_series_loading_progress, False)
-                return
 
-            # Update progress bar maximum
-            total_files = len(dicom_files)
-            progress_config = {"maximum": total_files}
-            self.root.after(
-                0, self.series_loading_progress.config, progress_config
-            )
-            self.root.after(
-                0, self.series_loading_progress.config, {"value": 0}
-            )
-            self.root.after(
-                0,
-                self.series_loading_label.config,
-                {"text": f"Processing {total_files} DICOM files..."},
-            )
+                # Find all DICOM files
+                dicom_files = list(session_path.glob("**/*.dcm"))
 
-            # Process files with progress updates
-            self.load_series_info(
-                session_path, progress_callback=self._update_series_progress
-            )
+                # Check for cancellation
+                if self.scanning_cancelled:
+                    self.dicom_series = None
+                    return
 
-            # Save to cache after successful scan (if not cancelled)
-            if self.dicom_series and not self.scanning_cancelled:
-                self.save_series_info_cache(session_path, self.dicom_series)
+                if not dicom_files:
+                    self.root.after(
+                        0, self.log_message, "No DICOM files found in session"
+                    )
+                    self.root.after(
+                        0, self.show_series_loading_progress, False
+                    )
+                    return
+
+                # Update progress bar maximum
+                total_files = len(dicom_files)
+                progress_config = {"maximum": total_files}
+                self.root.after(
+                    0, self.series_loading_progress.config, progress_config
+                )
+                self.root.after(
+                    0, self.series_loading_progress.config, {"value": 0}
+                )
+                self.root.after(
+                    0,
+                    self.series_loading_label.config,
+                    {"text": f"Processing {total_files} DICOM files..."},
+                )
+
+                # Process files with progress updates
+                series_df = self.load_series_info(
+                    session_path,
+                    progress_callback=self._update_series_progress
+                )
+                if series_df is not None:
+                    series_df.to_csv(cache_file, index=False)
+
+            if series_df is not None and not self.scanning_cancelled:
+                self.dicom_series = series_df
+                # Schedule tree population on main thread
+                self.root.after(0, self._populate_series_tree)
+                self.log_message("Series information loaded successfully")
+            else:
+                # Ensure series data is cleared if cancelled
+                self.dicom_series = None
+
+            self.root.after(0, self.show_series_loading_progress, False)
 
         except Exception as e:
             if not self.scanning_cancelled:
@@ -1068,10 +990,9 @@ class RTMRISimulator:
         """Clear the series tree (must be called from main thread)"""
         for item in self.series_tree.get_children():
             self.series_tree.delete(item)
-        self.dicom_series = []
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _update_series_progress(self, current, total, message=""):
+    def _update_series_progress(self, current, message=""):
         """Update series loading progress (called from worker thread)"""
         self.root.after(
             0, self.series_loading_progress.config, {"value": current}
@@ -1097,288 +1018,47 @@ class RTMRISimulator:
                 return
 
             # Group by series if DicomReader is available
-            series_dict = {}
+            series_dfs = []
 
             reader = DicomReader()
 
-            if progress_callback:
-                progress_callback(0, len(dicom_files), "Identifying series...")
-
-            # Strategy: Sample files more strategically to identify all series
-            # Take samples from beginning, middle, and end of file list
-            sample_size = min(100, len(dicom_files))  # Increased sample size
-            sample_indices = set()
-
-            # Add files from beginning
-            sample_indices.update(range(min(30, len(dicom_files))))
-
-            # Add files from middle
-            mid_point = len(dicom_files) // 2
-            sample_indices.update(
-                range(
-                    max(0, mid_point - 15),
-                    min(len(dicom_files), mid_point + 15),
-                )
-            )
-
-            # Add files from end
-            sample_indices.update(
-                range(max(0, len(dicom_files) - 30), len(dicom_files))
-            )
-
-            # IMPORTANT: Ensure we include files from each series pattern
-            # Look for files with different series numbers in filename patterns
-            series_pattern_files = {}
-            for i, dcm_file in enumerate(dicom_files):
-                # Extract series number from filename pattern:
-                # 001_SERIES_INSTANCE
-                parts = dcm_file.name.split("_")
-                if len(parts) >= 3 and parts[1].isdigit():
-                    series_from_filename = int(parts[1])
-                    if series_from_filename not in series_pattern_files:
-                        series_pattern_files[series_from_filename] = i
-                        sample_indices.add(i)
-
-            # Add random samples if we haven't reached our target
-            remaining_needed = sample_size - len(sample_indices)
-            if remaining_needed > 0:
-                available_indices = (
-                    set(range(len(dicom_files))) - sample_indices
-                )
-                additional_samples = random.sample(
-                    list(available_indices),
-                    min(remaining_needed, len(available_indices)),
-                )
-                sample_indices.update(additional_samples)
-
-            # Sort sample indices for orderly processing
-            sample_indices = sorted(list(sample_indices))
-
             # Scan sampled files to identify series
-            for i, file_idx in enumerate(sample_indices):
+            for i, dcm_file in enumerate(dicom_files):
                 # Check for cancellation
                 if progress_callback and self.scanning_cancelled:
                     return
 
-                dcm_file = dicom_files[file_idx]
+                dcm_file = dicom_files[i]
                 try:
                     info = reader.read_dicom_info(dcm_file, timeout=0.2)
-                    if info:
-                        series_num = info.get("SeriesNumber", 1)
-
-                        # Try multiple fields for series description
-                        series_desc = (
-                            info.get("SeriesDescription")
-                            or info.get("Series De")
-                            or info.get("Protocol Name")
-                            or info.get("Protocol")
-                            or info.get("Series Information")
-                            or f"Series {series_num}"
-                        )
-
-                        if series_num not in series_dict:
-                            series_dict[series_num] = {
-                                "description": series_desc,
-                                "files": [],
-                                "size": 0,
-                                "tr": None,
-                                "image_type": None,
-                            }
-                            # Extract TR and ImageType if available
-                            if "TR" in info:
-                                # TR is in milliseconds in DICOM,
-                                # convert to seconds
-                                tr_ms = info["TR"]
-                                tr_seconds = tr_ms / 1000.0
-                                series_dict[series_num]["tr"] = tr_seconds
-                                tr_msg = f"Series {series_num}: "
-                                tr_msg += f"TR = {tr_seconds:.3f}s"
-                                self.log_message(tr_msg)
-                            if "ImageType" in info:
-                                series_dict[series_num]["image_type"] = info[
-                                    "ImageType"
-                                ]
-                                img_type = info['ImageType']
-                                img_msg = f"Series {series_num}: "
-                                img_msg += f"ImageType = {img_type}"
-                                self.log_message(img_msg)
-                        # Update description if we found a better one
-                        elif series_dict[series_num]["description"].startswith(
-                            "Series "
-                        ) and not series_desc.startswith("Series "):
-                            series_dict[series_num]["description"] = (
-                                series_desc
-                            )
-                            # Also update TR and ImageType if missing
-                            if (
-                                series_dict[series_num]["tr"] is None
-                                and "TR" in info
-                            ):
-                                # TR is in milliseconds in DICOM,
-                                # convert to seconds
-                                tr_ms = info["TR"]
-                                tr_seconds = tr_ms / 1000.0
-                                series_dict[series_num]["tr"] = tr_seconds
-                                tr_msg = f"Series {series_num}: "
-                                tr_msg += f"TR = {tr_seconds:.3f}s"
-                                self.log_message(tr_msg)
-                            if (
-                                series_dict[series_num]["image_type"] is None
-                                and "ImageType" in info
-                            ):
-                                series_dict[series_num]["image_type"] = info[
-                                    "ImageType"
-                                ]
-                                img_type = info['ImageType']
-                                img_msg = f"Series {series_num}: "
-                                img_msg += f"ImageType = {img_type}"
-                                self.log_message(img_msg)
-
+                    info["FilePath"] = dcm_file
+                    series_dfs.append(pd.DataFrame([info]))
                 except Exception as e:
                     if not progress_callback:
                         self.log_message(f"Error reading {dcm_file}: {e}")
-                    continue
 
                 # Update progress for initial scan
                 if progress_callback:
-                    # During sampling, show progress as fraction of total work
-                    # Sampling is roughly 30% of total, file counting is 70%
-                    sampling_fraction = 0.3
-                    current_sampling_progress = (i + 1) / len(sample_indices)
-                    total_progress = int(
-                        current_sampling_progress * sampling_fraction
-                        * len(dicom_files)
-                    )
                     progress_callback(
-                        total_progress,
-                        len(dicom_files),
-                        f"Identifying... ({i + 1}/{len(sample_indices)})",
+                        (i + 1),
+                        f"Reading ... ({i + 1}/{len(dicom_files)})",
                     )
 
-            # After sampling phase, start file counting at 30% progress
-            sampling_fraction = 0.3
-            base_progress = int(sampling_fraction * len(dicom_files))
-            
-            if progress_callback:
-                progress_callback(
-                    base_progress,
-                    len(dicom_files),
-                    "Counting all files...",
-                )
-
-            # Now assign ALL files to series based on what we learned
-            for i, dcm_file in enumerate(dicom_files):
-                # Check for cancellation
-                if progress_callback and self.scanning_cancelled:
-                    return
-
-                # Try to get series number from this file (quick attempt)
-                series_num = None
-                try:
-                    info = reader.read_dicom_info(dcm_file, timeout=0.05)
-                    if info:
-                        series_num = info.get("SeriesNumber", 1)
-                        # If we get a good description, update it
-                        # Try multiple fields for series description
-                        series_desc = (
-                            info.get("SeriesDescription")
-                            or info.get("Protocol Name")
-                            or info.get("Protocol")
-                            or info.get("Series De")
-                            or info.get("Series Information")
-                            or f"Series {series_num}"
-                        )
-                        if (
-                            series_num in series_dict
-                            and series_dict[series_num][
-                                "description"
-                            ].startswith("Series ")
-                            and not series_desc.startswith("Series ")
-                        ):
-                            series_dict[series_num]["description"] = (
-                                series_desc
-                            )
-                except Exception:
-                    # If quick read fails, try to infer from filename
-                    series_num = self._infer_series_from_filename(dcm_file)
-
-                # Add file to the appropriate series
-                if series_num in series_dict:
-                    series_dict[series_num]["files"].append(dcm_file)
-                    series_dict[series_num]["size"] += dcm_file.stat().st_size
-                else:
-                    # This shouldn't happen often with better sampling
-                    series_dict[series_num] = {
-                        "description": f"Series {series_num}",
-                        "files": [dcm_file],
-                        "size": dcm_file.stat().st_size,
-                        "tr": None,  # Initialize TR field
-                        "image_type": None,  # Initialize ImageType field
-                    }
-
-                # Update progress for full file counting
-                if progress_callback and (i + 1) % 20 == 0:
-                    # Progress = base_progress + current file processing
-                    file_counting_fraction = 0.7
-                    file_progress = int(
-                        (i + 1) / len(dicom_files)
-                        * file_counting_fraction * len(dicom_files)
-                    )
-                    current_progress = base_progress + file_progress
-                    progress_callback(
-                        current_progress,
-                        len(dicom_files),
-                        f"Counting files... ({i + 1}/{len(dicom_files)})",
-                    )
+            series_df = pd.concat(series_dfs, ignore_index=True)
+            series_df.sort_values("ContentTime", inplace=True)
 
             # Final progress update
-            if progress_callback:
-                progress_callback(
-                    len(dicom_files), len(dicom_files), "Organizing series..."
-                )
-
-            # Convert to list and sort
-            self.dicom_series = []
-            for series_num, info in sorted(series_dict.items()):
-                self.dicom_series.append(
-                    {
-                        "number": series_num,
-                        "description": info["description"],
-                        "files": info["files"],
-                        "size": info["size"],
-                        "tr": info.get("tr"),
-                        "image_type": info.get("image_type"),
-                        "is_functional": self.is_functional_series(
-                            info["description"], info.get("image_type")
-                        ),
-                    }
-                )
-
-                # Add to treeview (schedule on main thread if using callback)
-                series_data = (
-                    f"Series {series_num}",
-                    info["description"],
-                    len(info["files"]),
-                )
-
-                if progress_callback:
-                    # Create wrapper function with proper closure
-                    def add_series_item(data=series_data):
-                        self.series_tree.insert("", "end", values=data)
-
-                    self.root.after(0, add_series_item)
-                else:
-                    self.series_tree.insert("", "end", values=series_data)
-
             message = (
-                f"Loaded {len(series_dict)} series "
-                f"with {len(dicom_files)} total files"
+                f"Loaded {len(series_df.SeriesNumber.unique())} series "
+                f"with {len(series_df)} total files"
             )
 
             if progress_callback:
                 self.root.after(0, self.log_message, message)
             else:
                 self.log_message(message)
+
+            return series_df
 
         except Exception as e:
             error_msg = f"Error loading series info: {e}"
@@ -1388,41 +1068,11 @@ class RTMRISimulator:
                 self.log_message(error_msg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _infer_series_from_filename(self, dcm_file):
-        """Try to infer series number from filename patterns"""
-        # Common DICOM filename patterns:
-        # IM-0001-0001.dcm, I.001.001.dcm, etc.
-        filename = dcm_file.name.upper()
-
-        # Try to extract series number from various patterns
-
-        # Pattern 1: IM-XXXX-YYYY where XXXX might be series
-        match = re.search(r"IM-(\d+)-\d+", filename)
-        if match:
-            return int(match.group(1))
-
-        # Pattern 2: I.XXX.YYY where XXX might be series
-        match = re.search(r"I\.(\d+)\.\d+", filename)
-        if match:
-            return int(match.group(1))
-
-        # Pattern 3: SeriesXXX or Series_XXX
-        match = re.search(r"SERIES[_-]?(\d+)", filename)
-        if match:
-            return int(match.group(1))
-
-        # Pattern 4: Look for any 3-4 digit number that might be series
-        matches = re.findall(r"\d{3,4}", filename)
-        if matches:
-            # Take the first one as series number
-            return int(matches[0])
-
-        # Default fallback
-        return 1
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_src_dir(self):
         """Set test data root directory and refresh sessions list"""
+        if self.simulation_running:
+            return
+
         directory = filedialog.askdirectory(
             title="Select Test Source Data Directory",
             initialdir=self.config["src_data_dir"],
@@ -1432,10 +1082,11 @@ class RTMRISimulator:
             self.config["src_data_dir"] = Path(directory)
             self.src_dir_var.set(str(directory))
             self.log_message(
-                f"Test source data directory changed to: {directory}")
+                f"Test source data directory changed to: {directory}"
+            )
 
             # Clear current session selection
-            self.selected_session_path = None
+            self.current_session_path = None
             self.current_session_var.set("No session selected")
 
             # Clear series information
@@ -1450,45 +1101,64 @@ class RTMRISimulator:
     def load_dicom_sessions(self):
         """Load available DICOM sessions"""
         self.log_message("Loading DICOM sessions...")
+        
+        # Disable session tree during loading
+        self.disable_session_treeview()
 
-        # Clear existing items
-        for item in self.session_tree.get_children():
-            self.session_tree.delete(item)
+        try:
+            # Clear existing items
+            for item in self.session_tree.get_children():
+                self.session_tree.delete(item)
 
-        src_data_dir = Path(self.config["src_data_dir"])
-        sessions = []
+            src_data_dir = Path(self.config["src_data_dir"])
+            sessions = []
 
-        # Strategy: Look for DICOM sessions in various directory structures
-        self._find_sessions_recursive(
-            src_data_dir, src_data_dir, sessions, max_depth=3
-        )
-
-        # Remove duplicates and sort sessions
-        unique_sessions = {}
-        for session in sessions:
-            unique_sessions[session["path"]] = session
-        sessions = list(unique_sessions.values())
-        sessions.sort(key=lambda x: x["name"])
-
-        # Add to treeview
-        for session in sessions:
-            self.session_tree.insert(
-                "",
-                "end",
-                values=(
-                    session["name"],
-                    session["files"],
-                    session["study_description"],
-                ),
+            # Strategy: Look for DICOM sessions in various directory structures
+            self._find_sessions_recursive(
+                src_data_dir, src_data_dir, sessions, max_depth=3
             )
 
-        self.log_message(
-            f"Loaded {len(sessions)} DICOM sessions from {src_data_dir}"
-        )
+            # Remove duplicates and sort sessions
+            unique_sessions = {}
+            for session in sessions:
+                unique_sessions[session["path"]] = session
+            sessions = list(unique_sessions.values())
+            sessions.sort(key=lambda x: x["name"])
+
+            # Add to treeview
+            for session in sessions:
+                self.session_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        session["name"],
+                        session["files"],
+                        session["study_description"],
+                    ),
+                )
+
+            # Clear series information
+            self.dicom_series = []
+            for item in self.series_tree.get_children():
+                self.series_tree.delete(item)
+
+            self.log_message(
+                f"Loaded {len(sessions)} DICOM sessions from {src_data_dir}"
+            )
+
+        except Exception as e:
+            self.err_message(f"Error loading DICOM sessions: {e}")
+    
+        finally:
+            # Always re-enable session tree when finished
+            self.enable_session_treeviews()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_output_directory(self):
         """Set the output directory for simulated feeding"""
+        if self.simulation_running:
+            return
+
         directory = filedialog.askdirectory(
             title="Select Output Directory",
             initialdir=self.config["simulation_output_dir"],
@@ -1498,6 +1168,33 @@ class RTMRISimulator:
             self.config["simulation_output_dir"] = Path(directory)
             self.output_dir_var.set(str(directory))
             self.log_message(f"Output directory changed to: {directory}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def clear_output_directory(self):
+        """Clear the output directory for simulated feeding"""
+        if self.simulation_running:
+            return
+
+        if (
+            self.config["simulation_output_dir"] is not None and
+            Path(self.config["simulation_output_dir"]).exists()
+        ):
+            # Confirm before clearing
+            if messagebox.askyesno(
+                "Confirm Clear",
+                ("Are you sure you want to clear all files "
+                 "in the output directory: "
+                 f"{self.config['simulation_output_dir']}?")
+            ):
+                for item in (
+                    Path(self.config["simulation_output_dir"]).iterdir()
+                ):
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+
+                self.log_message("Output directory cleared")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_cardiogram_file(self):
@@ -1524,40 +1221,17 @@ class RTMRISimulator:
             self.resp_file_var.set(filename)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def start_simulation(self):
-        """Start the simulation"""
-        if not self.validate_simulation_setup():
-            return
-
-        self.simulation_running = True
-        self.current_series_index = 0
-
-        # Update UI
-        self.start_btn.config(state=tk.DISABLED)
-        self.pause_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.NORMAL)
-        self.next_series_btn.config(state=tk.NORMAL)
-
-        # Update progress bars
-        self.overall_progress.config(maximum=len(self.dicom_series))
-        self.overall_progress["value"] = 0
-
-        self.log_message("Starting simulation...")
-
-        # Start simulation thread
-        self.simulation_thread = threading.Thread(
-            target=self.run_simulation, daemon=True
-        )
-        self.simulation_thread.start()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def validate_simulation_setup(self):
         """Validate simulation setup"""
-        if not self.selected_session_path:
+        if not self.current_session_path:
             messagebox.showerror("Error", "Please select a DICOM session")
             return False
 
-        if not self.dicom_series:
+        if (
+            not hasattr(self, "dicom_series")
+            or self.dicom_series is None
+            or len(self.dicom_series) == 0
+        ):
             messagebox.showerror(
                 "Error", "No DICOM series found in selected session"
             )
@@ -1576,144 +1250,284 @@ class RTMRISimulator:
         return True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run_simulation(self):
+    def start_simulation(self, resume=False):
+        """Start the simulation"""
+        if not self.validate_simulation_setup():
+            return
+
+        # Get currently selected series from the treeview
+        selection = self.series_tree.selection()
+        if selection:
+            # Extract series number from the selected item
+            item = self.series_tree.item(selection[0])
+            series_name = item["values"][0]
+            series_number = int(series_name.split()[1])
+            self.current_series_nr = series_number
+        else:
+            return
+
+        if not resume:
+            self.current_image_nr = 0
+
+        # Update UI
+        self.start_btn.config(state=tk.DISABLED)
+        self.pause_btn.config(state=tk.NORMAL, text="Pause")
+        self.step_btn.config(state=tk.DISABLED)
+        self.disable_treeviews()
+
+        # Disable buttons in outpath_frame
+        for widget in self.outpath_frame.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                # Check nested frames for buttons
+                for nested_widget in widget.winfo_children():
+                    if isinstance(nested_widget, ttk.Button):
+                        nested_widget.config(state=tk.DISABLED)
+            elif isinstance(widget, ttk.Button):
+                widget.config(state=tk.DISABLED)
+
+        self.simulation_running = True
+
+        # Start simulation thread
+        self.simulation_thread = threading.Thread(
+            target=self.run_simulation, daemon=True
+        )
+        self.simulation_thread.start()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def step_simulation(self):
+        """Step through simulation one image at a time"""
+        if not self.validate_simulation_setup():
+            return
+
+        # Get currently selected series from the treeview
+        selection = self.series_tree.selection()
+        if selection:
+            # Extract series number from the selected item
+            item = self.series_tree.item(selection[0])
+            series_name = item["values"][0]
+            series_number = int(series_name.split()[1])
+            self.current_series_nr = series_number
+        else:
+            return
+
+        # Start step simulation thread
+        self.simulation_running = True
+        step_thread = threading.Thread(
+            target=self.run_simulation,
+            args=(True,),  # one_step=True
+            daemon=True,
+        )
+        step_thread.start()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def run_simulation(self, one_step=False):
         """Main simulation loop"""
         try:
             output_base_dir = (
-                Path(self.output_dir_var.get())
-                / self.selected_session_path.name
+                Path(self.output_dir_var.get()) /
+                self.current_session_path.name
             )
 
-            for series_index, series_info in enumerate(self.dicom_series):
-                if not self.simulation_running:
-                    break
-
-                self.current_series_index = series_index
-
-                # Update current series display
-                series_text = (
-                    f"Series {series_info['number']}: "
-                    f"{series_info['description']} "
-                    f"({len(series_info['files'])} files)"
+            # Loop until session end if auto-advancing
+            while (
+                self.current_series_nr <= self.dicom_series.SeriesNumber.max()
+            ):
+                # Extract series data
+                series_df = self.dicom_series[
+                    self.dicom_series.SeriesNumber == self.current_series_nr
+                ].copy()
+                series_df["ContentTime"] = series_df["ContentTime"].astype(
+                    float
                 )
-                self.root.after(0, self.current_series_var.set, series_text)
+                series_df.sort_values("ContentTime", inplace=True)
+                series_df.reset_index(drop=True, inplace=True)
+                total_files = len(series_df)
+
+                if self.current_image_nr > 0:
+                    series_df = series_df.iloc[self.current_image_nr:]
+
+                if (
+                    "FMRI" in series_df.ImageType.values[0] and
+                    len(series_df) > 1
+                ):
+                    TR = np.median(np.diff(series_df["ContentTime"].values))
+                    timings = np.linspace(
+                        0, TR * (len(series_df) - 1), len(series_df)
+                    )
+                else:
+                    timings = (
+                        series_df["ContentTime"].values -
+                        series_df["ContentTime"].values[0]
+                    )
+
+                rel_path = Path(series_df["FilePath"].values[0]).relative_to(
+                    self.current_session_path
+                )
 
                 # Create series output directory
-                series_output_dir = (
-                    output_base_dir / f"series_{series_info['number']:03d}"
-                )
-                series_output_dir.mkdir(parents=True, exist_ok=True)
+                series_output_dir = output_base_dir / rel_path.parent
+                if not series_output_dir.exists():
+                    series_output_dir.mkdir(parents=True, exist_ok=True)
 
                 # Update series progress bar
                 self.root.after(
                     0,
                     self.series_progress.config,
-                    {"maximum": len(series_info["files"])},
-                )
-                self.root.after(0, self.series_progress.config, {"value": 0})
-
-                self.root.after(
-                    0,
-                    self.log_message,
-                    f"Starting series {series_info['number']}",
+                    {"value": self.current_image_nr},
                 )
 
-                # Simulate files in series
-                try:
-                    tr_value = self.tr_var.get()
-                    tr_seconds = float(tr_value) if tr_value else 2.0
-                except ValueError:
-                    tr_seconds = 2.0  # Default fallback
+                # region: Simulate files in series ----------------------------
+                st_time = time.time()
+                for ii, dicom_file in enumerate(series_df["FilePath"]):
+                    dicom_file = Path(dicom_file)
+                    while time.time() - st_time < timings[ii]:
+                        if not self.simulation_running:
+                            break
+                        # Wait for content timing
+                        time.sleep(0.01)
 
-                for file_index, dicom_file in enumerate(series_info["files"]):
                     if not self.simulation_running:
                         break
 
                     # Copy file
                     dest_file = series_output_dir / dicom_file.name
                     shutil.copy2(dicom_file, dest_file)
+                    self.current_image_nr = self.current_image_nr + 1
 
                     # Update progress
                     self.root.after(
                         0,
                         self.series_progress.config,
-                        {"value": file_index + 1},
+                        {"value": self.current_image_nr},
+                    )
+                    self.root.after(
+                        0,
+                        self.series_progress_label.config,
+                        {
+                            "text":
+                                ("Series Progress: "
+                                 f"{self.current_image_nr}/{total_files}")
+                        }
+                    )
+                    # Log progress
+                    self.root.after(
+                        0,
+                        self.log_message,
+                        (
+                            f"Copy file {self.current_image_nr}/"
+                            f"{len(series_df)}: "
+                            f"{dicom_file.name}"
+                        ),
                     )
 
-                    # Log progress (every 10 files or last file)
-                    if (file_index + 1) % 10 == 0 or file_index == len(
-                        series_info["files"]
-                    ) - 1:
-                        self.root.after(
-                            0,
-                            self.log_message,
-                            (
-                                f"  Volume {file_index + 1}/"
-                                f"{len(series_info['files'])}: "
-                                f"{dicom_file.name}"
-                            ),
-                        )
+                    if self.current_image_nr < len(series_df) and one_step:
+                        self.root.after(0, self.simulation_finished)
+                        return
 
-                    # Wait for TR
-                    if (
-                        file_index < len(series_info["files"]) - 1
-                    ):  # Don't wait after last file
-                        time.sleep(tr_seconds)
-
-                # Update overall progress
-                overall_value = {"value": series_index + 1}
-                self.root.after(
-                    0, self.overall_progress.config, overall_value
-                )
+                if not self.simulation_running:
+                    break
 
                 self.root.after(
                     0,
                     self.log_message,
-                    f"Completed series {series_info['number']}",
+                    f"Completed series {self.current_series_nr}",
                 )
 
-                # If not auto-advance, wait for user input
-                if (
-                    not self.auto_advance_var.get()
-                    and series_index < len(self.dicom_series) - 1
-                ):
-                    self.root.after(
-                        0,
-                        self.log_message,
-                        "Waiting for next series command...",
-                    )
-                    while (
-                        self.simulation_running
-                        and self.current_series_index == series_index
-                    ):
-                        time.sleep(0.1)
+                if self.auto_advance_var.get():
+                    # Move to the next series in the tree selection
+                    current_selection = self.series_tree.selection()
+                    if current_selection:
+                        current_item = current_selection[0]
+                        next_item = self.series_tree.next(current_item)
+                        if next_item:
+                            self.root.after(
+                                0, self.series_tree.selection_set, next_item
+                            )
+                            self.root.after(
+                                0, self.series_tree.focus, next_item
+                            )
+                            item = self.series_tree.item(next_item)
+                            series_name = item["values"][0]
+                            series_files = item["values"][1]
+                            series_description = item["values"][-1]
+
+                            series_number = int(series_name.split()[1])
+                            self.current_series_nr = series_number
+
+                            # Update simulation control current status
+                            series_status = (
+                                f"{series_name}: {series_description} "
+                                f"({series_files} files)"
+                            )
+                            self.current_series_var.set(series_status)
+
+                            # Reset image number when series selection changes
+                            self.current_image_nr = 0
+
+                            # Reset series progress bar
+                            num_files = (
+                                self.dicom_series.SeriesNumber ==
+                                self.current_series_nr
+                            ).sum()
+                            self.series_progress.config({"maximum": num_files})
+                            self.series_progress.config({"value": 0})
+                            self.series_progress_label.config(
+                                text=f"Series Progress: 0/{num_files}")
+
+                            # Wait for series interval
+                            series_interval = float(
+                                self.series_interval_var.get())
+                            self.root.after(
+                                0,
+                                self.log_message,
+                                ("Waiting for next series for "
+                                 f"{series_interval} s"),
+                            )
+
+                            wait_start = time.perf_counter()
+                            while (
+                                time.perf_counter() - wait_start <
+                                series_interval
+                            ):
+                                if not self.simulation_running:
+                                    break
+                                time.sleep(0.1)
+                        else:
+                            # Clear self.series_tree.focus
+                            self.series_tree.selection_clear(
+                                self.series_tree.focus()
+                            )
+                            self.current_series_nr = 0
+                            break
+                else:
+                    break
 
             # Simulation completed
-            if self.simulation_running:
-                self.root.after(
-                    0, self.log_message, "Simulation completed successfully!"
-                )
-            else:
+            if not self.simulation_running:
                 self.root.after(
                     0, self.log_message, "Simulation stopped by user"
                 )
 
         except Exception as e:
+            error_traceback = traceback.format_exc()
+            self.root.after(0, self.log_message,
+                            f"Traceback:\n{error_traceback}")
             self.root.after(0, self.err_message, f"Simulation error: {e}")
+
         finally:
             self.root.after(0, self.simulation_finished)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def pause_simulation(self):
         """Pause/resume simulation"""
-        if self.simulation_running:
+        if self.pause_btn.cget("text") == "Resume":
+            self.pause_btn.config(text="Pause")
+            self.start_simulation(resume=True)
+            self.log_message("Simulation resumed")
+        else:
             self.simulation_running = False
             self.pause_btn.config(text="Resume")
             self.log_message("Simulation paused")
-        else:
-            self.simulation_running = True
-            self.pause_btn.config(text="Pause")
-            self.log_message("Simulation resumed")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_simulation(self):
@@ -1722,28 +1536,49 @@ class RTMRISimulator:
         self.log_message("Stopping simulation...")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def next_series(self):
-        """Advance to next series"""
-        if self.current_series_index < len(self.dicom_series) - 1:
-            self.current_series_index += 1
-            self.log_message(
-                f"Advancing to series {self.current_series_index + 1}"
-            )
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def simulation_finished(self):
         """Handle simulation completion"""
+        self.start_btn.config(state=tk.NORMAL)
+        self.step_btn.config(state=tk.NORMAL)
+        self.enable_treeviews()
+
+        # Enable buttons in outpath_frame
+        for widget in self.outpath_frame.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                # Check nested frames for buttons
+                for nested_widget in widget.winfo_children():
+                    if isinstance(nested_widget, ttk.Button):
+                        nested_widget.config(state=tk.NORMAL)
+            elif isinstance(widget, ttk.Button):
+                widget.config(state=tk.NORMAL)
+
         self.simulation_running = False
 
-        # Update UI
-        self.start_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(state=tk.DISABLED, text="Pause")
-        self.stop_btn.config(state=tk.DISABLED)
-        self.next_series_btn.config(state=tk.DISABLED)
+        num_imgs = (
+            self.dicom_series.SeriesNumber == self.current_series_nr
+        ).sum()
+        if self.current_image_nr < num_imgs:
+            # Paused in the middle of the series
+            self.pause_btn.config(state=tk.NORMAL, text="Resume")
+        else:
+            # Series completed
+            self.pause_btn.config(state=tk.DISABLED, text="Pause")
 
-        self.status_var.set("Simulation completed")
-        self.series_progress.config(value=0)
-        self.overall_progress.config(value=0)
+            # Move the selection next
+            current_selection = self.series_tree.selection()
+            current_item = current_selection[0]
+            next_item = self.series_tree.next(current_item)
+            if next_item:
+                self.root.after(
+                    0, self.series_tree.selection_set, next_item
+                )
+                self.root.after(0, self.series_tree.focus, next_item)
+                self.root.after(0, self.on_series_select, None)
+                item = self.series_tree.item(next_item)
+                series_name = item["values"][0]
+                series_number = int(series_name.split()[1])
+                self.current_series_nr = series_number
+                self.current_image_nr = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ping_physio_rpc(self):
@@ -1751,8 +1586,10 @@ class RTMRISimulator:
         response = self.send_rpc_command("ping")
         if response == "pong":
             self.log_message(f"Physio process ping successful: {response}")
-            messagebox.showinfo("Physio RPC Status",
-                                f"Physio process ping successful: {response}")
+            messagebox.showinfo(
+                "Physio RPC Status",
+                f"Physio process ping successful: {response}",
+            )
         else:
             self.err_message(f"Physio process ping failed: {response}")
 
@@ -1760,16 +1597,16 @@ class RTMRISimulator:
     def send_rpc_command(
         self, command, socket_name="RtpTTLPhysioSocketServer", host=None
     ):
-        if self.rpc_port is None:
+        if self.physio_rpc_port is None:
             port, errmsg = get_port_by_name(socket_name, host=host)
             if port is None:
                 self.err_message(f"Error getting port: {errmsg}")
                 return None
-            self.rpc_port = port
+            self.physio_rpc_port = port
 
         if host is None:
             host = "localhost"
-        address = (host, self.rpc_port)
+        address = (host, self.physio_rpc_port)
 
         """Send RPC command to rt_physio.py process"""
         try:
@@ -1791,7 +1628,7 @@ class RTMRISimulator:
 
         except ConnectionError as e:
             self.err_message(f"RPC connection error: {e}")
-            self.rpc_port = None
+            self.physio_rpc_port = None
             return None
 
         except Exception as e:
@@ -1835,7 +1672,7 @@ class RTMRISimulator:
             # Send RPC command to start feeding with selected files
             command = (
                 "START_DUMMY_FEEDING_WITH_FILES",
-                (card_file, resp_file, self.physio_freq_var.get())
+                (card_file, resp_file, self.physio_freq_var.get()),
             )
             response = self.send_rpc_command(command)
 
@@ -1877,11 +1714,13 @@ class RTMRISimulator:
         formatted_message = f"[{timestamp}] {message}\n"
 
         # Update log text
-        self.log_text.insert(tk.END, formatted_message)
-        self.log_text.see(tk.END)
-
-        # Update status
-        self.status_var.set(message)
+        if hasattr(self, 'log_text'):
+            self.log_text.insert(tk.END, formatted_message)
+            self.log_text.see(tk.END)
+            # Update status
+            self.status_var.set(message)
+        else:
+            print(formatted_message)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_message(self, message):
@@ -1897,9 +1736,152 @@ class RTMRISimulator:
 
         # Update status
         self.status_var.set(message)
-        
+
         # Popup error
         messagebox.showerror("Error", message)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def load_config(self):
+        """Load configuration from file"""
+        config_file = Path.home() / ".RTPSpy" / "rtmri_simulator_config.json"
+
+        try:
+            if config_file.exists():
+                import json
+                with open(config_file, 'r') as f:
+                    saved_config = json.load(f)
+
+                # Update config with saved values, converting string paths
+                # back to Path objects
+                for key, value in saved_config.items():
+                    if key in ["src_data_dir", "simulation_output_dir"]:
+                        # Convert string paths back to Path objects
+                        self.config[key] = Path(value)
+                    else:
+                        self.config[key] = value
+
+                self.log_message(f"Configuration loaded from {config_file}")
+
+        except Exception as e:
+            self.log_message(f"Error loading configuration: {e}")
+            # Continue with default config values
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def save_config(self):
+        """Save current configuration to file"""
+        config_file = Path.home() / ".RTPSpy" / "rtmri_simulator_config.json"
+
+        try:
+            # Create config directory if it doesn't exist
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Update config with current GUI values before saving
+            self.config["src_data_dir"] = Path(self.src_dir_var.get())
+            self.config["simulation_output_dir"] = Path(
+                self.output_dir_var.get())
+            self.config["auto_advance"] = self.auto_advance_var.get()
+            self.config["series_interval"] = self.series_interval_var.get()
+
+            # Convert Path objects to strings for JSON serialization
+            serializable_config = {}
+            for key, value in self.config.items():
+                if isinstance(value, Path):
+                    serializable_config[key] = str(value)
+                else:
+                    serializable_config[key] = value
+
+            with open(config_file, 'w') as f:
+                json.dump(serializable_config, f, indent=2)
+
+            self.log_message(f"Configuration saved to {config_file}")
+
+        except Exception as e:
+            self.err_message(f"Error saving configuration: {e}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def disable_treeviews(self):
+        """Disable both session and series trees, and all related controls"""
+        # Block all user interactions on series tree
+        self.series_tree.bind('<Button-1>', lambda e: 'break')
+        self.series_tree.bind('<Button-3>', lambda e: 'break')
+        self.series_tree.bind('<Double-Button-1>', lambda e: 'break')
+        self.series_tree.bind('<Key>', lambda e: 'break')
+
+        # Block all user interactions on session tree
+        self.disable_session_treeview()
+
+        # Disable rescan button in series frame
+        self.rescan_btn.config(state=tk.DISABLED)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def disable_session_treeview(self):
+        """Disable session tree, and all related controls"""
+        # Block all user interactions on session tree
+        self.session_tree.bind('<Button-1>', lambda e: 'break')
+        self.session_tree.bind('<Button-3>', lambda e: 'break')
+        self.session_tree.bind('<Double-Button-1>', lambda e: 'break')
+        self.session_tree.bind('<Key>', lambda e: 'break')
+
+        # Disable all buttons in session frame (recursively)
+        self._disable_buttons_in_frame(self.session_tree.master.master)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def enable_treeviews(self):
+        """Re-enable both session and series trees, and all related controls"""
+        # Remove the blocking bindings from series tree
+        self.series_tree.unbind("<Button-1>")
+        self.series_tree.unbind("<Button-3>")
+        self.series_tree.unbind("<Double-Button-1>")
+        self.series_tree.unbind("<Key>")
+
+        # Restore the original selection events
+        self.session_tree.bind("<<TreeviewSelect>>", self.on_session_select)
+
+        # Re-enable rescan button in series frame
+        self.rescan_btn.config(state=tk.NORMAL)
+
+        # Re-enable session tree
+        self.enable_session_treeviews()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def enable_session_treeviews(self):
+        # Remove the blocking bindings from session tree
+        self.session_tree.unbind("<Button-1>")
+        self.session_tree.unbind("<Button-3>")
+        self.session_tree.unbind("<Double-Button-1>")
+        self.session_tree.unbind("<Key>")
+
+        # Restore the original selection events
+        self.series_tree.bind("<<TreeviewSelect>>", self.on_series_select)
+
+        # Re-enable all buttons in session frame (recursively)
+        self._enable_buttons_in_frame(self.session_tree.master.master)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _disable_buttons_in_frame(self, frame):
+        """Recursively disable all buttons in a frame"""
+        try:
+            for widget in frame.winfo_children():
+                if isinstance(widget, (ttk.Button, tk.Button)):
+                    widget.config(state=tk.DISABLED)
+                elif isinstance(widget, (ttk.Frame, tk.Frame, ttk.LabelFrame)):
+                    # Recursively check child frames
+                    self._disable_buttons_in_frame(widget)
+        except Exception:
+            pass
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _enable_buttons_in_frame(self, frame):
+        """Recursively enable all buttons in a frame"""
+        try:
+            for widget in frame.winfo_children():
+                if isinstance(widget, (ttk.Button, tk.Button)):
+                    widget.config(state=tk.NORMAL)
+                elif isinstance(widget, (ttk.Frame, tk.Frame, ttk.LabelFrame)):
+                    # Recursively check child frames
+                    self._enable_buttons_in_frame(widget)
+        except Exception:
+            pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
@@ -1918,6 +1900,7 @@ class RTMRISimulator:
             else:
                 return
 
+        self.save_config()
         self.root.destroy()
 
 
