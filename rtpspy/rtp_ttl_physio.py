@@ -727,6 +727,7 @@ class DummyRecording:
         self._logger.debug(f"Set config: {config}")
         self._config = config
 
+
 # %% TTLPhysioPlot ============================================================
 class TTLPhysioPlot:
     """View class for displaying TTL and physio recording signals"""
