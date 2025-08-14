@@ -117,11 +117,11 @@ class RtpApp(RTP):
 
         self.RTP_mask = ""
         self.GSR_mask = ""
-        
+
         # Fieldmap images for distortion correction (PEPOLAR)
-        self.fieldmap_pos = ""  # Fieldmap with positive phase encoding
-        self.fieldmap_neg = ""  # Fieldmap with negative phase encoding
-        
+        self.fieldmap_pos = ""  # Same phase encoding epi
+        self.fieldmap_neg = ""  # Opposite phase encoding epi
+
         self.enable_RTP = 0
 
         self.AFNIRT_TRUSTHOST = None
@@ -671,7 +671,7 @@ class RtpApp(RTP):
                 self.anat_orig, anat_orig, progress_bar=progress_bar
             )
 
-            # --- 0. Copy func_orig to RTP_dir as vr_base_* ------------------
+            # --- 0. Copy func_orig to RTP_dir as vr_base_* -------------------
             if (
                 Path(func_orig).parent != work_dir
                 or not Path(func_orig).stem.startswith("vr_base_")
@@ -2613,22 +2613,22 @@ class RtpApp(RTP):
             msglab = {
                 "anat_orig": "anatomy image in original space",
                 "func_orig": "function image in original space",
-                "func_param_ref": "fMRI paremter reference image",
+                "func_param_ref": "fMRI parameter reference image",
                 "template": "template image",
                 "ROI_template": "ROI mask on template",
                 "WM_template": "white matter mask on template",
                 "Vent_template": "ventricle mask on template",
                 "alAnat": "aligned anatomy image in original space",
                 "brain_anat_orig":
-                    "skull-stripprd brain image in original space",
+                    "skull-stripped brain image in original space",
                 "ROI_orig": "ROI mask in original space",
                 "WM_orig": "white matter mask in original space",
                 "Vent_orig": "ventricle mask in original space",
                 "aseg_orig": "aseg in original space",
                 "RTP_mask": "mask for real-time processing",
                 "GSR_mask": "mask for global signal regression",
-                "fieldmap_pos": "fieldmap with positive phase encoding",
-                "fieldmap_neg": "fieldmap with negative phase encoding",
+                "fieldmap_pos": "fieldmap with same phase encoding",
+                "fieldmap_neg": "fieldmap with opposite phase encoding",
                 "simfMRIData": "fMRI data for simulation",
                 "simECGData": "ECG data for simulation",
                 "simRespData": "Respiration data for simulation",
@@ -2890,7 +2890,7 @@ class RtpApp(RTP):
 
         # -- paremeter reference image --
         ri += 1
-        var_lb = QtWidgets.QLabel("fMRI parameter refrence : ")
+        var_lb = QtWidgets.QLabel("fMRI parameter reference : ")
         RefImg_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
@@ -2915,15 +2915,15 @@ class RtpApp(RTP):
         )
         RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
 
-        # --- Filedmap PEPOLAR images group ---
+        # --- Fieldmap PEPOLAR images group ---
         self.ui_Fmap_grpBx = QtWidgets.QGroupBox("Fieldmap PEPOLAR images")
         Fmap_gLayout = QtWidgets.QGridLayout(self.ui_Fmap_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_Fmap_grpBx)
         self.ui_objs.append(self.ui_Fmap_grpBx)
 
-        # -- Fieldmap positive phase encoding --
+        # -- Fieldmap with same phase encoding --
         ri = 0
-        var_lb = QtWidgets.QLabel("Same PE :")
+        var_lb = QtWidgets.QLabel("Same phase encoding :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_fieldmap_pos_lnEd = QtWidgets.QLineEdit()
@@ -2948,9 +2948,9 @@ class RtpApp(RTP):
         )
         Fmap_gLayout.addWidget(self.ui_fieldmap_pos_del_btn, ri, 3)
 
-        # -- Fieldmap negative phase encoding --
+        # -- Fieldmap with opposite phase encoding --
         ri += 1
-        var_lb = QtWidgets.QLabel("Opposite PE :")
+        var_lb = QtWidgets.QLabel("Opposite phase encoding :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_fieldmap_neg_lnEd = QtWidgets.QLineEdit()
@@ -2977,7 +2977,8 @@ class RtpApp(RTP):
 
         # --- check ROIs groups ---
         self.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
-            "Display the masks in AFNI")
+            "Display the masks in AFNI"
+        )
         ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
         self.ui_objs.append(self.ui_ChkMask_grpBx)
@@ -3604,8 +3605,8 @@ class RtpApp(RTP):
         ui_rows.append((self.ui_setRTP_btn,))
         self.ui_objs.append(self.ui_setRTP_btn)
 
-        # --- Show ROI signal checkbox ----------------------------------------
-        self.ui_showROISig_cbx = QtWidgets.QCheckBox("Show ROI signal")
+        # --- Show Extracted Signal checkbox ----------------------------------
+        self.ui_showROISig_cbx = QtWidgets.QCheckBox("Show Extracted Signal")
         self.ui_showROISig_cbx.setCheckState(0)
         self.ui_showROISig_cbx.stateChanged.connect(
             lambda x: self.show_ROIsig_chk(x)
