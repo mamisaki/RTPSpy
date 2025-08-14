@@ -5,7 +5,6 @@ RTPSpy graphical user interface
 @author: mmisaki@laureateinstitute.org
 """
 
-
 # %% import ===================================================================
 from pathlib import Path
 import os
@@ -25,16 +24,23 @@ try:
 except Exception:
     from rtpspy.rtp_common import save_parameters, load_parameters
 
-GPU_available = torch.backends.mps.is_available() or \
-    torch.backends.mps.is_available()
+GPU_available = (
+    torch.backends.mps.is_available() or torch.backends.mps.is_available()
+)
 
 
 # %% RtpGUI class =============================================================
 class RtpGUI(QtWidgets.QMainWindow):
-    """ RtpGUI class """
+    """RtpGUI class"""
 
-    def __init__(self, rtp_objs, rtp_apps, log_file=None,
-                 winTitle='RTPSpy', onGPU=GPU_available):
+    def __init__(
+        self,
+        rtp_objs,
+        rtp_apps,
+        log_file=None,
+        winTitle="RTPSpy",
+        onGPU=GPU_available,
+    ):
         """
         Parameters
         ----------
@@ -52,7 +58,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         """
         QtWidgets.QMainWindow.__init__(self)
-        self._logger = logging.getLogger('RtpGUI')
+        self._logger = logging.getLogger("RtpGUI")
 
         self.rtp_objs = rtp_objs
         self.rtp_apps = rtp_apps
@@ -73,7 +79,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.layout_ui()
 
         # Initialize view
-        self.on_clicked_setOption('WATCH')
+        self.on_clicked_setOption("WATCH")
         self.options_tab.setCurrentIndex(0)
 
         # Move window to screen top,left
@@ -92,33 +98,35 @@ class RtpGUI(QtWidgets.QMainWindow):
     def make_menu(self):
         # --- menu bar --------------------------------------------------------
         # Save parameters
-        saveOptAct = QtWidgets.QAction(QtGui.QIcon('save.png'), '&Save', self)
-        saveOptAct.setShortcut('Ctrl+S')
-        saveOptAct.setStatusTip('Save current parameters')
+        saveOptAct = QtWidgets.QAction(QtGui.QIcon("save.png"), "&Save", self)
+        saveOptAct.setShortcut("Ctrl+S")
+        saveOptAct.setStatusTip("Save current parameters")
         saveOptAct.triggered.connect(self.ui_save_parameters)
 
         # Load parameters
-        loadOptAct = QtWidgets.QAction(QtGui.QIcon('load.png'), '&Load', self)
-        loadOptAct.setShortcut('Ctrl+L')
-        loadOptAct.setStatusTip('Load parameters')
+        loadOptAct = QtWidgets.QAction(QtGui.QIcon("load.png"), "&Load", self)
+        loadOptAct.setShortcut("Ctrl+L")
+        loadOptAct.setStatusTip("Load parameters")
         loadOptAct.triggered.connect(self.ui_load_parameters)
 
         # Exit without saving
-        exitNosaveAct = QtWidgets.QAction(QtGui.QIcon('exit.png'),
-                                          'Exit&WithoutSaving', self)
-        exitNosaveAct.setShortcut('Ctrl+W')
+        exitNosaveAct = QtWidgets.QAction(
+            QtGui.QIcon("exit.png"), "Exit&WithoutSaving", self
+        )
+        exitNosaveAct.setShortcut("Ctrl+W")
         exitNosaveAct.setStatusTip(
-                'Exit application without saving parameters')
+            "Exit application without saving parameters"
+        )
         exitNosaveAct.triggered.connect(lambda: QtWidgets.qApp.exit(1))
 
         # Exit
-        exitAct = QtWidgets.QAction(QtGui.QIcon('exit.png'), '&Exit', self)
-        exitAct.setShortcut('Ctrl+Q')
-        exitAct.setStatusTip('Exit application')
+        exitAct = QtWidgets.QAction(QtGui.QIcon("exit.png"), "&Exit", self)
+        exitAct.setShortcut("Ctrl+Q")
+        exitAct.setStatusTip("Exit application")
         exitAct.triggered.connect(self.close)
 
         menubar = self.menuBar()
-        fileMenu = menubar.addMenu('&File')
+        fileMenu = menubar.addMenu("&File")
         fileMenu.addAction(saveOptAct)
         fileMenu.addAction(loadOptAct)
         fileMenu.addAction(exitNosaveAct)
@@ -142,10 +150,10 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Watching Directory LineEdit
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWatchDir.setReadOnly(True)
-        self.lineEditWatchDir.setStyleSheet('border: 0px none;')
+        self.lineEditWatchDir.setStyleSheet("border: 0px none;")
 
         # Set watching directory button
-        self.btnSetWatchDir = QtWidgets.QPushButton('Set', self.mainWidget)
+        self.btnSetWatchDir = QtWidgets.QPushButton("Set", self.mainWidget)
         self.btnSetWatchDir.clicked.connect(self.set_watchDir)
 
         # Working Directory Label
@@ -155,39 +163,45 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Working Directory LineEdit
         self.lineEditWorkDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWorkDir.setReadOnly(True)
-        self.lineEditWorkDir.setStyleSheet('border: 0px none;')
+        self.lineEditWorkDir.setStyleSheet("border: 0px none;")
 
         # Set working directory button
-        self.btnSetWorkDir = QtWidgets.QPushButton('Set', self.mainWidget)
+        self.btnSetWorkDir = QtWidgets.QPushButton("Set", self.mainWidget)
         self.btnSetWorkDir.clicked.connect(self.set_workDir)
         # endregion: Watch/Work dir controls ----------------------------------
 
         # region: Devices and plot checkbox -----------------------------------
         # Show motion
-        if 'VOLREG' in rtp_objs:
-            self.chbShowMotion = QtWidgets.QCheckBox('Show motion',
-                                                     self.mainWidget)
+        if "VOLREG" in rtp_objs:
+            self.chbShowMotion = QtWidgets.QCheckBox(
+                "Show motion", self.mainWidget
+            )
             self.chbShowMotion.setCheckState(0)
             self.chbShowMotion.stateChanged.connect(
-                        lambda x: self.show_mot_chk(x))
+                lambda x: self.show_mot_chk(x)
+            )
 
         # Show Physio
-        if 'TTLPHYSIO' in rtp_objs:
-            self.chbShowPhysio = QtWidgets.QCheckBox('Show physio',
-                                                     self.mainWidget)
+        if "TTLPHYSIO" in rtp_objs:
+            self.chbShowPhysio = QtWidgets.QCheckBox(
+                "Show physio", self.mainWidget
+            )
             self.chbShowPhysio.setCheckState(0)
             self.chbShowPhysio.stateChanged.connect(
-                        lambda x: self.show_physio_chk(x))
+                lambda x: self.show_physio_chk(x)
+            )
 
         # GPU
         if self.GPU_available:
             if torch.cuda.is_available():
                 dev_name = torch.cuda.get_device_name(
-                    torch.cuda.current_device())
+                    torch.cuda.current_device()
+                )
             elif torch.backends.mps.is_available():
                 dev_name = torch.device("mps")
-            self.chbUseGPU = QtWidgets.QCheckBox(f'Use GPU\n{dev_name}',
-                                                 self.mainWidget)
+            self.chbUseGPU = QtWidgets.QCheckBox(
+                f"Use GPU\n{dev_name}", self.mainWidget
+            )
             self.chbUseGPU.setCheckState(onGPU * 2)
             self.chbUseGPU.stateChanged.connect(self.enable_GPU)
 
@@ -208,19 +222,23 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Selection buttons
         self.Apps_btn = OrderedDict()
         for app_name in self.rtp_apps.keys():
-            self.Apps_btn[app_name] = QtWidgets.QPushButton(app_name,
-                                                            self.mainWidget)
+            self.Apps_btn[app_name] = QtWidgets.QPushButton(
+                app_name, self.mainWidget
+            )
             self.Apps_btn[app_name].clicked.connect(
-                partial(self.on_clicked_setOption, app_name))
+                partial(self.on_clicked_setOption, app_name)
+            )
             self.Apps_btn[app_name].setStyleSheet(
-                "background-color: rgb(255,201,32)")
+                "background-color: rgb(255,201,32)"
+            )
 
         # Application setting pane stack
         self.stackedAppSetPanes = QtWidgets.QStackedWidget(self.mainWidget)
         self.AppSetPanes = OrderedDict()
         for app_name, app_obj in self.rtp_apps.items():
             self.AppSetPanes[app_name] = QtWidgets.QGroupBox(
-                    "{} setting".format(app_name), self.mainWidget)
+                "{} setting".format(app_name), self.mainWidget
+            )
             self.stackedAppSetPanes.addWidget(self.AppSetPanes[app_name])
             fLayout = QtWidgets.QFormLayout(self.AppSetPanes[app_name])
             app_obj.main_win = self
@@ -235,44 +253,61 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.RTP_btn = OrderedDict()
 
         # EXTSIG
-        if 'EXTSIG' in rtp_objs:
-            self.RTP_btn['EXTSIG'] = \
-                QtWidgets.QPushButton('EXT SIGNAL', self.mainWidget)
-            self.RTP_btn['EXTSIG'].clicked.connect(
-                partial(self.on_clicked_setOption, 'EXTSIG'))
+        if "EXTSIG" in rtp_objs:
+            self.RTP_btn["EXTSIG"] = QtWidgets.QPushButton(
+                "EXT SIGNAL", self.mainWidget
+            )
+            self.RTP_btn["EXTSIG"].clicked.connect(
+                partial(self.on_clicked_setOption, "EXTSIG")
+            )
         # WATCH
-        self.RTP_btn['WATCH'] = \
-            QtWidgets.QPushButton('WATCH', self.mainWidget)
-        self.RTP_btn['WATCH'].clicked.connect(
-            partial(self.on_clicked_setOption, 'WATCH'))
+        self.RTP_btn["WATCH"] = QtWidgets.QPushButton("WATCH", self.mainWidget)
+        self.RTP_btn["WATCH"].clicked.connect(
+            partial(self.on_clicked_setOption, "WATCH")
+        )
         # VOLREG
-        self.RTP_btn['VOLREG'] = \
-            QtWidgets.QPushButton('VOLREG', self.mainWidget)
-        self.RTP_btn['VOLREG'].clicked.connect(
-            partial(self.on_clicked_setOption, 'VOLREG'))
+        self.RTP_btn["VOLREG"] = QtWidgets.QPushButton(
+            "VOLREG", self.mainWidget
+        )
+        self.RTP_btn["VOLREG"].clicked.connect(
+            partial(self.on_clicked_setOption, "VOLREG")
+        )
         # TSHIFT
-        self.RTP_btn['TSHIFT'] = \
-            QtWidgets.QPushButton('TSHIFT', self.mainWidget)
-        self.RTP_btn['TSHIFT'].clicked.connect(
-            partial(self.on_clicked_setOption, 'TSHIFT'))
+        self.RTP_btn["TSHIFT"] = QtWidgets.QPushButton(
+            "TSHIFT", self.mainWidget
+        )
+        self.RTP_btn["TSHIFT"].clicked.connect(
+            partial(self.on_clicked_setOption, "TSHIFT")
+        )
         # SMOOTH
-        self.RTP_btn['SMOOTH'] = \
-            QtWidgets.QPushButton('SMOOTH', self.mainWidget)
-        self.RTP_btn['SMOOTH'].clicked.connect(
-            partial(self.on_clicked_setOption, 'SMOOTH'))
+        self.RTP_btn["SMOOTH"] = QtWidgets.QPushButton(
+            "SMOOTH", self.mainWidget
+        )
+        self.RTP_btn["SMOOTH"].clicked.connect(
+            partial(self.on_clicked_setOption, "SMOOTH")
+        )
         # REGRESS
-        self.RTP_btn['REGRESS'] = \
-            QtWidgets.QPushButton('REGRESS', self.mainWidget)
-        self.RTP_btn['REGRESS'].clicked.connect(
-            partial(self.on_clicked_setOption, 'REGRESS'))
+        self.RTP_btn["REGRESS"] = QtWidgets.QPushButton(
+            "REGRESS", self.mainWidget
+        )
+        self.RTP_btn["REGRESS"].clicked.connect(
+            partial(self.on_clicked_setOption, "REGRESS")
+        )
 
         # RTP setting pane stack
         self.stackedRTPSetPanes = QtWidgets.QStackedWidget(self.mainWidget)
         self.RTPSetPanes = {}
-        for proc in (['WATCH', 'VOLREG', 'TSHIFT', 'SMOOTH',
-                      'REGRESS', 'EXTSIG']):
+        for proc in [
+            "WATCH",
+            "VOLREG",
+            "TSHIFT",
+            "SMOOTH",
+            "REGRESS",
+            "EXTSIG",
+        ]:
             self.RTPSetPanes[proc] = QtWidgets.QGroupBox(
-                    "{} options".format(proc), self.mainWidget)
+                "{} options".format(proc), self.mainWidget
+            )
             self.stackedRTPSetPanes.addWidget(self.RTPSetPanes[proc])
             fLayout = QtWidgets.QFormLayout(self.RTPSetPanes[proc])
             if proc not in rtp_objs:
@@ -288,7 +323,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         # --- Parameter list tab ---
         self.listAllParams = QtWidgets.QWidget(self.mainWidget)
         self.listParam_txtBrws = QtWidgets.QTextBrowser(self.listAllParams)
-        
+
         #  endregion: Experiment control space --------------------------------
 
         # region: log console -------------------------------------------------
@@ -304,11 +339,11 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def layout_ui(self):
-        """Layout GUI controls
-        """
+        """Layout GUI controls"""
 
-        self.setSizePolicy(QtWidgets.QSizePolicy.MinimumExpanding,
-                           QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+        )
 
         # Root vertical box layout
         vBoxRoot = QtWidgets.QVBoxLayout(self.mainWidget)
@@ -336,21 +371,22 @@ class RtpGUI(QtWidgets.QMainWindow):
         workDirHBox.addWidget(self.btnSetWorkDir)
 
         # --- Checkboxes ------------------------------------------------------
-        self.grpBoxChkBoxes = QtWidgets.QGroupBox("GPU/Signal/Plot",
-                                                  self.mainWidget)
+        self.grpBoxChkBoxes = QtWidgets.QGroupBox(
+            "GPU/Signal/Plot", self.mainWidget
+        )
         vBoxTop.addWidget(self.grpBoxChkBoxes)
         self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
-        if hasattr(self, 'chbUseGPU'):
+        if hasattr(self, "chbUseGPU"):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
 
-        if hasattr(self, 'chbShowPhysio'):
+        if hasattr(self, "chbShowPhysio"):
             self.ui_hChkBoxes.addWidget(self.chbShowPhysio)
 
-        if hasattr(self, 'chbShowMotion'):
+        if hasattr(self, "chbShowMotion"):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
 
         for app_name in self.rtp_apps.keys():
-            if hasattr(self.rtp_apps[app_name], 'ui_showROISig_cbx'):
+            if hasattr(self.rtp_apps[app_name], "ui_showROISig_cbx"):
                 ui_cbx = self.rtp_apps[app_name].ui_showROISig_cbx
                 ui_cbx.setText(f"{app_name}:{ui_cbx.text()}")
                 self.ui_hChkBoxes.addWidget(ui_cbx)
@@ -360,7 +396,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # --- App setting ---
         AppSetWidget = QtWidgets.QWidget(self.mainWidget)
-        self.options_tab.addTab(AppSetWidget, 'App')
+        self.options_tab.addTab(AppSetWidget, "App")
         vBoxAppSet = QtWidgets.QVBoxLayout(AppSetWidget)
 
         # Application selection buttons
@@ -373,7 +409,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # --- RTP setting ---
         RTPSetWidget = QtWidgets.QWidget(self.mainWidget)
-        self.options_tab.addTab(RTPSetWidget, 'RTP')
+        self.options_tab.addTab(RTPSetWidget, "RTP")
         vBoxRTPSet = QtWidgets.QVBoxLayout(RTPSetWidget)
 
         # RTP selection buttons
@@ -411,12 +447,13 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         path = os.getcwd()
         fname, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, 'Save parameters', path, 'pickle file (*.pkl)')
-        if fname == '':
+            self, "Save parameters", path, "pickle file (*.pkl)"
+        )
+        if fname == "":
             return
 
-        if os.path.splitext(fname)[-1] != '.pkl':
-            fname += '.pkl'
+        if os.path.splitext(fname)[-1] != ".pkl":
+            fname += ".pkl"
 
         save_parameters(allObjs, fname)
 
@@ -427,8 +464,9 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         path = os.getcwd()
         fname, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, 'Load parameters', path, 'pickle file (*.pkl)')
-        if fname == '':
+            self, "Load parameters", path, "pickle file (*.pkl)"
+        )
+        if fname == "":
             return
         load_parameters(allObjs, fname)
 
@@ -436,7 +474,8 @@ class RtpGUI(QtWidgets.QMainWindow):
     def set_workDir(self, wdir=None):
         if wdir is None or wdir is False:  # Button press gives False
             wdir = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Select working directory", str(self.watchDir_start))
+                self, "Select working directory", str(self.watchDir_start)
+            )
             if len(wdir) == 0:
                 return -1
         else:
@@ -444,8 +483,8 @@ class RtpGUI(QtWidgets.QMainWindow):
                 Path(wdir).mkdir()
 
         for obj in self.rtp_objs.values():
-            if hasattr(obj, 'work_dir') and Path(obj.work_dir) != Path(wdir):
-                obj.set_param('work_dir', Path(wdir))
+            if hasattr(obj, "work_dir") and Path(obj.work_dir) != Path(wdir):
+                obj.set_param("work_dir", Path(wdir))
 
         self.lineEditWorkDir.setText(str(wdir))
 
@@ -455,7 +494,8 @@ class RtpGUI(QtWidgets.QMainWindow):
     def set_watchDir(self, wdir=None):
         if wdir is None or wdir is False:  # Button press gives False
             wdir = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Select Watch directory", str(self.watchDir_start))
+                self, "Select Watch directory", str(self.watchDir_start)
+            )
             if len(wdir) == 0:
                 return -1
         else:
@@ -466,10 +506,10 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return -1
 
         for obj in self.rtp_objs.values():
-            if hasattr(obj, 'watch_dir') and \
-                    (obj.watch_dir is None or
-                     Path(obj.watch_dir) != Path(wdir)):
-                obj.set_param('watch_dir', Path(wdir))
+            if hasattr(obj, "watch_dir") and (
+                obj.watch_dir is None or Path(obj.watch_dir) != Path(wdir)
+            ):
+                obj.set_param("watch_dir", Path(wdir))
 
         self.lineEditWatchDir.setText(str(wdir))
 
@@ -487,7 +527,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # Open log file
         if self._log_f.is_file():
-            log_fd = open(self._log_f, 'r')
+            log_fd = open(self._log_f, "r")
 
             if log_fd is None:
                 sys.stderr.write(f"Failed to open {self._log_f}")
@@ -507,24 +547,24 @@ class RtpGUI(QtWidgets.QMainWindow):
         new_entries = self._log_fd.read()
         if new_entries:
             self.logOutput_txtEd.moveCursor(QtGui.QTextCursor.End)
-            log_lines = new_entries.split('\n')
+            log_lines = new_entries.split("\n")
             for ii, log_line in enumerate(log_lines):
                 if ii != len(log_lines) - 1:
-                    add_line = log_line + '\n'
+                    add_line = log_line + "\n"
                 else:
                     add_line = log_line
 
                 # Font Color
-                if '!!!' in add_line or 'ERROR' in add_line:
+                if "!!!" in add_line or "ERROR" in add_line:
                     # Red color
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
-                    add_line = add_line.replace('!!!', '')
+                    add_line = add_line.replace("!!!", "")
 
                 # Font weight
-                if '<B>' in add_line:
+                if "<B>" in add_line:
                     # Bold face
                     self.logOutput_txtEd.setFontWeight(QtGui.QFont.Bold)
-                    add_line = add_line.replace('<B>', '')
+                    add_line = add_line.replace("<B>", "")
                 else:
                     self.logOutput_txtEd.setFontWeight(QtGui.QFont.Normal)
 
@@ -565,35 +605,40 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_mot_chk(self, state):
-        if 'VOLREG' not in self.rtp_objs:
+        if "VOLREG" not in self.rtp_objs:
             return
 
         if state == 2:
-            self.rtp_objs['VOLREG'].open_motion_plot()
+            self.rtp_objs["VOLREG"].open_motion_plot()
         else:
-            self.rtp_objs['VOLREG'].close_motion_plot()
+            self.rtp_objs["VOLREG"].close_motion_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_physio_chk(self, state):
-        if 'TTLPHYSIO' not in self.rtp_objs or \
-                not self.rtp_objs['TTLPHYSIO'].is_recording():
+        if (
+            "TTLPHYSIO" not in self.rtp_objs
+            or not self.rtp_objs["TTLPHYSIO"].is_recording()
+        ):
             if state != 0:
-                if hasattr(self, 'chbShowPhysio'):
+                if hasattr(self, "chbShowPhysio"):
                     self.chbShowPhysio.blockSignals(True)
                     self.chbShowPhysio.setCheckState(0)
                     self.chbShowPhysio.blockSignals(False)
 
         if state > 0:
-            self.rtp_objs['TTLPHYSIO'].open_plot(
-                main_win=self, win_shape=(450, 450), plot_len_sec=10,
-                disable_close=False)
-            if hasattr(self, 'chbShowPhysio'):
+            self.rtp_objs["TTLPHYSIO"].open_plot(
+                main_win=self,
+                win_shape=(450, 450),
+                plot_len_sec=10,
+                disable_close=False,
+            )
+            if hasattr(self, "chbShowPhysio"):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(2)
                 self.chbShowPhysio.blockSignals(False)
         else:
-            self.rtp_objs['TTLPHYSIO'].close_plot()
-            if hasattr(self, 'chbShowPhysio'):
+            self.rtp_objs["TTLPHYSIO"].close_plot()
+            if hasattr(self, "chbShowPhysio"):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(0)
                 self.chbShowPhysio.blockSignals(False)
@@ -601,16 +646,17 @@ class RtpGUI(QtWidgets.QMainWindow):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def enable_GPU(self, *args):
         for obj in self.rtp_objs.values():
-            if hasattr(obj, 'onGPU'):
-                obj.onGPU = (self.chbUseGPU.checkState() > 0)
+            if hasattr(obj, "onGPU"):
+                obj.onGPU = self.chbUseGPU.checkState() > 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_options_list(self, html=True, hide_sham=True):
-        """ Print parameter list on text browser """
+        """Print parameter list on text browser"""
 
         all_params = OrderedDict()
-        for rtp in ('WATCH', 'TSHIFT', 'VOLREG', 'SMOOTH',
-                    'REGRESS', 'EXTSIG'):
+        for rtp in (
+            "WATCH", "TSHIFT", "VOLREG", "SMOOTH", "REGRESS", "EXTSIG"
+        ):
             if rtp not in self.rtp_objs:
                 continue
 
@@ -633,26 +679,32 @@ class RtpGUI(QtWidgets.QMainWindow):
         if not html:
             return all_params
 
-        param_list = ''
+        param_list = ""
         for rtp, opt_dict in all_params.items():
-            if not enable_RTP and rtp in ('WATCH', 'VOLREG', 'TSHIFT',
-                                          'SMOOTH', 'REGRESS', 'EXTSIG'):
+            if not enable_RTP and rtp in (
+                "WATCH",
+                "VOLREG",
+                "TSHIFT",
+                "SMOOTH",
+                "REGRESS",
+                "EXTSIG",
+            ):
                 continue
 
-            param_list += '<p>'
+            param_list += "<p>"
             param_list += f"<font size='+1'><b>{rtp}</b></font><br/>\n"
 
             for k, val in opt_dict.items():
-                if k == 'proc_times':
+                if k == "proc_times":
                     # hide options
                     continue
 
-                if hide_sham and 'sham' in k.lower():
+                if hide_sham and "sham" in k.lower():
                     continue
 
                 param_list += "<b>{}</b>: {}<br/>\n".format(k, val)
 
-            param_list += '</p>\n'
+            param_list += "</p>\n"
 
         self.listParam_txtBrws.setText(param_list)
 
@@ -670,17 +722,22 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return
 
         # Stop physio
-        if 'TTLPHYSIO' in self.rtp_objs and \
-                self.rtp_objs['TTLPHYSIO'] is not None and \
-                self.rtp_objs['TTLPHYSIO'].is_recording():
-            self.rtp_objs['TTLPHYSIO'].stop_recording()
-            del self.rtp_objs['TTLPHYSIO']
+        if (
+            "TTLPHYSIO" in self.rtp_objs
+            and self.rtp_objs["TTLPHYSIO"] is not None
+            and self.rtp_objs["TTLPHYSIO"].is_recording()
+        ):
+            self.rtp_objs["TTLPHYSIO"].stop_recording()
+            del self.rtp_objs["TTLPHYSIO"]
 
         # Move logfile to work_dir
         cpfnames = {}
         for rtp in list(self.rtp_objs.values()) + list(self.rtp_apps.values()):
-            if hasattr(rtp, '_log_f') and hasattr(rtp, 'work_dir') and \
-                    os.path.realpath(rtp.work_dir) != os.getcwd():
+            if (
+                hasattr(rtp, "_log_f")
+                and hasattr(rtp, "work_dir")
+                and os.path.realpath(rtp.work_dir) != os.getcwd()
+            ):
                 logf = self._log_f
                 if logf not in cpfnames:
                     cpfnames[logf] = Path(rtp.work_dir) / logf.name

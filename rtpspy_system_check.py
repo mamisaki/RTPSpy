@@ -24,10 +24,13 @@ if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser(description="rtp_system_check")
     parser.add_argument(
-        "--log_file", help="Write log to specified file," + " instead of console."
+        "--log_file",
+        help="Write log to specified file," + " instead of console.",
     )
     parser.add_argument(
-        "--keep_masks", action="store_true", help="Keep existing processd mask files"
+        "--keep_masks",
+        action="store_true",
+        help="Keep existing processd mask files",
     )
     parser.add_argument("--debug", action="store_true")
 
