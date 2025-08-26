@@ -86,7 +86,7 @@ class RtpApp(RTP):
         """
         Parameters:
             default_rtp_params : dictionary, optional
-                Parameter dict. Defaults to None.
+                Parameter dictionary. Defaults to None.
             work_dir : Path or str
                 Working directory.
         """
@@ -105,9 +105,9 @@ class RtpApp(RTP):
 
         # Image files
         self.func_param_ref = ""  # fMRI parameter reference image
-        self.func_orig = ""  # reference function image
-        self.anat_orig = ""  # anatomy image
-        self.alAnat = ""  # anatomy image aligned to the reference function
+        self.func_orig = ""  # Reference function image
+        self.anat_orig = ""  # Anatomy image
+        self.alAnat = ""  # Anatomy image aligned to the reference function
 
         self.WM_orig = ""
         self.Vent_orig = ""
@@ -119,8 +119,8 @@ class RtpApp(RTP):
         self.GSR_mask = ""
 
         # Fieldmap images for distortion correction (PEPOLAR)
-        self.fieldmap_pos = ""  # Same phase encoding epi
-        self.fieldmap_neg = ""  # Opposite phase encoding epi
+        self.fieldmap_pos = ""  # Same phase encoding EPI
+        self.fieldmap_neg = ""  # Opposite phase encoding EPI
 
         self.enable_RTP = 0
 
@@ -128,7 +128,7 @@ class RtpApp(RTP):
         self._isRunning_end_run_proc = False
         self._isReadyRun = False
 
-        # mask creation parameter
+        # Mask creation parameters
         if torch.cuda.is_available() or torch.backends.mps.is_available():
             self.no_FastSeg = False
             self.fastSeg_batch_size = 1
@@ -138,7 +138,7 @@ class RtpApp(RTP):
             self.no_FastSeg = True
             self.fastSeg_batch_size = 1
 
-        # The default processing times for proc_anat progress bar (seconds)
+        # Default processing times for proc_anat progress bar (seconds)
         self.proc_times = {
             "FastSeg": 100,
             "SkullStrip": 100,
@@ -152,7 +152,7 @@ class RtpApp(RTP):
         }
         self.prtime_keys = list(self.proc_times.keys())
 
-        # Interpolation option for antsApplyTransforms at resampleing the
+        # Interpolation option for antsApplyTransforms when resampling the
         # warped ROI: ['linear'|'nearestNeighbor'|'bSpline']
         self.ROI_resample_opts = ["nearestNeighbor", "linear", "bSpline"]
         self.ROI_resample = "nearestNeighbor"
@@ -176,7 +176,7 @@ class RtpApp(RTP):
         self.simRespData = ""
         self.sim_isRunning = False
 
-        # Set psuedo serial port for simulating physio recording
+        # Set pseudo serial port for simulating physio recording
         master, slave = pty.openpty()
         s_name = os.ttyname(slave)
         try:
@@ -222,7 +222,7 @@ class RtpApp(RTP):
         self.rtp_objs = rtp_objs
         self.rtp_gui = None
 
-        # --- Clean tmp dicom -------------------------------------------------
+        # --- Clean temporary DICOM files -------------------------------------
         tmp_dcm = list(Path("/tmp").glob("**/*.dcm"))
         for rmf in tmp_dcm:
             if rmf.is_file():
@@ -243,18 +243,16 @@ class RtpApp(RTP):
         self._logger.debug("### Complete RtpApp initialization ###")
 
     # --- Override these functions for a custom application -------------------
-    #  ready_proc, do_proc, end_reset, end_proc
+    # ready_proc, do_proc, end_reset, end_proc
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
-        """Ready process"""
+        """Prepare the process."""
         self._proc_ready = True
 
         if not Path(self.ROI_orig).is_file():
-            errmsg = f"Not found ROI mask on orig space {self.ROI_orig}."
+            errmsg = f"ROI mask in original space not found: {self.ROI_orig}."
             self._logger.error(errmsg)
-            self.err_popup(
-                f"Not found ROI mask on orig space {self.ROI_orig}."
-            )
+            self.err_popup(errmsg)
             self._proc_ready = False
         self.ROI_mask = None
 
@@ -274,12 +272,12 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0):
-        """Do process for the RTP image (e.g., extracting the ROI signal)."""
+        """Process the RTP image (e.g., extracting the ROI signal)."""
         try:
-            # Increment the number of received volume
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            # Increment the number of received volumes
+            self._vol_num += 1  # 1-based number of volumes received
             if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-base index
+                vol_idx = self._vol_num - 1  # 0-based index
 
             if vol_idx < self.ignore_init:
                 # Skip ignore_init volumes
@@ -293,9 +291,9 @@ class RtpApp(RTP):
             # --- Initialize --------------------------------------------------
             if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
                 # Load ROI mask
-                self.ROI_mask = np.asanarry(nib.load(self.ROI_orig).dataobj)
+                self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
 
-            # --- Run the procress --------------------------------------------
+            # --- Run the process ---------------------------------------------
             # Get mean signal in the ROI
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
@@ -304,8 +302,7 @@ class RtpApp(RTP):
                 f"{time.time() - self.scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
             )
             if self.extApp_sock is not None:
-                # Send data to the external application via socket,
-                # self.extApp_sock
+                # Send data to the external application via socket
                 try:
                     msg = f"NF {val_str};"
                     self.send_extApp(msg.encode())
@@ -319,12 +316,12 @@ class RtpApp(RTP):
                     self._logger.error(str(e) + "\n" + errmsg)
 
             else:
-                # Online saving in a file
+                # Save data to a file in real-time
                 with open(self.sig_save_file, "a") as save_fd:
                     print(val_str, file=save_fd)
-                self._logger.info(f"Write ROI data '{val_str}'")
+                self._logger.info(f"Saved ROI data '{val_str}'")
 
-            # --- Post procress -----------------------------------------------
+            # --- Post-process -----------------------------------------------
             tstamp = time.time()
             self._proc_time.append(tstamp)
             if pre_proc_time is not None:
@@ -332,7 +329,7 @@ class RtpApp(RTP):
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
-            # log message
+            # Log message
             f = Path(fmri_img.get_filename()).name
             msg = f"#{vol_idx + 1};ROI signal extraction;{f}"
             msg += f";tstamp={tstamp}"
@@ -363,17 +360,18 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_proc(self):
-        """Place holder for a custom end process.
-        This is called at the beginign of end_run()
+        """Placeholder for a custom end process.
+        This is called at the beginning of end_run().
         """
         pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_dcm2nii(self):
-        # Select dicom directory
+        """Convert DICOM to NIfTI using dcm2niix."""
+        # Select DICOM directory
         watch_dir = self.rtp_objs["WATCH"].watch_dir
         dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_win, "Select dicom file directory", str(watch_dir)
+            self.main_win, "Select DICOM file directory", str(watch_dir)
         )
 
         if dcm_dir == "":
@@ -386,7 +384,7 @@ class RtpApp(RTP):
         cmd = "dcm2niix -f sub-%n_ses-%t_ser-%s_desc-%d"
         cmd += f" -i n -z o -w 0 -o {out_dir} {dcm_dir}"
         try:
-            # progress dialog
+            # Progress dialog
             msgBox = QtWidgets.QMessageBox(self.main_win)
             msgBox.setWindowTitle("dcm2niix")
             msgBox.setText("Converting DICOM to NIfTI ...")
@@ -408,7 +406,7 @@ class RtpApp(RTP):
             stdout, stderr = proc.communicate()
             ostr = "\n".join([stdout.decode(), stderr.decode()])
 
-            # Copy dicoms
+            # Copy DICOMs
             src_dir = dcm_dir
             dst_dir = out_dir / "dicom"
             cmd = f"rsync -auvz {src_dir}/ {dst_dir}/"
@@ -432,7 +430,7 @@ class RtpApp(RTP):
                 msgBox.accept()
             except Exception:
                 pass
-            errmsg = f"Error at dcm2niix: {e}"
+            errmsg = f"Error during dcm2niix: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             ostr = errmsg.encode()
@@ -615,7 +613,7 @@ class RtpApp(RTP):
         else:
             progress_bar = None
 
-        # Initialized the processing time for progress information,
+        # Initialize the processing time for progress information,
         # if it is not set.
         for k in self.prtime_keys:
             if k not in self.proc_times:
@@ -1211,7 +1209,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
-        """Ready running the process"""
+        """Ready to run the process"""
         self._logger.debug("ready_to_run")
 
         #  --- Disable ui to block parameters change --------------------------
@@ -1361,6 +1359,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def manual_start(self):
+        """Manual scan start."""
         self.scan_onset = time.time()
         self._scanning = True
         self._wait_start = False
@@ -1378,6 +1377,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_run(self, quit_btn=False, scan_name=None):
+        """End the RTP run and save results."""
         if self._isRunning_end_run_proc:
             """
             Check if end_run is running.
@@ -1537,6 +1537,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def check_onAFNI(self, base=None, ovl=None):
+        """Check and display images in AFNI."""
         work_dir = Path(self.work_dir)
 
         # Set underlay and overlay image file
@@ -1652,6 +1653,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def delete_file(self, attr, keepfile=False):
+        """Delete specified file or all processed files."""
         if not hasattr(self, attr) and attr != "AllProc":
             return
 
@@ -1748,7 +1750,7 @@ class RtpApp(RTP):
                 if func_mask.is_file():
                     delFiles["func_mask"] = func_mask
 
-        # Delte files
+        # Delete files
         for attr, ff in delFiles.items():
             if not keepfile:
                 if ".HEAD" in ff.suffixes or ".BRIK" in ff.suffixes:
@@ -1890,6 +1892,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_ROISig_plot(self, num_ROIs=1, roi_labels=[]):
+        """Open the ROI signal plot."""
         if hasattr(self, "thPltROISig") and self.thPltROISig.isRunning():
             return
 
@@ -1907,6 +1910,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_ROISig_plot(self):
+        """Close the ROI signal plot."""
         if hasattr(self, "thPltROISig") and self.thPltROISig.isRunning():
             self.pltROISig.abort = True
             if not self.thPltROISig.wait(1):
@@ -1920,6 +1924,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_ROIsig_chk(self, state):
+        """Checkbox to show or hide the ROI signal plot."""
         if state == 2:
             self.open_ROISig_plot(
                 num_ROIs=self.num_ROIs, roi_labels=self.roi_labels
@@ -1935,9 +1940,9 @@ class RtpApp(RTP):
         Parameters
         ----------
         save_f : Path or str
-            saving file path/name.
+            Saving file path/name.
         ti : int list
-            time (TR) indices.
+            Time (TR) indices.
         roi_sig : array like
             Array of ROI signals; Nr. ROIs x Nr. TRs
         roi_label : str list, optional
@@ -2006,6 +2011,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_setEnabled(self, enabled):
+        """Enable or disable the UI elements."""
         if self.main_win is not None:
             objs = list(self.main_win.rtp_objs.values())
             objs += list(self.main_win.rtp_apps.values())
@@ -2315,6 +2321,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def connect_extApp(self, no_err_pop=False):
+        """Connect to the external application socket."""
         if self.extApp_addr is None:
             errmsg = "No address is set for the external application."
             self._logger.error(errmsg)
@@ -2346,6 +2353,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def isAlive_extApp(self):
+        """Check if the external application is alive."""
         if self.extApp_addr is None:
             return False
 
@@ -2470,7 +2478,7 @@ class RtpApp(RTP):
     # --- user interface ------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(
-        self, attr, val=None, reset_fn=None, echo=False, unk_warining=True
+        self, attr, val=None, reset_fn=None, echo=False, unk_warning=True
     ):
         """
         When reset_fn is None, set_param is considered to be called from
@@ -2756,7 +2764,7 @@ class RtpApp(RTP):
         else:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                if unk_warining:
+                if unk_warning:
                     self._logger.error(f"{attr} is unrecognized parameter.")
             return
 
@@ -2770,6 +2778,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
+        """Set up the UI parameters."""
         ui_rows = []
         self.ui_objs = []
 
@@ -2795,20 +2804,21 @@ class RtpApp(RTP):
             self.ui_preprocessingTab
         )
 
-        # --- Preprocessing group ---
+        # region: dcm2nii --
+        self.ui_dcm2nii_btn = QtWidgets.QPushButton("dcm2niix")
+        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
+        self.ui_preprocessing_fLayout.addRow(self.ui_dcm2nii_btn)
+        self.ui_objs.append(self.ui_dcm2nii_btn)
+        # endregion
+
+        # region: Reference images group ---
         self.ui_RefImg_grpBx = QtWidgets.QGroupBox("Reference images")
         RefImg_gLayout = QtWidgets.QGridLayout(self.ui_RefImg_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_RefImg_grpBx)
         self.ui_objs.append(self.ui_RefImg_grpBx)
 
-        # --- dcm2nii ---
-        ri = 0
-        self.ui_dcm2nii_btn = QtWidgets.QPushButton("dcm2niix")
-        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
-        RefImg_gLayout.addWidget(self.ui_dcm2nii_btn, ri, 0, 1, 3)
-
         # -- Anatomy orig image --
-        ri += 1
+        ri = 0
         var_lb = QtWidgets.QLabel("Anatomy image :")
         RefImg_gLayout.addWidget(var_lb, ri, 0)
 
@@ -2861,33 +2871,6 @@ class RtpApp(RTP):
         )
         RefImg_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
 
-        # -- CreateMasks button --
-        ri += 1
-        self.ui_CreateMasks_btn = QtWidgets.QPushButton(
-            "Create masks (+shift=overwrite)"
-        )
-        self.ui_CreateMasks_btn.clicked.connect(
-            lambda x: self.make_masks(
-                progress_dlg=True, no_FastSeg=self.no_FastSeg
-            )
-        )
-        self.ui_CreateMasks_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        RefImg_gLayout.addWidget(self.ui_CreateMasks_btn, ri, 0, 1, 3)
-        self.ui_objs.append(self.ui_CreateMasks_btn)
-
-        # no_FastSeg checkbox
-        self.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
-        self.ui_no_FastSeg_chb.setChecked(self.no_FastSeg)
-        self.ui_no_FastSeg_chb.stateChanged.connect(
-            lambda x: self.set_param(
-                "no_FastSeg", x, self.ui_no_FastSeg_chb.setCheckState
-            )
-        )
-        RefImg_gLayout.addWidget(self.ui_no_FastSeg_chb, ri, 3, 1, 1)
-        self.ui_objs.append(self.ui_no_FastSeg_chb)
-
         # -- paremeter reference image --
         ri += 1
         var_lb = QtWidgets.QLabel("fMRI parameter reference : ")
@@ -2914,8 +2897,9 @@ class RtpApp(RTP):
             lambda: self.delete_file("func_param_ref", keepfile=True)
         )
         RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
+        # endregion
 
-        # --- Fieldmap PEPOLAR images group ---
+        # region: Fieldmap PEPOLAR images group --
         self.ui_Fmap_grpBx = QtWidgets.QGroupBox("Fieldmap PEPOLAR images")
         Fmap_gLayout = QtWidgets.QGridLayout(self.ui_Fmap_grpBx)
         self.ui_preprocessing_fLayout.addRow(self.ui_Fmap_grpBx)
@@ -2923,7 +2907,7 @@ class RtpApp(RTP):
 
         # -- Fieldmap with same phase encoding --
         ri = 0
-        var_lb = QtWidgets.QLabel("Same phase encoding :")
+        var_lb = QtWidgets.QLabel("Same PE direction :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_fieldmap_pos_lnEd = QtWidgets.QLineEdit()
@@ -2950,7 +2934,7 @@ class RtpApp(RTP):
 
         # -- Fieldmap with opposite phase encoding --
         ri += 1
-        var_lb = QtWidgets.QLabel("Opposite phase encoding :")
+        var_lb = QtWidgets.QLabel("Opposite PE direction :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
         self.ui_fieldmap_neg_lnEd = QtWidgets.QLineEdit()
@@ -2974,8 +2958,41 @@ class RtpApp(RTP):
             lambda: self.delete_file("fieldmap_neg", keepfile=True)
         )
         Fmap_gLayout.addWidget(self.ui_fieldmap_neg_del_btn, ri, 3)
+        # endregion
 
-        # --- check ROIs groups ---
+        # region: CreateMasks button --
+        ui_CreateMasks_hLayout = QtWidgets.QHBoxLayout()
+        self.ui_preprocessing_fLayout.addRow(ui_CreateMasks_hLayout)
+
+        self.ui_CreateMasks_btn = QtWidgets.QPushButton(
+            "Create masks (+shift=overwrite)"
+        )
+        self.ui_CreateMasks_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.ui_CreateMasks_btn.clicked.connect(
+            lambda x: self.make_masks(
+                progress_dlg=True, no_FastSeg=self.no_FastSeg
+            )
+        )
+        self.ui_CreateMasks_btn.setStyleSheet(
+            "background-color: rgb(151,217,235);"
+        )
+        ui_CreateMasks_hLayout.addWidget(self.ui_CreateMasks_btn)
+        self.ui_objs.append(self.ui_CreateMasks_btn)
+
+        # no_FastSeg checkbox
+        self.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
+        self.ui_no_FastSeg_chb.setChecked(self.no_FastSeg)
+        self.ui_no_FastSeg_chb.stateChanged.connect(
+            lambda x: self.set_param(
+                "no_FastSeg", x, self.ui_no_FastSeg_chb.setCheckState
+            )
+        )
+        ui_CreateMasks_hLayout.addWidget(self.ui_no_FastSeg_chb)
+        self.ui_objs.append(self.ui_no_FastSeg_chb)
+        # endregion
+
+        # region: check ROIs groups ---
         self.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
             "Display the masks in AFNI"
         )
@@ -3028,6 +3045,9 @@ class RtpApp(RTP):
             lambda: self.check_onAFNI("func", "RTPmask")
         )
         ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 1, 3)
+        # endregion
+
+        # endregion: Preprocessing tab ----------------------------------------
 
         # --- Template tab ----------------------------------------------------
         self.ui_templateTab = QtWidgets.QWidget()

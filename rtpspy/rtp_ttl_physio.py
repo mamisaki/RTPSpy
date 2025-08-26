@@ -3,6 +3,10 @@
 """
 TTL and Physiological Signal Recorder Class for RTP
 
+This script runs as an independent process for recording TTL and physiological
+signals.
+
+
 Model Classes:
     NumatoGPIORecording: Handles recording from a Numato GPIO device.
     DummyRecording: Simulates recording using pre-recorded files.
@@ -75,14 +79,7 @@ YAXIS_ADJUST_RANGE = 25
 MIN_YAXIS_RANGE = 50
 
 
-# %% Helper functions =========================================================
-def log_exception(logger, msg="Exception occurred"):
-    """Helper function to log exceptions with traceback."""
-    exc_type, exc_obj, exc_tb = sys.exc_info()
-    errstr = "".join(traceback.format_exception(exc_type, exc_obj, exc_tb))
-    logger.error(f"{msg}: {errstr}")
-
-
+# %% create_temp_file =========================================================
 def create_temp_file(prefix, dir_path="/dev/shm", delete=False):
     """Helper function to create temporary files."""
     if Path(dir_path).is_dir() and os.access(dir_path, os.W_OK):
@@ -197,9 +194,9 @@ class SharedMemoryRingBuffer:
             self.pid = os.getpid()
 
         except Exception as e:
-            log_exception(
-                self._logger, "Failed to initialize SharedMemoryRingBuffer"
-            )
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error(errstr)
+
             # Ensure object is in a valid state even if initialization fails
             if self._data is None:
                 self._data = np.array([initial_value] * self.length)
@@ -272,8 +269,9 @@ class SharedMemoryRingBuffer:
             self._data.flush()
             self._cpos.flush()
 
-        except Exception:
-            log_exception(self._logger, "Failed to append to ring buffer")
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error("Failed to append to ring buffer:\n" + errstr)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get(self):
@@ -291,8 +289,9 @@ class SharedMemoryRingBuffer:
                 data = self._data
                 return np.concatenate([data[cpos:], data[:cpos]])
 
-        except Exception:
-            log_exception(self._logger, "Failed to get ring buffer data")
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error("Failed to get ring buffer data:\n" + errstr)
             return np.array([])
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -455,12 +454,15 @@ class NumatoGPIORecording:
 
         except serial.serialutil.SerialException:
             self._logger.error(f"Failed to open {self._sig_sport}")
-        except Exception:
-            log_exception(self._logger, f"Failed to open {self._sig_sport}")
+
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error(f"Failed to open {self._sig_sport}: {errstr}")
 
         self._sig_ser = None
         return False
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _close_existing_port(self):
         """Close existing serial port if open."""
         if self._sig_ser is not None and self._sig_ser.is_open:
@@ -1152,7 +1154,7 @@ class RtpTTLPhysio(RTP):
         # Start RPC socket server
         self.socket_srv = RPCSocketServer(
             self.RPC_handler,
-            socket_name="RtpTTLPhysioSocketServer",
+            socket_name="RtTTLPhysioSocketServer",
             allow_remote_access=True
         )
 
@@ -1488,7 +1490,7 @@ class RtpTTLPhysio(RTP):
         self,
         onset=None,
         len_sec=None,
-        fname_fmt="./{}.1D",
+        fname_fmt="./physio.tsv",
         resample_regular_interval=True,
     ):
         # Get data
@@ -1502,25 +1504,77 @@ class RtpTTLPhysio(RTP):
             if self.scan_onset > 0 and self.scan_onset > onset:
                 onset = self.scan_onset
 
+        # Always ensure we don't exceed buffer capacity or create
+        # unreasonable durations. This applies to all onset values,
+        # including explicit onset=0
+        max_duration = self.buf_len_sec  # Maximum buffer duration
+        if len(tstamp) > 0:
+            latest_time = tstamp[-1]
+            # Calculate the earliest onset that fits within buffer size
+            buffer_limited_onset = latest_time - max_duration
+
+            # Apply buffer limit if onset is too old or would create
+            # excessive duration
+            if onset < buffer_limited_onset:  # Beyond buffer capacity
+                # Note: Removed onset == 0 check since we now filter out
+                # invalid TTL events at timestamp 0 at the source
+                onset = buffer_limited_onset
+
         if len_sec is not None:
             offset = onset + len_sec
         else:
             offset = tstamp[-1]
 
+        # Add debug logging for onset/offset values
+        self._logger.debug(
+            f"Save physio data - onset: {onset}, offset: {offset}"
+        )
+
+        # Additional safety check for reasonable timestamps
+        current_time = time.time()
+        if onset < current_time - 86400 * 365:  # More than 1 years ago
+            self._logger.warning(
+                f"Onset timestamp {onset} seems too old "
+                f"(current time: {current_time})"
+            )
+        if offset < current_time - 86400 * 365:  # More than 1 years ago
+            self._logger.warning(
+                f"Offset timestamp {offset} seems too old "
+                f"(current time: {current_time})"
+            )
+
         if self.save_ttl:
             # --- TTL ---
             ttl_onsets = data["ttl_onsets"]
-            ttl_onsets = ttl_onsets[
-                (ttl_onsets >= onset) & (ttl_onsets < offset)
-            ]
-            ttl_onsets = ttl_onsets[ttl_onsets < offset]
+
+            # Filter out invalid TTL events at timestamp 0 (Unix epoch)
+            ttl_onsets = ttl_onsets[ttl_onsets > 0]
+
+            # Filter TTL data based on scan onset if available
+            if self.scan_onset > 0:
+                # If scan onset is set, filter relative to scan start
+                ttl_onsets = ttl_onsets[
+                    (ttl_onsets >= self.scan_onset) & (ttl_onsets < offset)
+                ]
+            else:
+                # If scan onset is not set, use the original onset/offset range
+                ttl_onsets = ttl_onsets[
+                    (ttl_onsets >= onset) & (ttl_onsets < offset)
+                ]
             ttl_onset_df = pd.DataFrame(
                 columns=("DateTime", "TimefromScanOnset")
             )
             ttl_onset_df["DateTime"] = [
                 datetime.fromtimestamp(ons).isoformat() for ons in ttl_onsets
             ]
-            ttl_onset_df["TimefromScanOnset"] = ttl_onsets - onset
+            # Set TimefromScanOnset only if scan onset is properly set
+            if self.scan_onset > 0:
+                ttl_onset_df["TimefromScanOnset"] = (
+                    ttl_onsets - self.scan_onset
+                )
+            else:
+                # Leave TimefromScanOnset empty if scan onset is not set
+                ttl_onset_df["TimefromScanOnset"] = ""
             ttl_onset_fname = Path(str(fname_fmt).format("TTLonset"))
             ttl_onset_fname = ttl_onset_fname.parent / (
                 ttl_onset_fname.stem + ".csv"
@@ -1676,7 +1730,14 @@ class RtpTTLPhysio(RTP):
         return v
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_scan_onset_bkwd(self, TR=None):
+    def send_dummy_pulse(self):
+        if self._recorder_type == "Dummy" and self.is_recording():
+            self._rec_proc_pipe.send("PULSE")
+            self._logger.debug("Sending dummy TTL pulse")
+            self._ttl_pulse_sent = True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_scan_onset_bkwd(self, tr=None):
         # Read data
         data = self.dump()
         if data is None:
@@ -1693,8 +1754,8 @@ class RtpTTLPhysio(RTP):
 
         else:
             ttl_interval = np.diff(ttl_onsets)
-            if TR is not None:
-                interval_thresh = TR * 1.5
+            if tr is not None:
+                interval_thresh = tr * 1.5
             else:
                 interval_thresh = np.nanmin(ttl_interval) * 1.5
 
@@ -1799,13 +1860,17 @@ class RtpTTLPhysio(RTP):
         elif call == "CANCEL_WAIT_TTL":
             self.wait_ttl_on = False
 
+        elif call == "TTL_PULSE":
+            if self._recorder_type == "Dummy":
+                self.send_dummy_pulse()
+
         elif call == "START_SCAN":
-            if self._plot:
-                self._plot.is_scanning = True
+            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
+                self._plot_proc_pipe.send("SCAN_ON")
 
         elif call == "END_SCAN":
-            if self._plot:
-                self._plot.is_scanning = False
+            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
+                self._plot_proc_pipe.send("SCAN_OFF")
 
         elif type(call) is tuple:  # Call with arguments
             try:
@@ -1814,8 +1879,8 @@ class RtpTTLPhysio(RTP):
                     self.save_physio_data(onset, len_sec, prefix)
 
                 elif call[0] == "SET_SCAN_START_BACKWARD":
-                    TR = call[1]
-                    self.set_scan_onset_bkwd(TR)
+                    tr = call[1]
+                    self.set_scan_onset_bkwd(tr)
 
                 elif call[0] == "SET_GEOMETRY":
                     if self._plot is not None:
