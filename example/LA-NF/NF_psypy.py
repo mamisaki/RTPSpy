@@ -33,7 +33,7 @@ inst_txt_wrap = 0.95
 # --- Box size, color, and text size in block screen ---
 box_size = 0.16
 blkMsg_txt_height = box_size/4.5  # text height in the box
-# adjective word size in describe block
+# word size in describe block
 desc_word_height = 0.04
 
 box_color = {}
@@ -440,7 +440,7 @@ class NFApp(object):
 
                 # --- Check received data on self.rtp_srv ---------------------
                 rcv_data = self.rtp_srv.get_recv_queue(timeout=0.01)
-                if rcv_data is not None and type(rcv_data) == str:
+                if rcv_data is not None and type(rcv_data) is str:
                     cmd_str = rcv_data
 
                     if 'GET_STATE' in cmd_str:
@@ -469,7 +469,7 @@ class NFApp(object):
 
                         # parameter dict should be sent following the PREP_*
                         params = self.rtp_srv.get_recv_queue(timeout=5)
-                        if type(params) != dict:
+                        if type(params) is not dict:
                             self._log(
                                 'ERROR: received data is not a parameter dict')
                             continue
@@ -514,7 +514,7 @@ class NFApp(object):
 
                         # parameter data should be sent following the PREP_*
                         params = self.rtp_srv.get_recv_queue(timeout=5)
-                        if type(params) != dict:
+                        if type(params) is not dict:
                             self._log(
                                 'ERROR: received data is not a parameter dict')
                             continue
@@ -599,7 +599,7 @@ class NFApp(object):
         while True:
             # Check received data
             rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
-            if rcv_data is not None and type(rcv_data) == str:
+            if rcv_data is not None and type(rcv_data) is str:
                 if rcv_data == 'READY':
                     self.rtp_srv.send('READY;'.encode('utf-8'))
                     break
@@ -633,7 +633,7 @@ class NFApp(object):
         # --- Wait for the scan start -----------------------------------------
         while True:
             rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
-            if rcv_data is not None and type(rcv_data) == str:
+            if rcv_data is not None and type(rcv_data) is str:
                 if 'SCAN_START' in rcv_data:
                     self.scan_onset = core.getTime()
                     break
@@ -671,7 +671,7 @@ class NFApp(object):
             try:
                 # Check received data
                 rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
-                if rcv_data is not None and type(rcv_data) == str:
+                if rcv_data is not None and type(rcv_data) is str:
                     if 'GET_STATE' in rcv_data:
                         self.rtp_srv.send(self.state.encode('utf-8'))
                         self._log(f'Send state {self.state}')
@@ -719,7 +719,7 @@ class NFApp(object):
         self.rcv_signal = np.ones(int(np.ceil(tEND/TR))) * np.nan
         self.last_vidx = -1
 
-        self.rtp_srv.reset_NF_signal() # Reset NF_signal in rtp_srv
+        self.rtp_srv.reset_NF_signal()  # Reset NF_signal in rtp_srv
 
         # --- Show instructions -----------------------------------------------
         if session in ('Baseline', 'Transfer'):
@@ -740,7 +740,7 @@ class NFApp(object):
         while True:
             # Check received data
             rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
-            if rcv_data is not None and type(rcv_data) == str:
+            if rcv_data is not None and type(rcv_data) is str:
                 if rcv_data == 'READY':
                     self.rtp_srv.send('READY;'.encode('utf-8'))
                     break
@@ -776,7 +776,7 @@ class NFApp(object):
         # --- Wait for the scan start -----------------------------------------
         while True:
             rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
-            if rcv_data is not None and type(rcv_data) == str:
+            if rcv_data is not None and type(rcv_data) is str:
                 if 'SCAN_START' in rcv_data:
                     self.scan_onset = core.getTime()
                     break
@@ -828,7 +828,7 @@ class NFApp(object):
             try:
                 # Check a message received
                 rcv_data = self.rtp_srv.get_recv_queue(timeout=0.01)
-                if rcv_data is not None and type(rcv_data) == str:
+                if rcv_data is not None and type(rcv_data) is str:
                     if 'GET_STATE' in rcv_data:
                         self.rtp_srv.send(self.state.encode('utf-8'))
                         self._log(f'Send state {self.state}')

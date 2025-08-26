@@ -1101,7 +1101,7 @@ class RTMRISimulator:
     def load_dicom_sessions(self):
         """Load available DICOM sessions"""
         self.log_message("Loading DICOM sessions...")
-        
+
         # Disable session tree during loading
         self.disable_session_treeview()
 
@@ -1148,7 +1148,7 @@ class RTMRISimulator:
 
         except Exception as e:
             self.err_message(f"Error loading DICOM sessions: {e}")
-    
+
         finally:
             # Always re-enable session tree when finished
             self.enable_session_treeviews()

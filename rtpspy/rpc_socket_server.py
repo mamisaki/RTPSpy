@@ -228,7 +228,9 @@ def get_port_by_name(socket_name, host=None):
                 root.destroy()
                 if not password:
                     return None, "Password required for SSH access"
-                cmd = f"sshpass -p '{password}' ssh {host} 'cat .RTPSpy/rtpspy'"
+                cmd = (
+                    f"sshpass -p '{password}' ssh {host} 'cat .RTPSpy/rtpspy'"
+                )
             else:
                 cmd = f"ssh {host} 'cat .RTPSpy/rtpspy'"
 
@@ -275,11 +277,9 @@ class RPCSocketServer:
                 (host, 0), RPCSocketServer._recvDataHandler
             )
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
+            self._logger.error(
+                "Failed to start TCPServer\n%s", traceback.format_exc()
             )
-            self._logger.error(errstr)
             self.server = None
             return
 
@@ -305,8 +305,7 @@ class RPCSocketServer:
 
         # Start the server on another thread.
         self._server_thread = Thread(
-            target=self._server.serve_forever, args=(0.5,)
-        )
+            target=self._server.serve_forever, args=(0.5,))
         # Make the server thread exit when the main thread terminates
         self._server_thread.daemon = True
         self._server_thread.start()
@@ -350,10 +349,8 @@ class RPCSocketServer:
                         exc_type, exc_obj, exc_tb = sys.exc_info()
                         errstr = "".join(
                             traceback.format_exception(
-                                exc_type, exc_obj, exc_tb
-                            )
-                        )
-                        self._logger.error(f"Data receiving error: {errstr}")
+                                exc_type, exc_obj, exc_tb))
+                        self._logger.error(f'Data receiving error: {errstr}')
                         break
                     time.sleep(0.001)
 
@@ -432,17 +429,16 @@ class RPCSocketServer:
                             ret = pack_data(ret)
 
                         self.request.sendall(ret)
-                        self._logger.debug(f"Sent response of {len(ret)} bytes")
+                        self._logger.debug(
+                            f"Sent response of {len(ret)} bytes"
+                        )
                     else:
                         self._logger.debug(
                             "Callback returned None, no response sent"
                         )
 
                 except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errstr = "".join(
-                        traceback.format_exception(exc_type, exc_obj, exc_tb)
-                    )
+                    errstr = str(e) + "\n" + traceback.format_exc()
                     self._logger.error(f"Callback execution error: {errstr}")
             else:
                 self._logger.error(
