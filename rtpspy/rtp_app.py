@@ -52,26 +52,27 @@ try:
     from .rtp_ttl_physio import RtpTTLPhysio
 
 except Exception:
-    # For DEBUG environment
-    from rtpspy import (
-        RtpWatch,
-        RtpTshift,
-        RtpVolreg,
-        RtpSmooth,
-        RtpRegress,
-        RtpImgProc,
-        RtpTTLPhysio
-    )
-    from rtpspy.rtp_common import (
-        RTP,
-        boot_afni,
-        MatplotlibWindow,
-        DlgProgressBar,
-        excepthook,
-        load_parameters,
-        save_parameters,
-    )
-    from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
+    # # For DEBUG environment
+    # from rtpspy import (
+    #     RtpWatch,
+    #     RtpTshift,
+    #     RtpVolreg,
+    #     RtpSmooth,
+    #     RtpRegress,
+    #     RtpImgProc,
+    #     RtpTTLPhysio
+    # )
+    # from rtpspy.rtp_common import (
+    #     RTP,
+    #     boot_afni,
+    #     MatplotlibWindow,
+    #     DlgProgressBar,
+    #     excepthook,
+    #     load_parameters,
+    #     save_parameters,
+    # )
+    # from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
+    pass
 
 
 # %% RtpApp class ============================================================
@@ -247,6 +248,7 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         """Prepare the process."""
+
         self._proc_ready = True
 
         if not Path(self.ROI_orig).is_file():
@@ -623,10 +625,11 @@ class RtpApp(RTP):
         # Make RTP work_dir
         work_dir = self.work_dir
         if work_dir.name != 'RTP':
-            work_dir = work_dir / 'RTP'
-            if not work_dir.is_dir():
-                work_dir.mkdir(parents=True)
-            self.main_win.set_workDir(work_dir)
+            out_dir = work_dir / 'RTP'
+            if not out_dir.is_dir():
+                out_dir.mkdir(parents=True)
+        else:
+            out_dir = work_dir
 
         st0 = time.time()  # start time
         OK = True
@@ -647,16 +650,16 @@ class RtpApp(RTP):
                 pass
 
             # Deoblique self.anat_orig
-            anat_orig = work_dir / Path(self.anat_orig).name
+            anat_orig = out_dir / Path(self.anat_orig).name
             improc.copy_deoblique(
                 self.anat_orig, anat_orig, progress_bar=progress_bar,
                 overwrite=overwrite
             )
             # endregion: Check image space
 
-            # region: 0. Copy func_orig to work_dir as vr_base_* --------------
+            # region: 0. Copy func_orig to out_dir as vr_base_* --------------
             if (
-                Path(func_orig).parent != work_dir
+                Path(func_orig).parent != out_dir
                 or not Path(func_orig).stem.startswith("vr_base_")
                 or overwrite
             ):
@@ -666,13 +669,15 @@ class RtpApp(RTP):
                 vidx = None
                 if ma is not None:
                     vidx = int(ma.groups()[0])
+                else:
+                    vidx = -1
 
                 if not src_f_stem.startswith("vr_base_"):
                     src_save_fname = "vr_base_" + src_f_stem
                 else:
                     src_save_fname = src_f_stem
 
-                dst_f = work_dir / f"{src_save_fname}.nii.gz"
+                dst_f = out_dir / f"{src_save_fname}.nii.gz"
                 if (
                     dst_f != Path(func_orig) and
                     (not dst_f.is_file() or overwrite)
@@ -752,7 +757,7 @@ class RtpApp(RTP):
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
                 seg_files = improc.run_fast_seg(
-                    work_dir,
+                    out_dir,
                     anat_orig,
                     total_ETA,
                     progress_bar=progress_bar,
@@ -769,7 +774,7 @@ class RtpApp(RTP):
                 # 3dSkullStrip
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
-                    work_dir,
+                    out_dir,
                     anat_orig,
                     total_ETA,
                     progress_bar=progress_bar,
@@ -788,13 +793,12 @@ class RtpApp(RTP):
                 self.fieldmap_nega and Path(self.fieldmap_nega).is_file()
             ):
                 sdc_invwarp, func_orig_sdc = improc.run_pepolar_sdc(
-                    work_dir,
+                    out_dir,
                     self.fieldmap_posi,
                     self.fieldmap_nega,
                     self.func_orig,
                     total_ETA,
                     progress_bar=progress_bar,
-                    ask_cmd=ask_cmd,
                     overwrite=overwrite,
                 )
                 assert sdc_invwarp is not None, (
@@ -813,7 +817,7 @@ class RtpApp(RTP):
 
             # region: 3. Align anatomy to function ----------------------------
             alAnat = improc.align_anat2epi(
-                work_dir,
+                out_dir,
                 self.brain_anat_orig,
                 func_base,
                 total_ETA,
@@ -827,13 +831,13 @@ class RtpApp(RTP):
             self.set_param("alAnat", alAnat)
 
             alAnat_f_stem = self.alAnat.stem.replace(".nii", "")
-            aff1D_f = work_dir / (alAnat_f_stem + "_mat.aff12.1D")
+            aff1D_f = out_dir / (alAnat_f_stem + "_mat.aff12.1D")
             assert aff1D_f.is_file()
             # endregion
 
             # region: 4. Make RTP and GSR masks -------------------------------
             mask_files = improc.make_RTP_GSR_masks(
-                work_dir,
+                out_dir,
                 func_base,
                 total_ETA,
                 ref_vi=0,
@@ -849,7 +853,7 @@ class RtpApp(RTP):
                 mask_files = list(mask_files)
                 for ii, mask_f in enumerate(mask_files):
                     mask_files[ii] = improc.ants_warp_resample(
-                        work_dir,
+                        out_dir,
                         mask_f,
                         self.func_orig,
                         [self.sdc_invwarp],
@@ -868,7 +872,7 @@ class RtpApp(RTP):
             if Path(self.template).is_file():
                 if Path(self.ROI_template).is_file() or no_FastSeg:
                     warp_params = improc.warp_template(
-                        work_dir,
+                        out_dir,
                         self.alAnat,
                         self.template,
                         total_ETA,
@@ -884,7 +888,7 @@ class RtpApp(RTP):
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
-                    work_dir,
+                    out_dir,
                     self.ROI_template,
                     self.alAnat,
                     warp_params,
@@ -899,7 +903,7 @@ class RtpApp(RTP):
                 if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
                     # Apply inverse distortion correction to the ROI
                     ROI_orig_invsdc = improc.ants_warp_resample(
-                        work_dir,
+                        out_dir,
                         ROI_orig,
                         self.func_orig,
                         [self.sdc_invwarp],
@@ -942,7 +946,7 @@ class RtpApp(RTP):
                     if no_FastSeg:
                         # warp template seg_anat_f
                         seg_anat_f = improc.ants_warp_resample(
-                            work_dir,
+                            out_dir,
                             seg_anat_f,
                             self.alAnat,
                             warp_params,
@@ -954,7 +958,7 @@ class RtpApp(RTP):
                         aff1D_f = None
 
                     seg_al_f = improc.resample_segmasks(
-                        work_dir,
+                        out_dir,
                         seg_anat_f,
                         segname,
                         erode,
@@ -969,7 +973,7 @@ class RtpApp(RTP):
                     if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
                         # Apply inverse distortion correction to the ROI
                         seg_al_f = improc.ants_warp_resample(
-                            work_dir,
+                            out_dir,
                             seg_al_f,
                             self.func_orig,
                             [self.sdc_invwarp],
@@ -1572,6 +1576,7 @@ class RtpApp(RTP):
 
         if self.rtp_objs["TTLPHYSIO"].available:
             self.rtp_objs["TTLPHYSIO"].release_standby_scan()
+            self.rtp_objs["TTLPHYSIO"].end_scan()
 
         self._isReadyRun = False
         self._isRunning_end_run_proc = False
@@ -1583,7 +1588,6 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def check_onAFNI(self, base=None, ovl=None):
         """Check and display images in AFNI."""
-        work_dir = Path(self.work_dir)
 
         # Set underlay and overlay image file
         base_img = None
@@ -1666,6 +1670,7 @@ class RtpApp(RTP):
             errmsg = f"Base image {base_img.name} is not set or found."
             self.err_popup(errmsg)
             return
+        ses_dir = base_img.parent
 
         if ovl_img is None or not Path(ovl_img).is_file():
             errmsg = f"Base image {ovl_img.name} is not set or found."
@@ -1687,10 +1692,9 @@ class RtpApp(RTP):
         ]
         if len(procs) == 0:
             # Boot AFNI
-            boot_dir = base_img.parent if base_img is not None else work_dir
             boot_afni(
                 main_win=self.main_win,
-                boot_dir=boot_dir,
+                boot_dir=ses_dir,
                 TRUSTHOST=self.AFNIRT_TRUSTHOST,
             )
 
@@ -1730,7 +1734,7 @@ class RtpApp(RTP):
             le = 800  # left end
             tp = 500  # top
             cmd = "plugout_drive"
-            cmd += f" -com 'SWITCH_SESSION {Path(work_dir).name}'"
+            cmd += f" -com 'SWITCH_SESSION {Path(ses_dir).name}'"
             cmd += " -com 'RESCAN_THIS'"
             cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
             if ovl_img is not None:

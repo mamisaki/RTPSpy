@@ -12,5 +12,4 @@ from .rtp_imgproc import RtpImgProc
 from .rpc_socket_server import RPCSocketServer, RPCSocketCom
 from .dicom_converter import DicomConverter
 from .dicom_reader import DicomReader
-from .rt_dicom_monitor import RtDcmMonitor
 from .rt_physio import SharedMemoryRingBuffer

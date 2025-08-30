@@ -671,7 +671,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         all_params = OrderedDict()
         for rtp in (
-            "WATCH", "TSHIFT", "VOLREG", "SMOOTH", "REGRESS", "EXTSIG"
+            "WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS", "EXTSIG"
         ):
             if rtp not in self.rtp_objs:
                 continue

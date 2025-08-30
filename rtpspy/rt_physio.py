@@ -39,8 +39,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
-from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
-import gc
+try:
+    from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+except ImportError:
+    from .rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+
 
 mpl.rcParams["font.size"] = 8
 
@@ -1944,8 +1947,6 @@ class RtPhysio:
 
         del self._rec_proc
         self._rec_proc = None
-
-        gc.collect()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(self):

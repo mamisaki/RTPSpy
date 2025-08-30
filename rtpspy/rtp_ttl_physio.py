@@ -141,7 +141,7 @@ class RtpTTLPhysio(RTP):
             self._rbuf[lab] = SharedMemoryRingBuffer(**rb)
 
         # Get sampling frequency
-        physio_params = self.rt_physio_com.call_rt_proc(
+        physio_params = self.TTLPhysioCom.call_rt_proc(
             ("GET_PARAMS", ("sample_freq",)), pkl=True, get_return=True
         )
         self.sample_freq = physio_params.get("sample_freq", None)
@@ -194,6 +194,7 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def standby_scan(self):
+        self.scan_onset = 0
         if self.available:
             params = {"scan_onset": 0, "wait_ttl_on": True}
             self.TTLPhysioCom.call_rt_proc(
@@ -209,6 +210,11 @@ class RtpTTLPhysio(RTP):
     def start_scan(self):
         if self.available:
             self.TTLPhysioCom.call_rt_proc("START_SCAN")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def end_scan(self):
+        if self.available:
+            self.TTLPhysioCom.call_rt_proc("END_SCAN")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):
