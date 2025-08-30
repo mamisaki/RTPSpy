@@ -22,21 +22,20 @@ import time
 import shutil
 import pickle
 import logging
-import socket
 from pathlib import Path
 from datetime import datetime
 import json
+import traceback
 
 import numpy as np
 import pandas as pd
 
-from rtpspy.dicom_reader import DicomReader
-import traceback
-from rtpspy.rpc_socket_server import (
-    get_port_by_name,
-    rpc_send_data,
-    rpc_recv_data,
-)
+try:
+    from dicom_reader import DicomReader
+    from rpc_socket_server import RPCSocketCom
+except ImportError:
+    from rtpspy.dicom_reader import DicomReader
+    from rtpspy.rpc_socket_server import RPCSocketCom
 
 
 # %% RTMRISimulator ===========================================================
@@ -44,7 +43,11 @@ class RTMRISimulator:
     """GUI-based RT-MRI simulator with series-by-series control"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self):
+    def __init__(
+        self,
+        rpc_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
+        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json"
+    ):
         self.root = tk.Tk()
         self.root.title("RT-MRI Simulator")
         self.root.geometry("900x850")
@@ -70,13 +73,16 @@ class RTMRISimulator:
 
         self.selected_card_file = None
         self.selected_resp_file = None
-        self.physio_rpc_port = None
+        self.rpc_physio_com = RPCSocketCom(
+            rpc_physio_address_name, config_path
+        )
 
         # Initialize status variables
         self.current_image_nr = 0
         self.simulation_running = False
         self.simulation_thread = None
         self.scanning_cancelled = False
+        self._load_series_lock = threading.Lock()
 
         # Initialize logger
         self.logger = logging.getLogger("RTMRISimulator")
@@ -96,11 +102,11 @@ class RTMRISimulator:
             "series_interval": 10,
         }
 
-        # Restore config
-        self.load_config()
-
         self.setup_gui()
         self.load_dicom_sessions()
+
+        # Restore config
+        self.load_config()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_gui(self):
@@ -132,7 +138,7 @@ class RTMRISimulator:
         # Setup panels
         self.setup_session_panel(left_panel)
         self.setup_simulation_panel(right_panel)
-        self.setup_physio_panel(physio_panel)
+        self.setup_ttl_physio_panel(physio_panel)
         self.setup_log_panel(log_panel)
 
         # Status bar
@@ -419,7 +425,7 @@ class RTMRISimulator:
         # endregion: Simulation control ---------------------------------------
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def setup_physio_panel(self, parent):
+    def setup_ttl_physio_panel(self, parent):
         """Setup the physiological data selection panel"""
         physio_frame = ttk.LabelFrame(parent, text="Physiological Data")
         physio_frame.pack(fill=tk.X, pady=5)
@@ -500,30 +506,41 @@ class RTMRISimulator:
         # region: Command buttons ---------------------------------------------
         button_col = ttk.Frame(physio_frame)
         button_col.pack(side=tk.LEFT, padx=5, pady=5)
+        button_col.grid_columnconfigure(0, weight=1)
+        button_col.grid_columnconfigure(1, weight=1)
 
         # Start Physio feeding button
         self.start_physio_btn = ttk.Button(
             button_col,
-            text="Send Physio",
+            text="Set Physio",
             command=self.start_physio_feeding,
         )
-        self.start_physio_btn.pack(side=tk.LEFT, padx=5)
+        self.start_physio_btn.grid(
+            row=0, column=0, padx=5, pady=5, sticky="ew")
 
         # Stop Physio feeding button
-        self.stop_physio_btn = ttk.Button(
+        self.reset_physio_btn = ttk.Button(
             button_col,
-            text="Stop Physio",
-            command=self.stop_physio_feeding,
-            state=tk.DISABLED,
+            text="Reset Physio",
+            command=self.reset_physio,
         )
-        self.stop_physio_btn.pack(side=tk.LEFT, padx=5)
+        self.reset_physio_btn.grid(
+            row=0, column=1, padx=5, pady=5, sticky="ew")
 
         # Check RPC connection button
         ttk.Button(
             button_col,
             text="Check RPC",
             command=self.ping_physio_rpc,
-        ).pack(side=tk.LEFT, padx=5)
+        ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+
+        # Send Pulse button
+        self.send_pulse_btn = ttk.Button(
+            button_col,
+            text="Send Pulse",
+            command=self.send_pulse,
+        )
+        self.send_pulse_btn.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         # endregion: Command buttons ------------------------------------------
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -539,7 +556,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _find_sessions_recursive(
-        self, current_dir, base_dir, sessions, max_depth, current_depth=0
+        self, current_dir, base_dir, sessions, max_depth=3, current_depth=0
     ):
         """Recursively find session directories containing DICOM files"""
         if current_depth > max_depth:
@@ -656,18 +673,40 @@ class RTMRISimulator:
         return study_description
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def on_session_select(self, event=None):
+    def on_session_select(self, event=None, session=None):
         """Handle session selection"""
         if self.simulation_running:
             return
 
-        selection = self.session_tree.selection()
-        if not selection:
-            self.current_session_var.set("No session selected")
-            # Disable simulation buttons when no session selected
-            self.start_btn.config(state=tk.DISABLED)
-            self.step_btn.config(state=tk.DISABLED)
+        if session:
+            self.session_tree.unbind("<<TreeviewSelect>>")
+            # Set selection corresponding to the session directory
+            # Find the treeview item that matches the session path
+            for item_id in self.session_tree.get_children():
+                item = self.session_tree.item(item_id)
+                session_name = item["values"][0]
+                # Reconstruct the expected path
+                src_data_dir = Path(self.config["src_data_dir"])
+                if "/" in session_name:
+                    expected_path = src_data_dir / session_name
+                else:
+                    expected_path = src_data_dir / session_name
+                if Path(session) == expected_path:
+                    self.session_tree.selection_set(item_id)
+                    self.session_tree.see(item_id)
+                    break
+            selection = self.session_tree.selection()
+            self.session_tree.bind("<<TreeviewSelect>>",
+                                   self.on_session_select)
             return
+        else:
+            selection = self.session_tree.selection()
+            if not selection:
+                self.current_session_var.set("No session selected")
+                # Disable simulation buttons when no session selected
+                self.start_btn.config(state=tk.DISABLED)
+                self.step_btn.config(state=tk.DISABLED)
+                return
 
         item = self.session_tree.item(selection[0])
         session_name = item["values"][0]
@@ -835,7 +874,8 @@ class RTMRISimulator:
             self.log_message(f"Cached series info to {cache_file.name}")
 
         except Exception as e:
-            self.err_message(f"Error saving cache: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(f"Error saving cache: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _populate_series_tree(self):
@@ -884,6 +924,9 @@ class RTMRISimulator:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _load_series_info_threaded(self, session_path, rescan=False):
         """Load series information in a separate thread with progress"""
+
+        self._load_series_lock.acquire()
+
         # Store current session path for refresh functionality
         self.current_session_path = session_path
 
@@ -903,6 +946,7 @@ class RTMRISimulator:
             # Check for cancellation
             if self.scanning_cancelled:
                 self.dicom_series = None
+                self._load_series_lock.release()
                 return
 
             series_df = None
@@ -914,7 +958,8 @@ class RTMRISimulator:
                     series_df = pd.read_csv(cache_file)
                     self.log_message("Loaded series info from cache")
                 except Exception as e:
-                    self.log_message(f"Error loading cache: {e}")
+                    errstr = str(e) + "\n" + traceback.format_exc()
+                    self.log_message(f"Error loading cache: {errstr}")
                     series_df = None
 
             if series_df is None:
@@ -931,6 +976,7 @@ class RTMRISimulator:
                 # Check for cancellation
                 if self.scanning_cancelled:
                     self.dicom_series = None
+                    self._load_series_lock.release()
                     return
 
                 if not dicom_files:
@@ -940,6 +986,7 @@ class RTMRISimulator:
                     self.root.after(
                         0, self.show_series_loading_progress, False
                     )
+                    self._load_series_lock.release()
                     return
 
                 # Update progress bar maximum
@@ -977,13 +1024,16 @@ class RTMRISimulator:
             self.root.after(0, self.show_series_loading_progress, False)
 
         except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
             if not self.scanning_cancelled:
                 self.root.after(
-                    0, self.err_message, f"Error loading series info: {e}"
+                    0, self.err_message, f"Error loading series info: {errstr}"
                 )
         finally:
             # Hide progress bar
             self.root.after(0, self.show_series_loading_progress, False)
+
+        self._load_series_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _clear_series_tree(self):
@@ -1030,12 +1080,14 @@ class RTMRISimulator:
 
                 dcm_file = dicom_files[i]
                 try:
-                    info = reader.read_dicom_info(dcm_file, timeout=0.2)
-                    info["FilePath"] = dcm_file
-                    series_dfs.append(pd.DataFrame([info]))
+                    info = reader.read_dicom_info(dcm_file, timeout=1)
+                    if info:
+                        info["FilePath"] = dcm_file
+                        series_dfs.append(pd.DataFrame([info]))
                 except Exception as e:
+                    errstr = str(e) + "\n" + traceback.format_exc()
                     if not progress_callback:
-                        self.log_message(f"Error reading {dcm_file}: {e}")
+                        self.log_message(f"Error reading {dcm_file}: {errstr}")
 
                 # Update progress for initial scan
                 if progress_callback:
@@ -1061,28 +1113,31 @@ class RTMRISimulator:
             return series_df
 
         except Exception as e:
-            error_msg = f"Error loading series info: {e}"
+            errstr = str(e) + "\n" + traceback.format_exc()
+            error_msg = f"Error loading series info: {errstr}"
             if progress_callback:
                 self.root.after(0, self.log_message, error_msg)
             else:
                 self.log_message(error_msg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_src_dir(self):
+    def set_src_dir(self, directory=None):
         """Set test data root directory and refresh sessions list"""
         if self.simulation_running:
             return
 
-        directory = filedialog.askdirectory(
-            title="Select Test Source Data Directory",
-            initialdir=self.config["src_data_dir"],
-        )
+        if directory is None:
+            directory = filedialog.askdirectory(
+                title="Select Test Source Data Directory",
+                initialdir=self.config["src_data_dir"],
+            )
+
         if directory:
             # Update test data directory configuration
             self.config["src_data_dir"] = Path(directory)
             self.src_dir_var.set(str(directory))
             self.log_message(
-                f"Test source data directory changed to: {directory}"
+                f"Source data directory changed to: {directory}"
             )
 
             # Clear current session selection
@@ -1147,22 +1202,24 @@ class RTMRISimulator:
             )
 
         except Exception as e:
-            self.err_message(f"Error loading DICOM sessions: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(f"Error loading DICOM sessions: {errstr}")
 
         finally:
             # Always re-enable session tree when finished
             self.enable_session_treeviews()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_output_directory(self):
+    def set_output_directory(self, directory=None):
         """Set the output directory for simulated feeding"""
         if self.simulation_running:
             return
 
-        directory = filedialog.askdirectory(
-            title="Select Output Directory",
-            initialdir=self.config["simulation_output_dir"],
-        )
+        if directory is None:
+            directory = filedialog.askdirectory(
+                title="Select Output Directory",
+                initialdir=self.config["simulation_output_dir"],
+            )
         if directory:
             # Update output directory configuration
             self.config["simulation_output_dir"] = Path(directory)
@@ -1197,25 +1254,27 @@ class RTMRISimulator:
                 self.log_message("Output directory cleared")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_cardiogram_file(self):
+    def set_cardiogram_file(self, filename=None):
         """Set Cardiogram file"""
-        filename = filedialog.askopenfilename(
-            title="Select Cardiogram File",
-            initialdir=self.current_session_path,
-            filetypes=[("1D files", "*.1D"), ("All files", "*.*")],
-        )
+        if filename is None:
+            filename = filedialog.askopenfilename(
+                title="Select Cardiogram File",
+                initialdir=self.current_session_path,
+                filetypes=[("1D files", "*.1D"), ("All files", "*.*")],
+            )
         if filename:
             self.selected_card_file = Path(filename)
             self.card_file_var.set(filename)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_respiration_file(self):
+    def set_respiration_file(self, filename=None):
         """Set Respiration file"""
-        filename = filedialog.askopenfilename(
-            title="Select Respiration File",
-            initialdir=self.current_session_path,
-            filetypes=[("1D files", "*.1D"), ("All files", "*.*")],
-        )
+        if filename is None:
+            filename = filedialog.askopenfilename(
+                title="Select Respiration File",
+                initialdir=self.current_session_path,
+                filetypes=[("1D files", "*.1D"), ("All files", "*.*")],
+            )
         if filename:
             self.selected_resp_file = Path(filename)
             self.resp_file_var.set(filename)
@@ -1242,8 +1301,9 @@ class RTMRISimulator:
             output_dir = Path(self.output_dir_var.get())
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
             messagebox.showerror(
-                "Error", f"Cannot create output directory: {e}"
+                "Error", f"Cannot create output directory: {errstr}"
             )
             return False
 
@@ -1376,10 +1436,19 @@ class RTMRISimulator:
                     {"value": self.current_image_nr},
                 )
 
-                # region: Simulate files in series ----------------------------
-                st_time = time.time()
+                # region: Simulate file creation in a series ------------------
+                tr = np.median(np.diff(timings))
+                timings += tr
                 for ii, dicom_file in enumerate(series_df["FilePath"]):
                     dicom_file = Path(dicom_file)
+                    dest_file = series_output_dir / dicom_file.name
+
+                    if ii == 0:  # Start scan
+                        if not dest_file.parent.is_dir():
+                            dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        self.send_pulse()
+                        st_time = time.time()
+
                     while time.time() - st_time < timings[ii]:
                         if not self.simulation_running:
                             break
@@ -1389,9 +1458,11 @@ class RTMRISimulator:
                     if not self.simulation_running:
                         break
 
+                    if ii < len(series_df) - 1:
+                        self.send_pulse()
+
                     # Copy file
-                    dest_file = series_output_dir / dicom_file.name
-                    shutil.copy2(dicom_file, dest_file)
+                    shutil.copy(dicom_file, dest_file)
                     self.current_image_nr = self.current_image_nr + 1
 
                     # Update progress
@@ -1494,9 +1565,7 @@ class RTMRISimulator:
                                 time.sleep(0.1)
                         else:
                             # Clear self.series_tree.focus
-                            self.series_tree.selection_clear(
-                                self.series_tree.focus()
-                            )
+                            self.series_tree.selection_clear()
                             self.current_series_nr = 0
                             break
                 else:
@@ -1509,10 +1578,8 @@ class RTMRISimulator:
                 )
 
         except Exception as e:
-            error_traceback = traceback.format_exc()
-            self.root.after(0, self.log_message,
-                            f"Traceback:\n{error_traceback}")
-            self.root.after(0, self.err_message, f"Simulation error: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.root.after(0, self.err_message, f"Simulation error: {errstr}")
 
         finally:
             self.root.after(0, self.simulation_finished)
@@ -1581,75 +1648,30 @@ class RTMRISimulator:
                 self.current_image_nr = 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ping_physio_rpc(self):
+    def ping_physio_rpc(self, popup=True):
         """Ping the rt_physio.py process to check if it's responsive"""
-        response = self.send_rpc_command("ping")
-        if response == "pong":
-            self.log_message(f"Physio process ping successful: {response}")
-            messagebox.showinfo(
-                "Physio RPC Status",
-                f"Physio process ping successful: {response}",
-            )
+        if self.rpc_physio_com.rpc_ping():
+            self.log_message("Physio process ping successful")
+            if popup:
+                messagebox.showinfo(
+                    "Physio RPC Status",
+                    "Physio process ping successful",
+                )
+            return True
         else:
-            self.err_message(f"Physio process ping failed: {response}")
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def send_rpc_command(
-        self, command, socket_name="RtpTTLPhysioSocketServer", host=None
-    ):
-        if self.physio_rpc_port is None:
-            port, errmsg = get_port_by_name(socket_name, host=host)
-            if port is None:
-                self.err_message(f"Error getting port: {errmsg}")
-                return None
-            self.physio_rpc_port = port
-
-        if host is None:
-            host = "localhost"
-        address = (host, self.physio_rpc_port)
-
-        """Send RPC command to rt_physio.py process"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5.0)  # 5 second timeout
-            sock.connect(address)
-
-            # Send the formatted message
-            if isinstance(command, tuple):
-                rpc_send_data(sock, command, pkl=True)
-            else:
-                rpc_send_data(sock, command)
-
-            # Receive response (simple string response expected)
-            response = rpc_recv_data(sock)
-
-            sock.close()
-            return response
-
-        except ConnectionError as e:
-            self.err_message(f"RPC connection error: {e}")
-            self.physio_rpc_port = None
-            return None
-
-        except Exception as e:
-            self.err_message(f"RPC communication error: {e}")
-            return None
+            self.err_message("Physio process ping failed")
+            messagebox.showerror(
+                "Physio RPC Status",
+                "Physio process ping failed",
+            )
+            return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_physio_feeding(self):
         """Start physiological feeding with selected files"""
 
         # First try to connect to existing physiological recording process
-        try:
-            # Test connection with a simple ping
-            response = self.send_rpc_command("ping")
-            if response is None:
-                raise Exception("No response from existing process")
-
-        except Exception:
-            self.err_message(
-                "Failed to connect to existing physiological recording process"
-            )
+        if not self.ping_physio_rpc(popup=False):
             return
 
         # Send selected physio files to rt_physio for simulation
@@ -1666,6 +1688,10 @@ class RTMRISimulator:
 
         if not card_file or not resp_file:
             self.err_message("No physio files selected.")
+            messagebox.showerror(
+                "Physio File Selection",
+                "No physio files selected.",
+            )
             return
 
         try:
@@ -1674,38 +1700,41 @@ class RTMRISimulator:
                 "START_DUMMY_FEEDING_WITH_FILES",
                 (card_file, resp_file, self.physio_freq_var.get()),
             )
-            response = self.send_rpc_command(command)
-
-            # Handle the case where rt_physio doesn't respond (known issue)
-            if response is None:
-                # Fallback: assume command was successful but no response
-                self.start_physio_btn.config(state=tk.DISABLED)
-                self.stop_physio_btn.config(state=tk.NORMAL)
+            if self.rpc_physio_com.rpc_ping():
+                self.rpc_physio_com.call_rt_proc(
+                    command, pkl=True)
                 self.log_message("Start physio feeding")
-            elif response and "Error" not in response:
-                self.start_physio_btn.config(state=tk.DISABLED)
-                self.stop_physio_btn.config(state=tk.NORMAL)
-                self.log_message(f"Physio feeding started: {response}")
             else:
-                self.err_message(f"Failed to start physio feeding: {response}")
+                self.err_message("Failed to start physio feeding")
 
         except Exception as e:
-            self.err_message(f"Error communicating with physio process: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(
+                f"Error communicating with physio process: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def stop_physio_feeding(self):
+    def reset_physio(self):
         """Stop physiological feeding"""
         # Stop physio feeding via RPC
         self.log_message("Stop physio feeding")
         try:
-            response = self.send_rpc_command(("SET_REC_DEV", None))
-            if response == "Error":
-                self.err_message("Failed to stop physio feeding")
+            self.rpc_physio_com.call_rt_proc(
+                ("SET_REC_DEV", None),
+                pkl=True,
+            )
         except Exception as e:
-            self.err_message(f"Error stopping physio feeding: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(f"Error stopping physio feeding: {errstr}")
 
-        self.start_physio_btn.config(state=tk.NORMAL)
-        self.stop_physio_btn.config(state=tk.DISABLED)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def send_pulse(self):
+        """Send pulse to physiological recording process"""
+        self.log_message("Send pulse")
+        try:
+            self.rpc_physio_com.call_rt_proc("TTL_PULSE")
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(f"Error sending pulse: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def log_message(self, message):
@@ -1754,16 +1783,69 @@ class RTMRISimulator:
                 # Update config with saved values, converting string paths
                 # back to Path objects
                 for key, value in saved_config.items():
-                    if key in ["src_data_dir", "simulation_output_dir"]:
+                    if key in [
+                        "src_data_dir",
+                        "simulation_output_dir",
+                        "current_session_path",
+                        "selected_card_file",
+                        "selected_resp_file"
+                    ]:
                         # Convert string paths back to Path objects
                         self.config[key] = Path(value)
                     else:
                         self.config[key] = value
 
                 self.log_message(f"Configuration loaded from {config_file}")
+            else:
+                self.log_message(
+                    "Configuration file not found, using defaults"
+                )
+
+            # Set widget values from loaded config
+            if (
+                "src_data_dir" in self.config and
+                Path(self.config["src_data_dir"]).exists()
+            ):
+                self.set_src_dir(directory=self.config["src_data_dir"])
+
+            if (
+                "simulation_output_dir" in self.config and
+                Path(self.config["simulation_output_dir"]).exists()
+            ):
+                self.set_output_directory(
+                    directory=str(self.config["simulation_output_dir"])
+                )
+            if (
+                "selected_card_file" in self.config and
+                Path(self.config["selected_card_file"]).exists()
+            ):
+                self.set_cardiogram_file(
+                    filename=str(self.config["selected_card_file"])
+                )
+            if (
+                "selected_resp_file" in self.config and
+                Path(self.config["selected_resp_file"]).exists()
+            ):
+                self.set_respiration_file(
+                    filename=str(self.config["selected_resp_file"])
+                )
+            if (
+                "current_session_path" in self.config and
+                Path(self.config["current_session_path"]).exists()
+            ):
+                self.on_session_select(
+                    session=self.config["current_session_path"]
+                )
+
+            if "auto_advance" in self.config:
+                self.auto_advance_var.set(self.config["auto_advance"])
+
+            if "series_interval" in self.config:
+                self.series_interval_var.set(self.config["series_interval"])
 
         except Exception as e:
-            self.log_message(f"Error loading configuration: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.log_message(f"Error loading configuration: {errstr}")
             # Continue with default config values
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1782,6 +1864,16 @@ class RTMRISimulator:
             self.config["auto_advance"] = self.auto_advance_var.get()
             self.config["series_interval"] = self.series_interval_var.get()
 
+            # Save session and card/resp file selections
+            if self.current_session_path:
+                self.config["current_session_path"] = self.current_session_path
+
+            if self.selected_card_file:
+                self.config["selected_card_file"] = self.selected_card_file
+
+            if self.selected_resp_file:
+                self.config["selected_resp_file"] = self.selected_resp_file
+
             # Convert Path objects to strings for JSON serialization
             serializable_config = {}
             for key, value in self.config.items():
@@ -1796,7 +1888,8 @@ class RTMRISimulator:
             self.log_message(f"Configuration saved to {config_file}")
 
         except Exception as e:
-            self.err_message(f"Error saving configuration: {e}")
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self.err_message(f"Error saving configuration: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def disable_treeviews(self):

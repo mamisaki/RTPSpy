@@ -313,7 +313,7 @@ class RTP(object):
                     isinstance(val, RTP) or \
                     isinstance(val, serial.Serial) or \
                     isinstance(val, QtCore.QThread) or \
-                    isinstance(val, threading.Thread)    :
+                    isinstance(val, threading.Thread):
                 continue
 
             if isinstance(val, Path):
@@ -387,23 +387,6 @@ class RTP(object):
         if self.main_win is not None:
             QtWidgets.QApplication.instance().processEvents()
 
-    # # # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # def logmsg(self, msg, ret_str=False, show_ui=True):
-    #     self._logger
-
-    #     tstr = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f')
-    #     msg = "{}:[{}]: {}".format(tstr, self.__class__.__name__, msg)
-    #     if ret_str:
-    #         return msg
-
-    #     if isinstance(self._std_out, LogDev):
-    #         self._std_out.write(msg + '\n', show_ui=show_ui)
-    #     else:
-    #         self._std_out.write(msg + '\n')
-
-    #     if hasattr(self._std_out, 'flush'):
-    #         self._std_out.flush()
-
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_popup(self, errmsg):
         if self.main_win is not None:
@@ -425,7 +408,7 @@ def save_parameters(objs, fname='RTPSpy_params.pkl'):
             continue
 
         props[k] = dict()
-        if objs[k] is None:
+        if objs[k] is None or not hasattr(objs[k], 'get_params'):
             continue
 
         for var_name, var_val in objs[k].get_params().items():
@@ -462,7 +445,6 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
         for mod in props.keys():
             if mod in objs:
                 obj = objs[mod]
-                
                 for var_name, val in props[mod].items():
                     if not hasattr(obj, var_name) or var_name is None:
                         continue
@@ -481,45 +463,6 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
         errmsg = ''.join(
             traceback.format_exception(exc_type, exc_obj, exc_tb))
         print(errmsg)
-
-
-# %% LogDev ===================================================================
-# class LogDev(QtCore.QObject):
-#     write_log = QtCore.pyqtSignal(str)
-
-#     def __init__(self, fname=None, ui_obj=None):
-#         super().__init__()
-
-#         self.fname = fname
-#         if fname is not None:
-#             if fname == sys.stdout:
-#                 self.fd = fname
-#             else:
-#                 self.fd = open(fname, 'a')
-#         else:
-#             self.fd = None
-
-#         self.ui_obj = ui_obj
-#         if self.ui_obj is not None:
-#             self.write_log.connect(self.ui_obj.print_log)
-
-#     def write(self, txt, show_ui=True):
-#         if self.ui_obj is not None and show_ui:
-#             # GUI handling across threads is not allowed. So logging from
-#             # other threads (e.g., rtp thread by watchdog) must be called via
-#             # signal.
-#             self.write_log.emit(txt)
-
-#         if self.fd is not None:
-#             self.fd.write(txt)
-
-#     def flush(self):
-#         if self.fd is not None:
-#             self.fd.flush()
-
-#     def __del__(self):
-#         if self.fd is not None and self.fd != sys.stdout:
-#             self.fd.close()
 
 
 # %% DlgProgressBar ===========================================================
