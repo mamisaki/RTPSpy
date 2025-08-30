@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import sys
 import traceback
+import re
 
 import numpy as np
 import pydicom
@@ -18,9 +19,8 @@ import nibabel as nib
 class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, vendor='SiemensXA30'):
+    def __init__(self):
         self.logger = logging.getLogger('DicomReader')
-        self.vendor = vendor
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def safe_read_dicom_file(self, dicom_file, root_dir=None, timeout=1):
@@ -36,8 +36,13 @@ class DicomReader():
 
                 manufacturer = dcm.Manufacturer.lower()
                 if 'siemens' in manufacturer:
-                    scan_info = self.read_siemens_dicom_info(dcm)
-                elif 'GE' in manufacturer:
+                    soft_ver = dcm.SoftwareVersions
+                    if "XA" in soft_ver:
+                        scan_info = self.read_siemens_XA_dicom_info(dcm)
+                    elif re.search(r"E\d+", soft_ver):
+                        scan_info = self.read_siemens_mosaic_dicom_info(dcm)
+                elif 'ge' in manufacturer:
+                    soft_ver = dcm.SoftwareVersions
                     scan_info = self.read_ge_dicom_info(dcm)
                 else:
                     break
@@ -57,9 +62,10 @@ class DicomReader():
         return dcm, scan_info
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_dicom_info(self, dicom, is_file=True, root_dir=None,
-                        timeout=1):
-        if is_file:
+    def read_dicom_info(self, dicom, root_dir=None, timeout=1):
+        scan_info = None
+        is_dataset = isinstance(dicom, pydicom.dataset.Dataset)
+        if not is_dataset:
             dcm, scan_info = self.safe_read_dicom_file(
                 dicom, root_dir, timeout)
             if dcm is None:
@@ -67,15 +73,19 @@ class DicomReader():
                 return None
         else:
             dcm = dicom
-            if self.vendor == 'GE':
+            manufacturer = dcm.Manufacturer.lower()
+            if 'siemens' in manufacturer:
+                soft_ver = dcm.SoftwareVersions
+                if "XA" in soft_ver:
+                    scan_info = self.read_siemens_XA_dicom_info(dcm)
+                elif re.search(r"E\d+", soft_ver):
+                    scan_info = self.read_siemens_mosaic_dicom_info(dcm)
+            elif 'ge' in manufacturer:
+                soft_ver = dcm.SoftwareVersions
                 scan_info = self.read_ge_dicom_info(dcm)
-            elif self.vendor == 'SiemensMosaic':
-                scan_info = self.read_mosaic_dicom_info(dcm)
-            elif self.vendor == 'SiemensXA30':
-                scan_info = self.read_siemensXA30_dicom_info(dcm)
 
         if scan_info is not None:
-            if is_file:
+            if not is_dataset:
                 if root_dir is not None:
                     dcm_dir = Path(dicom).relative_to(root_dir).parent
                 else:
@@ -105,14 +115,7 @@ class DicomReader():
             while time.time() - st < time_out:
                 # Wait until the file is readable.
                 try:
-                    dcm = pydicom.dcmread(dcm_f)
-                    assert hasattr(dcm, 'pixel_array')
-                    if self.vendor == 'GE':
-                        scan_info = self.read_ge_dicom_info(dcm)
-                    elif self.vendor == 'SiemensMosaic':
-                        scan_info = self.read_mosaic_dicom_info(dcm)
-                    elif self.vendor == 'SiemensXA30':
-                        scan_info = self.read_siemensXA30_dicom_info(dcm)
+                    dcm, scan_info = self.safe_read_dicom_file(dcm_f)
                     assert scan_info is not None
                     dcms.append(dcm)
                     break
@@ -125,8 +128,8 @@ class DicomReader():
         dcm = dcms[-1]
 
         # --- Read position and pixel_array data ---
-        if 'PerFrameFunctionalGroupsSequence' in dcms[0]:
-            rets = self.load_dicom_data_volume(dcms[0])
+        if 'PerFrameFunctionalGroupsSequence' in dcm:
+            rets = self.load_dicom_data_volume(dcm)
         else:
             rets = self.load_dicom_data_volume(dcms)
 
@@ -288,26 +291,202 @@ class DicomReader():
         return scan_info
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def read_siemens_dicom_info(self, dcm):
+    def read_siemens_XA_dicom_info(self, dcm):
         scan_info = {}
         try:
+            scan_info['Series Information'] = f"scan_{dcm.SeriesNumber}"
+            if 'AcquisitionDateTime' in dcm:
+                acqdtime = dcm.AcquisitionDateTime
+            elif 'SeriesDate' in dcm and 'SeriesTime' in dcm:
+                acqdtime = dcm.SeriesDate + dcm.SeriesTime
+            else:
+                acqdtime = None
+
+            if acqdtime is not None:
+                if '.' in acqdtime:
+                    tfmt = '%Y%m%d%H%M%S.%f'
+                else:
+                    tfmt = '%Y%m%d%H%M%S'
+                acqdtime = datetime.strptime(acqdtime, tfmt)
+                scan_info['Scan date'] = acqdtime.strftime('%a %b %d %Y')
+                scan_info['Scan started'] = acqdtime.strftime('%H:%M:%S')
+
+            dateTime = datetime.strptime(dcm.StudyDate+dcm.StudyTime,
+                                         '%Y%m%d%H%M%S.%f')
+            scan_info['StudyDateTime'] = dateTime.isoformat()
+
+            scan_info['ContentTime'] = dcm.ContentTime
+            StationName = dcm.StationName
+            if 'ManufacturerModelName' in dcm:
+                ModelName = dcm.ManufacturerModelName.replace(' ', '_')
+            else:
+                ModelName = ''
+            scan_info['Scanner'] = f"{StationName}_{ModelName}"
+            if hasattr(dcm, 'StudyID'):
+                scan_info['StudyID'] = dcm.StudyID
+
             scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
+            scan_info['Protocol'] = dcm.ProtocolName
+            scan_info['PatientName'] = dcm.PatientName
+            scan_info['PatientID'] = dcm.PatientID
+            scan_info['StudyDescription'] = dcm.StudyDescription
+            scan_info['SeriesDescription'] = dcm.SeriesDescription
+            if hasattr(dcm, 'OperatorsName'):
+                scan_info['Operator'] = dcm.OperatorsName
+            if 'SequenceName' in dcm:
+                scan_info['Pulse Sequence Name'] = dcm.SequenceName
+            elif 'PulseSequenceName' in dcm:
+                scan_info['Pulse Sequence Name'] = dcm.PulseSequenceName
+            scan_info['Protocol Name'] = dcm.ProtocolName
+
+            if 'Columns' in dcm and 'Rows' in dcm:
+                scan_info['Xres'] = dcm.Columns
+                scan_info['Yres'] = dcm.Rows
+            scan_info['ImageType'] = '\\'.join(dcm.ImageType)
+            if 'NumberOfFrames' in dcm:
+                scan_info['Nr of slices'] = int(dcm.NumberOfFrames)
+            if 'SpacingBetweenSlices' in dcm:
+                scan_info['Slice Thickness'] = float(dcm.SpacingBetweenSlices)
+            elif 'SliceThickness' in dcm:
+                scan_info['Slice Thickness'] = float(dcm.SliceThickness)
+
+            # Calculate FOV
+            if 'PixelSpacing' in dcm:
+                PixelSpacing = dcm.PixelSpacing
+            elif (0x5200, 0x9230) in dcm:
+                PixelSpacing = dcm[(0x5200, 0x9230)
+                                   ][0].PixelMeasuresSequence[0].PixelSpacing
+            else:
+                PixelSpacing = None
+            if PixelSpacing is not None:
+                FOV = [scan_info['Xres'] * PixelSpacing[0],
+                       scan_info['Yres'] * PixelSpacing[1]]
+                scan_info['FOV'] = FOV
+
+            if 'SharedFunctionalGroupsSequence' in dcm:
+                if 'MRTimingAndRelatedParametersSequence' in \
+                        dcm.SharedFunctionalGroupsSequence[0]:
+                    MRTiming = dcm.SharedFunctionalGroupsSequence[
+                        0].MRTimingAndRelatedParametersSequence[0]
+            else:
+                MRTiming = None
+
+            if 'RepetitionTime' in dcm:
+                scan_info['TR'] = float(dcm.RepetitionTime)
+            elif MRTiming is not None:
+                scan_info['TR'] = float(MRTiming.RepetitionTime)
+
+            if 'EchoTime' in dcm:
+                scan_info['TE'] = float(dcm.EchoTime)
+            elif (0x5200, 0x9230) in dcm:
+                scan_info['TE'] = float(
+                    dcm[(0x5200, 0x9230)
+                        ][0].MREchoSequence[0].EffectiveEchoTime)
+
+            if 'EchoTrainLength' in dcm:
+                scan_info['EchoTrainLength'] = int(dcm.EchoTrainLength)
+            elif MRTiming is not None:
+                scan_info['EchoTrainLength'] = int(MRTiming.EchoTrainLength)
+
+            if 'FlipAngle' in dcm:
+                scan_info['FA'] = float(dcm.FlipAngle)
+            elif MRTiming is not None:
+                scan_info['FA'] = float(MRTiming.FlipAngle)
+
+            if hasattr(dcm, 'InversionTime'):
+                scan_info['TI'] = float(dcm.InversionTime)
+            if 'AcquisitionDuration' in dcm:
+                scan_info['Acquisition Duration'] = dcm.AcquisitionDuration
+
+            # Parallel acquisition
+            if 'SharedFunctionalGroupsSequence' in dcm:
+                if 'MRModifierSequence' in \
+                        dcm.SharedFunctionalGroupsSequence[0]:
+                    MRModifierSequence = dcm.SharedFunctionalGroupsSequence[
+                        0].MRModifierSequence[0]
+                    if 'ParallelAcquisition' in MRModifierSequence:
+                        scan_info['Parallel Acquisition'] = \
+                            MRModifierSequence.ParallelAcquisition
+                        if scan_info['Parallel Acquisition'] != 'NO':
+                            scan_info['Parallel Acquisition Technique'] = \
+                                MRModifierSequence.ParallelAcquisitionTechnique
+                            scan_info['Parallel Reduction Factor In-plane'] = (
+                                MRModifierSequence
+                                .ParallelReductionFactorInPlane
+                            )
+
+            # Get slice timing
+            if 'NumberOfFrames' in dcm:
+                acq_times = []
+                for frame in dcm.PerFrameFunctionalGroupsSequence:
+                    acq_time = frame.FrameContentSequence[
+                        0].FrameAcquisitionDateTime
+                    acq_times.append(
+                        datetime.strptime(acq_time, '%Y%m%d%H%M%S.%f'))
+
+                slice_timing = [dt.microseconds/1000000 for dt
+                                in np.array(acq_times) - np.min(acq_times)]
+                if len(np.unique(slice_timing)) > 1:
+                    scan_info['Slice Timing'] = slice_timing
+
+        except Exception:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            errstr = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            msg = f"Failed to read DICOM info: {errstr}"
+            self.logger.error(msg)
+            scan_info = None
+
+        return scan_info
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def read_siemens_mosaic_dicom_info(self, dcm):
+        scan_info = {}
+        try:
+            scan_info['Series Information'] = f"scan_{dcm.SeriesNumber}"
             date = datetime.strptime(dcm.StudyDate, '%Y%m%d')
             scan_info['Scan date'] = date.strftime('%a %b %d %Y')
-            scan_info['ContentTime'] = dcm.ContentTime
-            if hasattr(dcm, 'AcquisitionTime'):
-                scan_info['AcquisitionTime'] = dcm.AcquisitionTime
-            elif hasattr(dcm, 'AcquisitionDateTime'):
-                scan_info['AcquisitionTime'] = dcm.AcquisitionDateTime[8:]
+            if '.' in dcm.AcquisitionTime:
+                tfmt = '%H%M%S.%f'
+            else:
+                tfmt = '%H%M%S'
+            acqtime = datetime.strptime(dcm.AcquisitionTime, tfmt)
+            scan_info['Scan started'] = acqtime.strftime('%H:%M:%S')
+
+            StationName = dcm[(0x0008, 0x1010)].value
+            ModelName = dcm[(0x0008, 0x1090)].value
+            scan_info['Scanner'] = f"{StationName}_{ModelName}"
+
+            if hasattr(dcm, 'StudyID'):
+                scan_info['Exam'] = dcm.StudyID
+
+            scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
+            scan_info['ProtocolName'] = dcm.ProtocolName
+            scan_info['StudyDescription'] = dcm.StudyDescription
             scan_info['SeriesDescription'] = dcm.SeriesDescription
-            if hasattr(dcm, 'StudyDescription'):
-                scan_info['StudyDescription'] = dcm.StudyDescription
-            if hasattr(dcm, 'ImageType'):
-                scan_info['ImageType'] = ':'.join(dcm.ImageType)
-            if hasattr(dcm, 'PatientID'):
-                scan_info['PatientID'] = dcm.PatientID
-            if hasattr(dcm, 'PatientName'):
-                scan_info['PatientName'] = dcm.PatientName
+            if hasattr(dcm, 'OperatorsName'):
+                scan_info['Operator'] = dcm.OperatorsName
+            scan_info['Transmit Coil Name'] = dcm.TransmitCoilName
+            scan_info['SequenceName'] = dcm.SequenceName
+            scan_info['Image Plane'] = dcm[(0x0051, 0x100e)].value
+            scan_info['Xres'] = dcm.Columns
+            scan_info['Yres'] = dcm.Rows
+            scan_info['ImageType'] = '\\'.join(dcm.ImageType)
+
+            # NumberOfImagesInMosaicRead 'Locations in acquisition'
+            scan_info['Nr of slices'] = dcm[(0x0019, 0x100a)].value
+
+            scan_info['Slice Thickness'] = float(dcm.SliceThickness)
+            scan_info['FOV'] = dcm[(0x0051, 0x100c)].value
+            scan_info['TR'] = float(dcm.RepetitionTime)
+            scan_info['TE'] = float(dcm.EchoTime)
+            scan_info['Number of Echoes'] = int(dcm.EchoNumbers)
+            scan_info['FA'] = float(dcm.FlipAngle)
+            if hasattr(dcm, 'InversionTime'):
+                scan_info['TI'] = dcm.InversionTime
+
+            if (0x0019, 0x105a) in dcm:
+                scan_info['Acquisition Duration'] = dcm[(0x0019, 0x105a)].value
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -357,12 +536,7 @@ class DicomReader():
                 [np.array(pos)[None, :] for pos in img_pos], axis=0)
 
             pixel_array = dcm.pixel_array
-            if self.vendor == 'GE':
-                scan_info = self.read_ge_dicom_info(dcm)
-            elif self.vendor == 'SiemensMosaic':
-                scan_info = self.read_mosaic_dicom_info(dcm)
-            elif self.vendor == 'SiemensXA30':
-                scan_info = self.read_siemensXA30_dicom_info(dcm)
+            scan_info = self.read_dicom_info(dcm)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()

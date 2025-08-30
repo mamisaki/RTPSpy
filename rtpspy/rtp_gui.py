@@ -94,6 +94,22 @@ class RtpGUI(QtWidgets.QMainWindow):
         msg = "=== Start application ===\n"
         self._logger.info(msg)
 
+        # Wait until the window is ready
+        QtWidgets.QApplication.processEvents()
+        time.sleep(1)
+
+        # Move physio window next to the main window
+        if (
+            "TTLPHYSIO" in self.rtp_objs and
+            self.rtp_objs["TTLPHYSIO"] is not None
+        ):
+            # Get top right corner of the main window
+            geo = self.geometry()
+            x = geo.x() + geo.width() + 55
+            y = geo.y()
+            physio_geometry = f"450x450+{x}+{y}"
+            self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_menu(self):
         # --- menu bar --------------------------------------------------------
@@ -182,7 +198,10 @@ class RtpGUI(QtWidgets.QMainWindow):
             )
 
         # Show Physio
-        if "TTLPHYSIO" in rtp_objs:
+        if (
+            "TTLPHYSIO" in rtp_objs and
+            self.rtp_objs["TTLPHYSIO"] is not None
+        ):
             self.chbShowPhysio = QtWidgets.QCheckBox(
                 "Show physio", self.mainWidget
             )
@@ -554,11 +573,17 @@ class RtpGUI(QtWidgets.QMainWindow):
                 else:
                     add_line = log_line
 
+                # Determine if this line should be red
+                is_error_line = "!!!" in add_line or "ERROR" in add_line
+
                 # Font Color
-                if "!!!" in add_line or "ERROR" in add_line:
+                if is_error_line:
                     # Red color
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
                     add_line = add_line.replace("!!!", "")
+                else:
+                    # Black color for normal lines
+                    self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
 
                 # Font weight
                 if "<B>" in add_line:
@@ -616,28 +641,19 @@ class RtpGUI(QtWidgets.QMainWindow):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_physio_chk(self, state):
         if (
-            "TTLPHYSIO" not in self.rtp_objs
-            or not self.rtp_objs["TTLPHYSIO"].is_recording()
+            "TTLPHYSIO" not in self.rtp_objs or
+            self.rtp_objs["TTLPHYSIO"] is None
         ):
-            if state != 0:
-                if hasattr(self, "chbShowPhysio"):
-                    self.chbShowPhysio.blockSignals(True)
-                    self.chbShowPhysio.setCheckState(0)
-                    self.chbShowPhysio.blockSignals(False)
+            return
 
         if state > 0:
-            self.rtp_objs["TTLPHYSIO"].open_plot(
-                main_win=self,
-                win_shape=(450, 450),
-                plot_len_sec=10,
-                disable_close=False,
-            )
+            self.rtp_objs["TTLPHYSIO"].show()
             if hasattr(self, "chbShowPhysio"):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(2)
                 self.chbShowPhysio.blockSignals(False)
         else:
-            self.rtp_objs["TTLPHYSIO"].close_plot()
+            self.rtp_objs["TTLPHYSIO"].hide()
             if hasattr(self, "chbShowPhysio"):
                 self.chbShowPhysio.blockSignals(True)
                 self.chbShowPhysio.setCheckState(0)
@@ -725,10 +741,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         if (
             "TTLPHYSIO" in self.rtp_objs
             and self.rtp_objs["TTLPHYSIO"] is not None
-            and self.rtp_objs["TTLPHYSIO"].is_recording()
         ):
-            self.rtp_objs["TTLPHYSIO"].stop_recording()
-            del self.rtp_objs["TTLPHYSIO"]
+            self.rtp_objs["TTLPHYSIO"].quit()
 
         # Move logfile to work_dir
         cpfnames = {}

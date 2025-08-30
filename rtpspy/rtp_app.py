@@ -28,7 +28,6 @@ import nibabel as nib
 import pandas as pd
 import torch
 
-import pty
 from PyQt5 import QtWidgets, QtCore
 import matplotlib.pyplot as plt
 
@@ -48,10 +47,9 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress
-    from .rtp_ttl_physio import RtpTTLPhysio
     from .rtp_imgproc import RtpImgProc
-    from .mri_sim import rtMRISim
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
+    from .rtp_ttl_physio import RtpTTLPhysio
 
 except Exception:
     # For DEBUG environment
@@ -61,8 +59,8 @@ except Exception:
         RtpVolreg,
         RtpSmooth,
         RtpRegress,
-        RtpTTLPhysio,
         RtpImgProc,
+        RtpTTLPhysio
     )
     from rtpspy.rtp_common import (
         RTP,
@@ -73,7 +71,6 @@ except Exception:
         load_parameters,
         save_parameters,
     )
-    from rtpspy.mri_sim import rtMRISim
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
 
 
@@ -82,7 +79,15 @@ class RtpApp(RTP):
     """RTP application class"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, default_rtp_params=None, work_dir="", **kwargs):
+    def __init__(
+        self,
+        default_rtp_params=None,
+        work_dir="",
+        physio_log_file=None,
+        rt_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
+        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
+        **kwargs
+    ):
         """
         Parameters:
             default_rtp_params : dictionary, optional
@@ -94,7 +99,7 @@ class RtpApp(RTP):
 
         self._logger.debug("### Initialize RtpApp ###")
 
-        # --- Initialize parameters -------------------------------------------
+        # region: Initialize parameters ---------------------------------------
         self.work_dir = work_dir
 
         # Template images
@@ -113,14 +118,16 @@ class RtpApp(RTP):
         self.Vent_orig = ""
         self.ROI_orig = ""
         self.aseg_oirg = ""
-        self.ROI_mask = None
+        self.ROI_mask = ""
 
         self.RTP_mask = ""
         self.GSR_mask = ""
 
         # Fieldmap images for distortion correction (PEPOLAR)
-        self.fieldmap_pos = ""  # Same phase encoding EPI
-        self.fieldmap_neg = ""  # Opposite phase encoding EPI
+        self.fieldmap_posi = ""  # Same phase encoding EPI
+        self.fieldmap_nega = ""  # Opposite phase encoding EPI
+        self.sdc_invwarp = ""  # Warp field for inverse distortion correction
+        self.func_orig_sdc = ""  # Distortion-corrected functional image
 
         self.enable_RTP = 0
 
@@ -142,10 +149,10 @@ class RtpApp(RTP):
         self.proc_times = {
             "FastSeg": 100,
             "SkullStrip": 100,
+            "SDC": 10,
             "AlAnat": 40,
             "RTP_GSR_mask": 3,
             "ANTs": 120,
-            "ApplyWarp": 10,
             "Resample_WM_mask": 1,
             "Resample_Vent_mask": 1,
             "Resample_aseg_mask": 1,
@@ -168,27 +175,9 @@ class RtpApp(RTP):
         self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
         self.max_watch_wait = 5  # seconds
 
-        # Simulation data
-        self.simEnabled = False
-        self.simfMRIData = ""
-        self.simfMRIDataDir = ""
-        self.simECGData = ""
-        self.simRespData = ""
-        self.sim_isRunning = False
+        # endregion
 
-        # Set pseudo serial port for simulating physio recording
-        master, slave = pty.openpty()
-        s_name = os.ttyname(slave)
-        try:
-            m_name = os.ttyname(master)
-        except Exception:
-            m_name = "/dev/ptmx"
-        self.simCom_descs = ["None", f"{m_name}:{master} (slave:{s_name})"]
-        self.simPhysPort = self.simCom_descs[0]
-
-        self.mri_sim = None
-
-        # --- External application --------------------------------------------
+        # region: External application ----------------------------------------
         # Define an external application that receives the RTP signal
         self.run_extApp = False
         self.extApp_cmd = ""
@@ -198,8 +187,9 @@ class RtpApp(RTP):
         self.extApp_sock_timeout = 3
 
         self.sig_save_file = Path(self.work_dir) / "rtp_ROI_signal.csv"
+        # endregion
 
-        # --- Initialize signal plot ------------------------------------------
+        # region: Initialize signal plot --------------------------------------
         self.num_ROIs = 1
         self.roi_labels = ["ROI"]
         self._plt_xi = []
@@ -207,28 +197,37 @@ class RtpApp(RTP):
         self._roi_sig = []
         for ii in range(self.num_ROIs):
             self._roi_sig.append(list([]))
+        # endregion
 
-        # --- RTP module instances --------------------------------------------
+        # region: RTP module instances ----------------------------------------
         rtp_objs = dict()
-        rtp_objs["TTLPHYSIO"] = RtpTTLPhysio()
         rtp_objs["WATCH"] = RtpWatch()
         rtp_objs["VOLREG"] = RtpVolreg()
         rtp_objs["TSHIFT"] = RtpTshift()
         rtp_objs["SMOOTH"] = RtpSmooth()
+        rtp_objs["TTLPHYSIO"] = RtpTTLPhysio(
+            physio_log_file=physio_log_file,
+            rt_physio_address_name=rt_physio_address_name,
+            config_path=config_path
+        )
         rtp_objs["REGRESS"] = RtpRegress(
-            volreg=rtp_objs["VOLREG"], rtp_physio=rtp_objs["TTLPHYSIO"]
+            volreg=rtp_objs["VOLREG"],
+            rtp_physio=rtp_objs["TTLPHYSIO"]
         )
 
         self.rtp_objs = rtp_objs
         self.rtp_gui = None
 
-        # --- Clean temporary DICOM files -------------------------------------
+        # endregion
+
+        # region: Clean temporary DICOM files ---------------------------------
         tmp_dcm = list(Path("/tmp").glob("**/*.dcm"))
         for rmf in tmp_dcm:
             if rmf.is_file():
                 shutil.rmtree(rmf.parent)
+        # endregion
 
-        # --- Set the default RTP parameters ----------------------------------
+        # region: Set the default RTP parameters ------------------------------
         if default_rtp_params is not None:
             # Set default parameters
             for proc, params in default_rtp_params.items():
@@ -241,6 +240,7 @@ class RtpApp(RTP):
                     self.set_param(attr, val)
 
         self._logger.debug("### Complete RtpApp initialization ###")
+        # endregion
 
     # --- Override these functions for a custom application -------------------
     # ready_proc, do_proc, end_reset, end_proc
@@ -476,19 +476,6 @@ class RtpApp(RTP):
             Progress dialog. The default is False.
 
         """
-        """DEBUG
-        RTP_dir = Path('/data/rt/P000200/RTP')
-        anat_orig=Path(
-        func_orig=Path(
-            '/data/rt/P000200/sub-AU972_ses-P000200_ser-04_desc-sbref_pa.nii.gz')
-        anat_orig=Path(
-            '/data/rt/P000200/sub-AU972_ses-P000200_ser-02_desc-t1_mprage.nii.gz')
-        template=Path(
-            '/home/mmisaki@librad.laureateinstitute.org/RTPApp/RNT-CNF/atlas/MNI152_2009_template.nii.gz')
-        ROI_template=Path(
-            '/home/mmisaki@librad.laureateinstitute.org/RTPApp/RNT-CNF/atlas/rSTS_rAI_template.nii.gz')
-        overwrite=True
-        """
         # Check work_dir
         if type(self.work_dir) is str and self.work_dir == "":
             errmsg = "Working directory is not set."
@@ -496,7 +483,7 @@ class RtpApp(RTP):
             self.err_popup(errmsg)
             return
 
-        # --- Initialize ------------------------------------------------------
+        # region: Initialize --------------------------------------------------
         if func_orig is not None:
             self.set_param("func_orig", func_orig)
         else:
@@ -632,22 +619,22 @@ class RtpApp(RTP):
         total_ETA = np.sum(list(self.proc_times.values()))
         if not Path(self.template).is_file():
             total_ETA -= self.proc_times["ANTs"]
-            total_ETA -= self.proc_times["ApplyWarp"]
 
-        if self.ROI_template is None or not Path(self.ROI_template).is_file():
-            total_ETA -= self.proc_times["ApplyWarp"]
-
-        if no_FastSeg:
-            total_ETA += self.proc_times["ApplyWarp"] * 2
+        # Make RTP work_dir
+        work_dir = self.work_dir
+        if work_dir.name != 'RTP':
+            work_dir = work_dir / 'RTP'
+            if not work_dir.is_dir():
+                work_dir.mkdir(parents=True)
+            self.main_win.set_workDir(work_dir)
 
         st0 = time.time()  # start time
         OK = True
-        work_dir = self.work_dir
+        # endregion: Initialize
 
         try:
-            # --- Check image space -------------------------------------------
+            # region: Check image space ---------------------------------------
             func_space = None
-            # anat_space = None
             try:
                 func_space = (
                     subprocess.check_output(
@@ -656,60 +643,47 @@ class RtpApp(RTP):
                     .decode()
                     .rstrip()
                 )
-
-                # anat_space = subprocess.check_output(
-                #     shlex.split(f'3dinfo -space {anat_orig}')
-                #     ).decode().rstrip()
             except Exception:
                 pass
 
             # Deoblique self.anat_orig
             anat_orig = work_dir / Path(self.anat_orig).name
             improc.copy_deoblique(
-                self.anat_orig, anat_orig, progress_bar=progress_bar
+                self.anat_orig, anat_orig, progress_bar=progress_bar,
+                overwrite=overwrite
             )
+            # endregion: Check image space
 
-            # --- 0. Copy func_orig to RTP_dir as vr_base_* -------------------
+            # region: 0. Copy func_orig to work_dir as vr_base_* --------------
             if (
                 Path(func_orig).parent != work_dir
                 or not Path(func_orig).stem.startswith("vr_base_")
                 or overwrite
             ):
-                src_f = func_orig
-                src_f_stem = Path(func_orig).stem
+                src_f_stem = Path(func_orig).with_suffix('').stem
                 suffix = Path(func_orig).suffix
                 ma = re.search(r"[\'*|\"*]\[(\d+)\][\'*|\"*]", suffix)
                 vidx = None
                 if ma is not None:
-                    src_f = str(src_f).replace(ma.group(), "")
-                    suffix = str(suffix).replace(ma.group(), "")
                     vidx = int(ma.groups()[0])
 
-                if ".gz" in suffix:
-                    src_f_stem = Path(src_f_stem).stem
-
-                # Exclude watch_file_pattern from vr_base fname
-                pat = self.rtp_objs["WATCH"].watch_file_pattern
-                if re.search(r"\\.BRIK", pat):
-                    pat = re.sub(r"\\.BRIK", "", pat)
-                if re.search(r"\\.HEAD", pat):
-                    pat = re.sub(r"\\.HEAD", "", pat)
-                if re.search(r"\\.nii", pat):
-                    pat = re.sub(r"\\.nii", "", pat)
-
-                src_save_fname = re.sub(pat, "", src_f_stem)
-                if not src_save_fname.startswith("vr_base_"):
-                    src_save_fname = "vr_base_" + src_save_fname
+                if not src_f_stem.startswith("vr_base_"):
+                    src_save_fname = "vr_base_" + src_f_stem
+                else:
+                    src_save_fname = src_f_stem
 
                 dst_f = work_dir / f"{src_save_fname}.nii.gz"
-                if src_f != dst_f and (not dst_f.is_file() or overwrite):
-                    src_img = improc.load_image(src_f, vidx=vidx)
+                if (
+                    dst_f != Path(func_orig) and
+                    (not dst_f.is_file() or overwrite)
+                ):
+                    src_img = improc.load_image(Path(func_orig), vidx=vidx)
                     if src_img is None:
                         if progress_dlg:
                             sys.stdout = original_stdout
                         return
                     print("#" * 80)
-                    print(f"Copy {src_f} to {dst_f}")
+                    print(f"Copy {func_orig} to {dst_f}")
                     nib.save(src_img, dst_f)
                     if func_space is not None:
                         ostr = subprocess.check_output(
@@ -720,47 +694,60 @@ class RtpApp(RTP):
                         )
                         print(ostr.decode())
 
-                # If a json file exists, copy it as well
-                json_f = Path(src_f).parent / (src_f_stem + ".json")
-                if json_f.is_file():
-                    dst_json_f = work_dir / (src_f_stem + ".json")
-                    if not dst_json_f.is_file() or overwrite:
-                        if json_f != dst_json_f:
-                            shutil.copy(json_f, dst_json_f)
-                else:
-                    # Save TR and slice timing
-                    header = nib.load(src_f).header
-
-                    slice_timing = []
-                    if hasattr(header, "get_slice_times"):
-                        try:
-                            slice_timing = header.get_slice_times()
-                        except nib.spatialimages.HeaderDataError:
-                            pass
-                    elif (
-                        hasattr(header, "info")
-                        and "TAXIS_FLOATS" in header.info
-                    ):
-                        slice_timing = header.info["TAXIS_OFFSETS"]
-
-                    if len(slice_timing):
-                        tr = subprocess.check_output(
-                            shlex.split(f"3dinfo -tr {src_f}")
+                # json sidecar file
+                dst_json_f = dst_f.with_suffix('.json')
+                if not dst_json_f.is_file() or overwrite:
+                    # If a json file exists, copy it
+                    json_f = func_orig.with_suffix('').with_suffix('.json')
+                    if not json_f.is_file():
+                        json_f = (
+                            json_f.parent /
+                            json_f.name.replace("vr_base_", "")
                         )
-                        TR = float(tr.decode().rstrip())
+                        if not json_f.is_file():
+                            json_f = (
+                                json_f.parent.parent /
+                                json_f.name.replace("vr_base_", "")
+                            )
 
-                        img_info = {
-                            "RepetitionTime": TR,
-                            "SliceTiming": slice_timing,
-                        }
-                        with open(json_f, "w") as fd:
-                            json.dump(img_info, fd, indent=4)
+                    if json_f.is_file() and json_f != dst_json_f:
+                        shutil.copy(json_f, dst_json_f)
+                    else:
+                        # Save TR and slice timing
+                        header = nib.load(func_orig).header
+
+                        slice_timing = []
+                        if hasattr(header, "get_slice_times"):
+                            try:
+                                slice_timing = header.get_slice_times()
+                            except nib.spatialimages.HeaderDataError:
+                                pass
+                        elif (
+                            hasattr(header, "info")
+                            and "TAXIS_FLOATS" in header.info
+                        ):
+                            slice_timing = header.info["TAXIS_OFFSETS"]
+
+                        if len(slice_timing):
+                            tr = subprocess.check_output(
+                                shlex.split(f"3dinfo -tr {func_orig}")
+                            )
+                            TR = float(tr.decode().rstrip())
+
+                            img_info = {
+                                "RepetitionTime": TR,
+                                "SliceTiming": slice_timing,
+                            }
+                            with open(dst_json_f, "w") as fd:
+                                json.dump(img_info, fd, indent=4)
 
                 print("\n")
                 self.set_param("func_orig", dst_f)
+            # endregion: Copy func_orig as vr_base_*
 
+            # region: 1. Brain segmentation -----------------------------------
             if not no_FastSeg:
-                # --- 1. FastSeg ----------------------------------------------
+                # FastSeg
                 # Make Brain, WM, Vent segmentations
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
 
@@ -779,7 +766,7 @@ class RtpApp(RTP):
                 Vent_seg = seg_files[2]
                 aseg_seg = seg_files[3]
             else:
-                # --- 1. 3dSkullStrip -----------------------------------------
+                # 3dSkullStrip
                 # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
                     work_dir,
@@ -793,12 +780,42 @@ class RtpApp(RTP):
 
                 # Use self.set_param() to update GUI fields
                 self.set_param("brain_anat_orig", brain_anat_orig)
+            # endregion
 
-            # --- 2. Align anatomy to function --------------------------------
+            # region: 2. Suceptibility distortion correction ------------------
+            if (
+                self.fieldmap_posi and Path(self.fieldmap_posi).is_file() and
+                self.fieldmap_nega and Path(self.fieldmap_nega).is_file()
+            ):
+                sdc_invwarp, func_orig_sdc = improc.run_pepolar_sdc(
+                    work_dir,
+                    self.fieldmap_posi,
+                    self.fieldmap_nega,
+                    self.func_orig,
+                    total_ETA,
+                    progress_bar=progress_bar,
+                    ask_cmd=ask_cmd,
+                    overwrite=overwrite,
+                )
+                assert sdc_invwarp is not None, (
+                    "Distortion correction failed.\n"
+                )
+
+                # Use self.set_param() to update GUI fields
+                self.set_param("sdc_invwarp", sdc_invwarp)
+                self.set_param("func_orig_sdc", func_orig_sdc)
+                func_base = func_orig_sdc
+            else:
+                self.set_param("sdc_invwarp", "")
+                self.set_param("func_orig_sdc", "")
+                func_base = self.func_orig
+            # endregion
+
+            # region: 3. Align anatomy to function ----------------------------
             alAnat = improc.align_anat2epi(
                 work_dir,
                 self.brain_anat_orig,
-                self.func_orig,
+                func_base,
                 total_ETA,
                 progress_bar=progress_bar,
                 ask_cmd=ask_cmd,
@@ -812,11 +829,12 @@ class RtpApp(RTP):
             alAnat_f_stem = self.alAnat.stem.replace(".nii", "")
             aff1D_f = work_dir / (alAnat_f_stem + "_mat.aff12.1D")
             assert aff1D_f.is_file()
+            # endregion
 
-            # --- 3. Make RTP and GSR masks -----------------------------------
+            # region: 4. Make RTP and GSR masks -------------------------------
             mask_files = improc.make_RTP_GSR_masks(
                 work_dir,
-                self.func_orig,
+                func_base,
                 total_ETA,
                 ref_vi=0,
                 alAnat=self.alAnat,
@@ -826,10 +844,27 @@ class RtpApp(RTP):
             )
             assert mask_files is not None
 
+            if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                # Apply inverse distortion correction to the masks
+                mask_files = list(mask_files)
+                for ii, mask_f in enumerate(mask_files):
+                    mask_files[ii] = improc.ants_warp_resample(
+                        work_dir,
+                        mask_f,
+                        self.func_orig,
+                        [self.sdc_invwarp],
+                        suffix="_invsdc",
+                        interpolator="nearestNeighbor",
+                        progress_bar=progress_bar,
+                        overwrite=overwrite,
+                    )
+                    assert mask_files[ii] is not None
+
             self.set_param("RTP_mask", mask_files[0])
             self.set_param("GSR_mask", mask_files[1])
+            # endregion
 
-            # --- 4. Warp template --------------------------------------------
+            # region: 5. Warp template ----------------------------------------
             if Path(self.template).is_file():
                 if Path(self.ROI_template).is_file() or no_FastSeg:
                     warp_params = improc.warp_template(
@@ -843,8 +878,9 @@ class RtpApp(RTP):
                     )
             else:
                 warp_params = None
+            # endregion
 
-            # --- 5. Apply warp -----------------------------------------------
+            # region: 6. Apply warp -------------------------------------------
             # ROI_template
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
@@ -853,16 +889,30 @@ class RtpApp(RTP):
                     self.alAnat,
                     warp_params,
                     res_master_f=self.func_orig,
-                    total_ETA=total_ETA,
                     interpolator=self.ROI_resample,
                     progress_bar=progress_bar,
-                    ask_cmd=ask_cmd,
                     overwrite=overwrite,
                 )
                 assert ROI_orig is not None
                 self.set_param("ROI_orig", ROI_orig)
 
-            # --- 6. Make white matter and ventricle masks --------------------
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    # Apply inverse distortion correction to the ROI
+                    ROI_orig_invsdc = improc.ants_warp_resample(
+                        work_dir,
+                        ROI_orig,
+                        self.func_orig,
+                        [self.sdc_invwarp],
+                        suffix="_invsdc",
+                        interpolator="linear",
+                        progress_bar=progress_bar,
+                        overwrite=overwrite,
+                    )
+                    assert ROI_orig_invsdc is not None
+                    self.set_param("ROI_orig", ROI_orig_invsdc)
+            # endregion
+
+            # region: 7. Make white matter and ventricle masks ----------------
             if warp_params is not None and Path(self.ROI_template).is_file():
                 for segname in ("WM", "Vent", "aseg"):
                     if segname == "WM":
@@ -871,18 +921,21 @@ class RtpApp(RTP):
                             seg_anat_f = self.WM_template
                         else:
                             seg_anat_f = WM_seg
+                        interpolator = "linear"
                     elif segname == "Vent":
                         erode = 1
                         if no_FastSeg:
                             seg_anat_f = self.Vent_template
                         else:
                             seg_anat_f = Vent_seg
+                        interpolator = "linear"
                     elif segname == "aseg":
                         erode = 0
                         if no_FastSeg:
                             continue
                         else:
                             seg_anat_f = aseg_seg
+                        interpolator = "nearestNeighbor"
 
                     assert seg_anat_f.is_file()
 
@@ -893,7 +946,7 @@ class RtpApp(RTP):
                             seg_anat_f,
                             self.alAnat,
                             warp_params,
-                            interpolator="nearestNeighbor",
+                            interpolator=interpolator,
                             progress_bar=progress_bar,
                             ask_cmd=ask_cmd,
                             overwrite=overwrite,
@@ -913,8 +966,23 @@ class RtpApp(RTP):
                         overwrite=overwrite,
                     )
 
+                    if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                        # Apply inverse distortion correction to the ROI
+                        seg_al_f = improc.ants_warp_resample(
+                            work_dir,
+                            seg_al_f,
+                            self.func_orig,
+                            [self.sdc_invwarp],
+                            suffix="_invsdc",
+                            interpolator="linear",
+                            progress_bar=progress_bar,
+                            overwrite=overwrite,
+                        )
+                        assert seg_al_f is not None
+
                     # Use self.set_param() to update GUI fields
                     self.set_param(f"{segname}_orig", seg_al_f)
+            # endregion
 
         except Exception:
             OK = False
@@ -926,7 +994,7 @@ class RtpApp(RTP):
                 progress_bar.setWindowTitle(progress_bar.title)
                 progress_bar.btnCancel.setText("Close")
 
-        # --- All done --------------------------------------------------------
+        # region: All done ----------------------------------------------------
         if progress_bar is not None:
             etstr = str(timedelta(seconds=time.time() - st0))
             etstr = ":".join(etstr.split(".")[0].split(":")[1:])
@@ -956,6 +1024,7 @@ class RtpApp(RTP):
         # Enable CreateMasks button
         if hasattr(self, "ui_CreateMasks_btn"):
             self.ui_CreateMasks_btn.setEnabled(True)
+        # endregion
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RTP_setup(self, *args, rtp_params={}, ignore_error=False):
@@ -1327,8 +1396,8 @@ class RtpApp(RTP):
                 "TTLPHYSIO" in self.rtp_objs
                 and self.rtp_objs["TTLPHYSIO"] is not None
             ):
-                self.rtp_objs["TTLPHYSIO"].scan_onset = 0
-                self.rtp_objs["TTLPHYSIO"].wait_ttl_on = True
+                self.rtp_objs["TTLPHYSIO"].standby_scan()
+
             self._scanning = False
             self._wait_start = True
 
@@ -1348,12 +1417,6 @@ class RtpApp(RTP):
             self.ui_manStart_btn.setEnabled(True)
             self.ui_quit_btn.setEnabled(True)
 
-            if self.simEnabled:
-                self.main_win.options_tab.setCurrentIndex(0)
-                self.ui_top_tabs.setCurrentIndex(
-                    self.ui_top_tabs.indexOf(self.ui_simulationTab)
-                )
-
         self._isReadyRun = True
         return proc_chain
 
@@ -1364,7 +1427,12 @@ class RtpApp(RTP):
         self._scanning = True
         self._wait_start = False
 
-        self.rtp_objs["TTLPHYSIO"].scan_onset = self.scan_onset
+        if (
+            "TTLPHYSIO" not in self.rtp_objs or
+            self.rtp_objs["TTLPHYSIO"] is None
+        ):
+            self.rtp_objs["TTLPHYSIO"].scan_onset = self.scan_onset
+            self.rtp_objs["TTLPHYSIO"].release_standby_scan()
 
         if self.extApp_sock is not None:
             # Send message to self.extApp_sock
@@ -1417,28 +1485,6 @@ class RtpApp(RTP):
                 if not self.th_wait_onset.wait(1):
                     self.wait_onset.finished.emit()
                     self.th_wait_onset.wait()
-
-            # End MRI simulation if it is running
-            if self.mri_sim is not None:
-                self.mri_sim.run_MRI("stop")
-                self.mri_sim.run_Physio("stop")
-                self.ui_startSim_btn.setEnabled(True)
-                del self.mri_sim
-                self.mri_sim = None
-                self.sim_isRunning = False
-
-            # --- For simulation ---
-            if hasattr(self, "watch_imgType_orig"):
-                self.rtp_objs["WATCH"].set_param(
-                    "imgType", self.watch_imgType_orig
-                )
-                del self.watch_imgType_orig
-
-            if hasattr(self, "watch_suffix_pat_orig"):
-                self.rtp_objs["WATCH"].set_param(
-                    "watch_file_pattern", self.watch_suffix_pat_orig
-                )
-                del self.watch_suffix_pat_orig
 
             # Send 'END' message to an external application
             if self.isAlive_extApp():
@@ -1519,14 +1565,13 @@ class RtpApp(RTP):
             )
             self._logger.error(str(e) + "\n" + errmsg)
 
-        if self.isAlive_extApp():
-            # Send END
-            self.send_extApp("END;".encode("utf-8"))
-
         if self.main_win is not None:
             # Enable ui
             self.ui_setEnabled(True)
             self.main_win.options_tab.setCurrentIndex(0)
+
+        if self.rtp_objs["TTLPHYSIO"].available:
+            self.rtp_objs["TTLPHYSIO"].release_standby_scan()
 
         self._isReadyRun = False
         self._isRunning_end_run_proc = False
@@ -1549,17 +1594,83 @@ class RtpApp(RTP):
 
         ovl_img = None
         if ovl == "func":
-            ovl_img = self.func_orig
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = self.func_orig_sdc
+                else:
+                    ovl_img = self.func_orig
+            else:
+                ovl_img = self.func_orig
+
         elif ovl == "wm":
-            ovl_img = self.WM_orig
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = (
+                        Path(self.WM_orig).parent /
+                        Path(self.WM_orig).name.replace("_invsdc", "")
+                    )
+                else:
+                    ovl_img = self.WM_orig
+            elif base == "func":
+                ovl_img = self.WM_orig
+
         elif ovl == "vent":
-            ovl_img = self.Vent_orig
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = (
+                        Path(self.Vent_orig).parent /
+                        Path(self.Vent_orig).name.replace("_invsdc", "")
+                    )
+                else:
+                    ovl_img = self.Vent_orig
+            elif base == "func":
+                ovl_img = self.Vent_orig
+
         elif ovl == "roi":
-            ovl_img = self.ROI_orig
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = (
+                        Path(self.ROI_orig).parent /
+                        Path(self.ROI_orig).name.replace("_invsdc", "")
+                    )
+                else:
+                    ovl_img = self.ROI_orig
+            elif base == "func":
+                ovl_img = self.ROI_orig
+
         elif ovl == "RTPmask":
-            ovl_img = self.RTP_mask
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = (
+                        Path(self.RTP_mask).parent /
+                        Path(self.RTP_mask).name.replace("_invsdc", "")
+                    )
+                else:
+                    ovl_img = self.RTP_mask
+            elif base == "func":
+                ovl_img = self.RTP_mask
+
         elif ovl == "GSRmask":
-            ovl_img = self.GSR_mask
+            if base == "anat":
+                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
+                    ovl_img = (
+                        Path(self.GSR_mask).parent /
+                        Path(self.GSR_mask).name.replace("_invsdc", "")
+                    )
+                else:
+                    ovl_img = self.GSR_mask
+            elif base == "func":
+                ovl_img = self.GSR_mask
+
+        if base_img is None or not Path(base_img).is_file():
+            errmsg = f"Base image {base_img.name} is not set or found."
+            self.err_popup(errmsg)
+            return
+
+        if ovl_img is None or not Path(ovl_img).is_file():
+            errmsg = f"Base image {ovl_img.name} is not set or found."
+            self.err_popup(errmsg)
+            return
 
         # Check if afni is ready
         cmd0 = "afni"
@@ -1576,11 +1687,10 @@ class RtpApp(RTP):
         ]
         if len(procs) == 0:
             # Boot AFNI
-            rt = work_dir == self.rtp_objs["WATCH"].watch_dir
+            boot_dir = base_img.parent if base_img is not None else work_dir
             boot_afni(
                 main_win=self.main_win,
-                boot_dir=work_dir,
-                rt=rt,
+                boot_dir=boot_dir,
                 TRUSTHOST=self.AFNIRT_TRUSTHOST,
             )
 
@@ -1733,9 +1843,9 @@ class RtpApp(RTP):
                 if Vent_anat.is_file():
                     delFiles["Vent_anat"] = Vent_anat
 
-                del_tmep = anat_prefix + "_Brain_al_func"
+                del_tmep = anat_prefix + "_Brain_alFunc"
                 for rmf in self.brain_anat_orig.parent.glob(f"*{del_tmep}*"):
-                    attr = rmf.stem.replace("del_tmep", "al_func_")
+                    attr = rmf.stem.replace("del_tmep", "alFunc_")
                     delFiles[attr] = rmf
 
             for rmf in self.work_dir.glob("template2orig_*"):
@@ -1981,13 +2091,13 @@ class RtpApp(RTP):
             self.abort = False
 
         def run(self):
-            while not self.abort:
-                if self.onsetObj is not None:
-                    if self.onsetObj.scan_onset != 0:
-                        onset_time = self.onsetObj.scan_onset
-                        break
+            if self.onsetObj is not None and self.onsetObj.available:
+                onset_time = self.onsetObj.scan_onset
 
-                    time.sleep(0.001)
+            while not self.abort and onset_time == 0:
+                if self.onsetObj is not None and self.onsetObj.available:
+                    onset_time = self.onsetObj.scan_onset
+                time.sleep(1 / 60)
 
             if self.abort:
                 self.finished.emit()
@@ -1996,6 +2106,8 @@ class RtpApp(RTP):
             self.parent._scanning = True
             self.parent._wait_start = False
             self.parent.scan_onset = onset_time
+            if self.onsetObj is not None and self.onsetObj.available:
+                self.onsetObj.start_scan()
 
             if self.extApp_sock is not None:
                 # Send message to self.extApp_sock
@@ -2083,136 +2195,6 @@ class RtpApp(RTP):
             if event.key() == QtCore.Qt.Key_T:
                 # Scan start
                 self.manual_start()
-
-    # --- Simulation ----------------------------------------------------------
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def start_rtMRI_simulation(self):
-        """Start scan simulation by copying a volume to watch_dir"""
-
-        if not self.simEnabled:
-            return
-
-        # --- Set simulation parameters ---------------------------------------
-        # MRI data
-        if self.simfMRIData != "" and Path(self.simfMRIData).is_file():
-            mri_src = self.simfMRIData
-        elif self.simfMRIDataDir != "" and Path(self.simfMRIDataDir).is_dir():
-            mri_src = self.simfMRIDataDir
-        else:
-            errmsg = "fMRI data is not found."
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
-            return
-
-        dst_dir = self.rtp_objs["WATCH"].watch_dir
-
-        # Change the watch image type
-        self.watch_imgType_orig = self.rtp_objs["WATCH"].imgType
-        self.watch_suffix_pat_orig = self.rtp_objs["WATCH"].watch_file_pattern
-
-        if mri_src.is_file():
-            self.rtp_objs["WATCH"].set_param("imgType", "NIfTI")
-        elif mri_src.is_dir():
-            if len(
-                [
-                    ff
-                    for ff in mri_src.glob("i*")
-                    if re.match(r"i\d+", str(ff.name))
-                ]
-            ):
-                self.rtp_objs["WATCH"].set_param("imgType", "GE DICOM")
-            elif len(mri_src.glob("*.dcm")):
-                self.rtp_objs["WATCH"].set_param("imgType", "Siemens Mosaic")
-
-        # Restart RtpWatch observer
-        if (
-            hasattr(self.rtp_objs["WATCH"], "observer")
-            and self.rtp_objs["WATCH"].observer.is_alive()
-        ):
-            self.rtp_objs["WATCH"].stop_watching()
-            self.rtp_objs["WATCH"].clean_files(warning=False)
-            self.rtp_objs["WATCH"].start_watching()
-
-        if self.mri_sim is not None:
-            del self.mri_sim
-
-        self.mri_sim = rtMRISim(mri_src, dst_dir)
-        self.mri_sim._std_out = self._std_out
-        self.mri_sim._err_out = self._err_out
-
-        # Physio data
-        if self.simPhysPort == "None":
-            # Disable regPhysio on rtp_regress
-            if self.rtp_objs["REGRESS"].phys_reg != "None":
-                errmsg = "Disable physio regression in rtp_regress"
-                self._logger.error(errmsg)
-                self.err_popup(errmsg)
-                self.rtp_objs["REGRESS"].set_param("phys_reg", "None")
-            run_physio = False
-        else:
-            pass
-            # ecg_src = self.simECGData
-            # resp_src = self.simRespData
-            # physio_port = self.simPhysPort.split()[0]
-            # recording_rate_ms = \
-            #     1000 / self.rtp_objs['TTLPHYSIO'].effective_sample_freq
-            # samples_to_average = \
-            # self.rtp_objs['TTLPHYSIO'].samples_to_average
-
-            # recv_physio_port = re.search(r'slave:(.+)\)',
-            #                              self.simPhysPort).groups()[0]
-
-            # # Stop physio recording
-            # if self.main_win is not None:
-            #     self.main_win.chbRecSignal.setCheckState(0)
-            # else:
-            #     self.rtp_objs['EXTSIG'].stop_recording()
-
-            # # Change port
-            # self.rtp_objs['TTLPHYSIO'].update_port_list()
-            # self.rtp_objs['TTLPHYSIO'].set_param('ser_port',
-            # recv_physio_port)
-
-            # self.mri_sim.set_physio(ecg_src, resp_src, physio_port,
-            #                         recording_rate_ms, samples_to_average)
-
-            # # Start physio recording
-            # if self.main_win is not None:
-            #     self.main_win.chbRecSignal.setCheckState(2)
-            #     self.main_win.chbShowExtSig.setCheckState(2)
-            # else:
-            #     self.rtp_objs['TTLPHYSIO'].start_recording()
-            #     self.rtp_objs['TTLPHYSIO'].open_signal_plot()
-
-            # if hasattr(self.rtp_objs['TTLPHYSIO'], 'ui_objs'):
-            #     for ui in self.rtp_objs['TTLPHYSIO'].ui_objs:
-            #         ui.setEnabled(False)
-
-            # run_physio = True
-        # --- Start ---
-        if run_physio:
-            self.mri_sim.run_Physio("start")
-            while (
-                self.mri_sim.phyio_feeder is None
-                or not self.mri_sim.phyio_feeder.is_alive()
-            ):
-                # Wait for physio   start
-                time.sleep(1)
-
-        imgType = self.rtp_objs["WATCH"].imgType
-        self.mri_sim.run_MRI("start", imgType)
-        while (
-            self.mri_sim.mri_feeder is None
-            or not self.mri_sim.mri_feeder.is_alive()
-        ):
-            # Wait for physio start
-            time.sleep(1)
-
-        self.ui_startSim_btn.setEnabled(False)
-        if not self.ui_quit_btn.isEnabled():
-            self.ui_quit_btn.setEnabled(True)
-
-        self.sim_isRunning = True
 
     # --- Communication with an external application via RTP_SERVE ----------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -2604,6 +2586,8 @@ class RtpApp(RTP):
             "ROI_template",
             "WM_template",
             "Vent_template",
+            "sdc_invwarp",
+            "func_orig_sdc",
             "alAnat",
             "brain_anat_orig",
             "ROI_orig",
@@ -2612,11 +2596,8 @@ class RtpApp(RTP):
             "aseg_orig",
             "RTP_mask",
             "GSR_mask",
-            "fieldmap_pos",
-            "fieldmap_neg",
-            "simfMRIData",
-            "simECGData",
-            "simRespData",
+            "fieldmap_posi",
+            "fieldmap_nega",
         ):
             msglab = {
                 "anat_orig": "anatomy image in original space",
@@ -2626,6 +2607,8 @@ class RtpApp(RTP):
                 "ROI_template": "ROI mask on template",
                 "WM_template": "white matter mask on template",
                 "Vent_template": "ventricle mask on template",
+                "sdc_invwarp": "distortion correction inverse warp",
+                "func_orig_sdc": "distortion-corrected functional image",
                 "alAnat": "aligned anatomy image in original space",
                 "brain_anat_orig":
                     "skull-stripped brain image in original space",
@@ -2635,11 +2618,8 @@ class RtpApp(RTP):
                 "aseg_orig": "aseg in original space",
                 "RTP_mask": "mask for real-time processing",
                 "GSR_mask": "mask for global signal regression",
-                "fieldmap_pos": "fieldmap with same phase encoding",
-                "fieldmap_neg": "fieldmap with opposite phase encoding",
-                "simfMRIData": "fMRI data for simulation",
-                "simECGData": "ECG data for simulation",
-                "simRespData": "Respiration data for simulation",
+                "fieldmap_posi": "fieldmap with same phase encoding",
+                "fieldmap_nega": "fieldmap with opposite phase encoding",
             }
             if reset_fn is not None:
                 # Set start directory
@@ -2649,24 +2629,11 @@ class RtpApp(RTP):
                 else:
                     if "template" in attr and Path(self.template).is_file():
                         startdir = Path(self.template).parent
-
-                    if attr == "simECGData":
-                        if Path(self.simfMRIData).parent.is_dir():
-                            startdir = Path(self.simfMRIData).parent
-
-                    elif attr == "simRespData":
-                        if Path(self.simECGData).parent.is_dir():
-                            startdir = Path(self.simECGData).parent
-                        elif Path(self.simfMRIData).parent.is_dir():
-                            startdir = Path(self.simfMRIData).parent
                     else:
                         startdir = self.work_dir
 
                 dlgMdg = "RtpApp: Select {}".format(msglab[attr])
-                if attr in ("simECGData", "simRespData"):
-                    filt = "*.*;;*.txt;;*.1D"
-                else:
-                    filt = "*.BRIK* *.nii*;;*.*"
+                filt = "*.BRIK* *.nii*;;*.*"
                 fname = self.select_file_dlg(
                     dlgMdg, startdir, filt, parent=self.rtp_gui
                 )
@@ -2694,57 +2661,6 @@ class RtpApp(RTP):
                 if hasattr(self, f"ui_{attr}_lnEd"):
                     obj = getattr(self, f"ui_{attr}_lnEd")
                     obj.setText(str(val))
-
-        elif attr == "simfMRIDataDir":
-            if reset_fn is not None:
-                # Set start directory
-                startdir = self.work_dir
-                if val is not None and os.path.isdir(val):
-                    startdir = val
-
-                dlgMdg = "RtpApp: Select fMRI data directory for simulation"
-                simSrcDir = QtWidgets.QFileDialog.getExistingDirectory(
-                    self.main_win, "Select directory", str(startdir)
-                )
-
-                if simSrcDir == "":
-                    return -1
-
-                val = simSrcDir
-                if reset_fn:
-                    reset_fn(val)
-
-                val = Path(val).absolute()
-            else:
-                if val is None:
-                    val = ""
-                elif val != "":
-                    fpath = Path(val).absolute()
-                    fpath = fpath.parent / re.sub(
-                        "'", "", re.sub(r"\'*\[\d+\]\'*$", "", fpath.name)
-                    )
-                    if Path(fpath).is_dir():
-                        val = Path(val).absolute()
-                    else:
-                        val = ""
-
-                if hasattr(self, f"ui_{attr}_lnEd"):
-                    obj = getattr(self, f"ui_{attr}_lnEd")
-                    obj.setText(str(val))
-
-        elif attr == "simEnabled":
-            if hasattr(self, "ui_startSim_btn"):
-                self.ui_startSim_btn.setEnabled(val)
-
-            if reset_fn is None and hasattr(self, "ui_simEnabled_rdb"):
-                self.ui_simEnabled_rdb.setChecked(val)
-
-        elif attr == "simPhysPort":
-            if "ptmx" in val:
-                val = [desc for desc in self.simCom_descs if "ptmx" in desc][0]
-
-            if reset_fn is None and hasattr(self, "ui_simPhysPort_cmbBx"):
-                self.ui_simPhysPort_cmbBx.setCurrentText(val)
 
         elif attr == "ROI_resample":
             if val not in self.ROI_resample_opts:
@@ -2826,6 +2742,8 @@ class RtpApp(RTP):
         self.ui_anat_orig_lnEd.setReadOnly(True)
         self.ui_anat_orig_lnEd.setStyleSheet("border: 0px none;")
         RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
+        if self.anat_orig and Path(self.anat_orig).exists():
+            self.ui_anat_orig_lnEd.setText(self.anat_orig)
 
         self.ui_anat_orig_btn = QtWidgets.QPushButton("Set")
         self.ui_anat_orig_btn.clicked.connect(
@@ -2910,54 +2828,54 @@ class RtpApp(RTP):
         var_lb = QtWidgets.QLabel("Same PE direction :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
-        self.ui_fieldmap_pos_lnEd = QtWidgets.QLineEdit()
-        self.ui_fieldmap_pos_lnEd.setReadOnly(True)
-        self.ui_fieldmap_pos_lnEd.setStyleSheet("border: 0px none;")
-        Fmap_gLayout.addWidget(self.ui_fieldmap_pos_lnEd, ri, 1)
+        self.ui_fieldmap_posi_lnEd = QtWidgets.QLineEdit()
+        self.ui_fieldmap_posi_lnEd.setReadOnly(True)
+        self.ui_fieldmap_posi_lnEd.setStyleSheet("border: 0px none;")
+        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_lnEd, ri, 1)
 
-        self.ui_fieldmap_pos_btn = QtWidgets.QPushButton("Set")
-        self.ui_fieldmap_pos_btn.clicked.connect(
+        self.ui_fieldmap_posi_btn = QtWidgets.QPushButton("Set")
+        self.ui_fieldmap_posi_btn.clicked.connect(
             lambda: self.set_param(
-                "fieldmap_pos", "", self.ui_fieldmap_pos_lnEd.setText
+                "fieldmap_posi", "", self.ui_fieldmap_posi_lnEd.setText
             )
         )
-        self.ui_fieldmap_pos_btn.setStyleSheet(
+        self.ui_fieldmap_posi_btn.setStyleSheet(
             "background-color: rgb(151,217,235);"
         )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_pos_btn, ri, 2)
+        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_btn, ri, 2)
 
-        self.ui_fieldmap_pos_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_fieldmap_pos_del_btn.clicked.connect(
-            lambda: self.delete_file("fieldmap_pos", keepfile=True)
+        self.ui_fieldmap_posi_del_btn = QtWidgets.QPushButton("Unset")
+        self.ui_fieldmap_posi_del_btn.clicked.connect(
+            lambda: self.delete_file("fieldmap_posi", keepfile=True)
         )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_pos_del_btn, ri, 3)
+        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_del_btn, ri, 3)
 
         # -- Fieldmap with opposite phase encoding --
         ri += 1
         var_lb = QtWidgets.QLabel("Opposite PE direction :")
         Fmap_gLayout.addWidget(var_lb, ri, 0)
 
-        self.ui_fieldmap_neg_lnEd = QtWidgets.QLineEdit()
-        self.ui_fieldmap_neg_lnEd.setReadOnly(True)
-        self.ui_fieldmap_neg_lnEd.setStyleSheet("border: 0px none;")
-        Fmap_gLayout.addWidget(self.ui_fieldmap_neg_lnEd, ri, 1)
+        self.ui_fieldmap_nega_lnEd = QtWidgets.QLineEdit()
+        self.ui_fieldmap_nega_lnEd.setReadOnly(True)
+        self.ui_fieldmap_nega_lnEd.setStyleSheet("border: 0px none;")
+        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_lnEd, ri, 1)
 
-        self.ui_fieldmap_neg_btn = QtWidgets.QPushButton("Set")
-        self.ui_fieldmap_neg_btn.clicked.connect(
+        self.ui_fieldmap_nega_btn = QtWidgets.QPushButton("Set")
+        self.ui_fieldmap_nega_btn.clicked.connect(
             lambda: self.set_param(
-                "fieldmap_neg", "", self.ui_fieldmap_neg_lnEd.setText
+                "fieldmap_nega", "", self.ui_fieldmap_nega_lnEd.setText
             )
         )
-        self.ui_fieldmap_neg_btn.setStyleSheet(
+        self.ui_fieldmap_nega_btn.setStyleSheet(
             "background-color: rgb(151,217,235);"
         )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_neg_btn, ri, 2)
+        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_btn, ri, 2)
 
-        self.ui_fieldmap_neg_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_fieldmap_neg_del_btn.clicked.connect(
-            lambda: self.delete_file("fieldmap_neg", keepfile=True)
+        self.ui_fieldmap_nega_del_btn = QtWidgets.QPushButton("Unset")
+        self.ui_fieldmap_nega_del_btn.clicked.connect(
+            lambda: self.delete_file("fieldmap_nega", keepfile=True)
         )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_neg_del_btn, ri, 3)
+        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_del_btn, ri, 3)
         # endregion
 
         # region: CreateMasks button --
@@ -3191,8 +3109,60 @@ class RtpApp(RTP):
         self.ui_top_tabs.addTab(self.ui_procImgTab, "Processed images")
         procImg_gLayout = QtWidgets.QGridLayout(self.ui_procImgTab)
 
-        # -- aligned anatomy --
+        # -- distortion correction warp --
         ri0 = 0
+        var_lb = QtWidgets.QLabel("Distortion warp :")
+        procImg_gLayout.addWidget(var_lb, ri0, 0)
+
+        self.ui_sdc_invwarp_lnEd = QtWidgets.QLineEdit()
+        self.ui_sdc_invwarp_lnEd.setText(str(self.sdc_invwarp))
+        self.ui_sdc_invwarp_lnEd.setReadOnly(True)
+        self.ui_sdc_invwarp_lnEd.setStyleSheet("border: 0px none;")
+        procImg_gLayout.addWidget(self.ui_sdc_invwarp_lnEd, ri0, 1)
+
+        self.ui_sdc_invwarp_btn = QtWidgets.QPushButton("Set")
+        self.ui_sdc_invwarp_btn.clicked.connect(
+            lambda: self.set_param(
+                "sdc_invwarp", self.work_dir,
+                self.ui_sdc_invwarp_lnEd.setText
+            )
+        )
+        procImg_gLayout.addWidget(self.ui_sdc_invwarp_btn, ri0, 2)
+
+        self.ui_sdc_invwarp_del_btn = QtWidgets.QPushButton("Unset")
+        self.ui_sdc_invwarp_del_btn.clicked.connect(
+            lambda: self.delete_file("sdc_invwarp", keepfile=True)
+        )
+        procImg_gLayout.addWidget(self.ui_sdc_invwarp_del_btn, ri0, 3)
+
+        # -- distortion-corrected functional image --
+        ri0 += 1
+        var_lb = QtWidgets.QLabel("Corrected function :")
+        procImg_gLayout.addWidget(var_lb, ri0, 0)
+
+        self.ui_func_orig_sdc_lnEd = QtWidgets.QLineEdit()
+        self.ui_func_orig_sdc_lnEd.setText(str(self.func_orig_sdc))
+        self.ui_func_orig_sdc_lnEd.setReadOnly(True)
+        self.ui_func_orig_sdc_lnEd.setStyleSheet("border: 0px none;")
+        procImg_gLayout.addWidget(self.ui_func_orig_sdc_lnEd, ri0, 1)
+
+        self.ui_func_orig_sdc_btn = QtWidgets.QPushButton("Set")
+        self.ui_func_orig_sdc_btn.clicked.connect(
+            lambda: self.set_param(
+                "func_orig_sdc", self.work_dir,
+                self.ui_func_orig_sdc_lnEd.setText
+            )
+        )
+        procImg_gLayout.addWidget(self.ui_func_orig_sdc_btn, ri0, 2)
+
+        self.ui_func_orig_sdc_del_btn = QtWidgets.QPushButton("Unset")
+        self.ui_func_orig_sdc_del_btn.clicked.connect(
+            lambda: self.delete_file("func_orig_sdc", keepfile=True)
+        )
+        procImg_gLayout.addWidget(self.ui_func_orig_sdc_del_btn, ri0, 3)
+
+        # -- aligned anatomy --
+        ri0 += 1
         var_lb = QtWidgets.QLabel("Aligned anatomy :")
         procImg_gLayout.addWidget(var_lb, ri0, 0)
 
@@ -3476,145 +3446,6 @@ class RtpApp(RTP):
             )
             self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
 
-        # --- Simulation tab -------------------------------------------------
-        # self.ui_simulationTab = QtWidgets.QWidget()
-        # self.ui_top_tabs.addTab(self.ui_simulationTab, 'rtMRI Simulation')
-        # simulation_gLayout = QtWidgets.QGridLayout(self.ui_simulationTab)
-
-        # # enabled
-        # self.ui_simEnabled_rdb = QtWidgets.QRadioButton("Enable simulation")
-        # self.ui_simEnabled_rdb.setChecked(self.simEnabled)
-        # self.ui_simEnabled_rdb.toggled.connect(
-        #         lambda checked: self.set_param(
-        #             'simEnabled', checked, self.ui_simEnabled_rdb.setChecked
-        #         ))
-        # simulation_gLayout.addWidget(self.ui_simEnabled_rdb, 0, 0)
-        # self.ui_objs.append(self.ui_simEnabled_rdb)
-
-        # # --- Simulation MRI data 4D file ---
-        # var_lb = QtWidgets.QLabel("fMRI data 4D file:")
-        # simulation_gLayout.addWidget(var_lb, 1, 0)
-
-        # self.ui_simfMRIData_lnEd = QtWidgets.QLineEdit(self.simfMRIData)
-        # self.ui_simfMRIData_lnEd.setReadOnly(True)
-        # self.ui_simfMRIData_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
-        # simulation_gLayout.addWidget(self.ui_simfMRIData_lnEd, 1, 1)
-
-        # self.ui_simfMRIData_btn = QtWidgets.QPushButton('Set')
-        # self.ui_simfMRIData_btn.clicked.connect(
-        #         lambda: self.set_param('simfMRIData', None,
-        #                                self.ui_simfMRIData_lnEd.setText))
-        # simulation_gLayout.addWidget(self.ui_simfMRIData_btn, 1, 2)
-
-        # self.ui_simfMRIData_del_btn = QtWidgets.QPushButton('Unset')
-        # self.ui_simfMRIData_del_btn.clicked.connect(
-        #     lambda: self.delete_file('simfMRIData', keepfile=True))
-        # simulation_gLayout.addWidget(self.ui_simfMRIData_del_btn, 1, 3)
-
-        # self.ui_objs.extend([var_lb, self.ui_simfMRIData_lnEd,
-        #                      self.ui_simfMRIData_btn,
-        #                      self.ui_simfMRIData_del_btn])
-
-        # # --- Simulation MRI data dicom directory ---
-        # var_lb = QtWidgets.QLabel("fMRI data dicom directory:")
-        # simulation_gLayout.addWidget(var_lb, 2, 0)
-
-        # self.ui_simfMRIDataDir_lnEd = QtWidgets.QLineEdit(
-        #     self.simfMRIDataDir)
-        # self.ui_simfMRIDataDir_lnEd.setReadOnly(True)
-        # self.ui_simfMRIDataDir_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
-        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_lnEd, 2, 1)
-
-        # self.ui_simfMRIDataDir_btn = QtWidgets.QPushButton('Set')
-        # self.ui_simfMRIDataDir_btn.clicked.connect(
-        #         lambda: self.set_param('simfMRIDataDir', None,
-        #                                self.ui_simfMRIDataDir_lnEd.setText))
-        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_btn, 2, 2)
-
-        # self.ui_simfMRIDataDir_del_btn = QtWidgets.QPushButton('Unset')
-        # self.ui_simfMRIDataDir_del_btn.clicked.connect(
-        #     lambda: self.delete_file('simfMRIDataDir', keepfile=True))
-        # simulation_gLayout.addWidget(self.ui_simfMRIDataDir_del_btn, 2, 3)
-
-        # self.ui_objs.extend([var_lb, self.ui_simfMRIDataDir_lnEd,
-        #                      self.ui_simfMRIDataDir_btn,
-        #                      self.ui_simfMRIDataDir_del_btn])
-
-        # # --- COM port list ---
-        # var_lb = QtWidgets.QLabel("Simulation physio signal port :")
-        # simulation_gLayout.addWidget(var_lb, 3, 0)
-
-        # self.ui_simPhysPort_cmbBx = QtWidgets.QComboBox()
-        # self.ui_simPhysPort_cmbBx.addItems(self.simCom_descs)
-        # self.ui_simPhysPort_cmbBx.activated.connect(
-        #         lambda idx:
-        #         self.set_param('simPhysPort',
-        #                        self.ui_simPhysPort_cmbBx.currentText(),
-        #                        self.ui_simPhysPort_cmbBx.setCurrentText))
-        # simulation_gLayout.addWidget(self.ui_simPhysPort_cmbBx, 3, 1, 1, 3)
-
-        # self.ui_objs.extend([var_lb, self.ui_simPhysPort_cmbBx])
-
-        # # --- ECG data ---
-        # var_lb = QtWidgets.QLabel("ECG data :")
-        # simulation_gLayout.addWidget(var_lb, 4, 0)
-
-        # self.ui_simECGData_lnEd = QtWidgets.QLineEdit(self.simECGData)
-        # self.ui_simECGData_lnEd.setReadOnly(True)
-        # self.ui_simECGData_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
-        # simulation_gLayout.addWidget(self.ui_simECGData_lnEd, 4, 1)
-
-        # self.ui_simECGData_btn = QtWidgets.QPushButton('Set')
-        # self.ui_simECGData_btn.clicked.connect(
-        #     lambda: self.set_param('simECGData', None,
-        #                            self.ui_simECGData_lnEd.setText))
-        # simulation_gLayout.addWidget(self.ui_simECGData_btn, 4, 2)
-
-        # self.ui_simECGData_del_btn = QtWidgets.QPushButton('Unset')
-        # self.ui_simECGData_del_btn.clicked.connect(
-        #     lambda: self.delete_file('simECGData', keepfile=True))
-        # simulation_gLayout.addWidget(self.ui_simECGData_del_btn, 4, 3)
-
-        # self.ui_objs.extend([var_lb, self.ui_simECGData_lnEd,
-        #                      self.ui_simECGData_btn,
-        #                      self.ui_simECGData_del_btn])
-
-        # # --- Resp data ---
-        # var_lb = QtWidgets.QLabel("Respiration data :")
-        # simulation_gLayout.addWidget(var_lb, 5, 0)
-
-        # self.ui_simRespData_lnEd = QtWidgets.QLineEdit(self.simRespData)
-        # self.ui_simRespData_lnEd.setReadOnly(True)
-        # self.ui_simRespData_lnEd.setStyleSheet(
-        #     'background: white; border: 0px none;')
-        # simulation_gLayout.addWidget(self.ui_simRespData_lnEd, 5, 1)
-
-        # self.ui_simRespData_btn = QtWidgets.QPushButton('Set')
-        # self.ui_simRespData_btn.clicked.connect(
-        #     lambda: self.set_param('simRespData', None,
-        #                            self.ui_simRespData_lnEd.setText))
-        # simulation_gLayout.addWidget(self.ui_simRespData_btn, 5, 2)
-
-        # self.ui_simRespData_del_btn = QtWidgets.QPushButton('Unset')
-        # self.ui_simRespData_del_btn.clicked.connect(
-        #     lambda: self.delete_file('simRespData', keepfile=True))
-        # simulation_gLayout.addWidget(self.ui_simRespData_del_btn, 5, 3)
-
-        # self.ui_objs.extend([var_lb, self.ui_simRespData_lnEd,
-        #                      self.ui_simRespData_btn,
-        #                      self.ui_simRespData_del_btn])
-
-        # # --- Start simulation button ---
-        # self.ui_startSim_btn = QtWidgets.QPushButton('Start scan simulation')
-        # self.ui_startSim_btn.clicked.connect(self.start_rtMRI_simulation)
-        # self.ui_startSim_btn.setStyleSheet(
-        #     "background-color: rgb(94,63,153);"
-        #     "height: 20px;")
-        # simulation_gLayout.addWidget(self.ui_startSim_btn, 6, 0, 1, 4)
-
         # --- Setup experiment button -----------------------------------------
         self.ui_setRTP_btn = QtWidgets.QPushButton("RTP setup")
         self.ui_setRTP_btn.setStyleSheet(
@@ -3677,8 +3508,6 @@ class RtpApp(RTP):
             "ROI_mask",
             "isReadyRun",
             "chk_run_timer",
-            "simCom_descs",
-            "mri_sim",
             "brain_anat_orig",
             "roi_sig",
             "plt_xi",
@@ -3691,7 +3520,6 @@ class RtpApp(RTP):
             "prtime_keys",
             "run_extApp",
             "scan_onset",
-            "sim_isRunning",
             "extApp_isAlive",
             "ROI_resample_opts",
         )
@@ -3720,119 +3548,6 @@ class RtpApp(RTP):
                     self.extApp_sock = None
             else:
                 os.killpg(os.getpgid(self.extApp_proc.pid), signal.SIGTERM)
-
-
-# %%
-# def test():
-#     # --- Initialize --------------------------------------------------------
-#     # test data directory
-#     test_dir = Path(__file__).absolute().parent.parent / 'test'
-
-#     # Set test data files
-#     testdata_f = test_dir / 'func_epi.nii.gz'
-#     assert testdata_f.is_file()
-#     anat_f = test_dir / 'anat_mprage.nii.gz'
-#     template_f = test_dir / 'MNI152_2009_template.nii.gz'
-#     ROI_template_f = test_dir / 'MNI152_2009_template_LAmy.nii.gz'
-#     WM_template_f = test_dir / 'MNI152_2009_template_WM.nii.gz'
-#     Vent_template_f = test_dir / 'MNI152_2009_template_Vent.nii.gz'
-
-#     ecg_f = test_dir / 'ECG.1D'
-#     resp_f = test_dir / 'Resp.1D'
-
-#     work_dir = test_dir / 'work'
-#     if not work_dir.is_dir():
-#         work_dir.mkdir()
-
-#     # Create RtpApp instance
-#     rtp_app = RtpApp()
-#     rtp_app.work_dir = work_dir
-
-#     # --- Make mask images --------------------------------------------------
-#     no_FastSeg = False
-#     if not no_FastSeg:
-#         rtp_app.fastSeg_batch_size = 1  # Adjust the size for GPU memory
-
-#     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'",  anat_orig=anat_f,
-#                        template=template_f, ROI_template=ROI_template_f,
-#                        no_FastSeg=no_FastSeg, WM_template=WM_template_f,
-#                        Vent_template=Vent_template_f, overwrite=True)
-
-#     rtp_app.check_onAFNI('anat', 'func')
-
-#     # --- Setup RTP ---------------------------------------------------------
-#     # Prepare watch dir
-#     watch_dir = test_dir / 'watch_test_tmp'
-#     if not watch_dir.is_dir():
-#         watch_dir.mkdir()
-#     else:
-#         # Clean up watch_dir
-#         for ff in watch_dir.glob('*'):
-#             if ff.is_dir():
-#                 for fff in ff.glob('*'):
-#                     fff.unlink()
-#                 ff.rmdir()
-#             else:
-#                 ff.unlink()
-
-#     watch_file_pattern = r'nr_\d+.*\.nii'
-
-#     # Set RTP_PHYSIO to RtpTTLPhysioDummy
-#     # from rtpspy import RtpTTLPhysioDummy
-#     # sample_freq = 40
-#     # rtp_app.rtp_objs['TTLPHYSIO'] = RtpTTLPhysioDummy(
-#     #     ecg_f, resp_f, sample_freq, rtp_app.rtp_objs['RETROTS'])
-
-#     # RTP parameters
-#     rtp_params = {'WATCH': {'watch_dir': watch_dir,
-#                             'watch_file_pattern': watch_file_pattern},
-#                   'VOLREG': {'regmode': 'cubic'},
-#                   'TSHIFT': {'slice_timing_from_sample': testdata_f,
-#                              'method': 'cubic', 'ignore_init': 3,
-#                              'ref_time': 0},
-#                   'SMOOTH': {'blur_fwhm': 6.0},
-#                   'REGRESS': {'max_poly_order': np.inf, 'mot_reg': 'mot12',
-#                               'GS_reg': True, 'WM_reg': True, 'Vent_reg':
-#                                True,
-#                               'phys_reg': 'RICOR8', 'wait_num': 45}}
-
-#     # RTP setup
-#     rtp_app.RTP_setup(rtp_params=rtp_params)
-
-#     # Mask files made by make_masks() are automatically set in RTP_setup().
-
-#     # --- Load data ---------------------------------------------------------
-#     img = nib.load(testdata_f)
-#     fmri_data = np.asanyarray(img.dataobj)
-#     N_vols = img.shape[-1]
-
-#     # --- Feed data to the do_proc chain (skip RtpWatch for debug) ---------
-#     rtp_app.ready_to_run()
-#     rtp_app.rtp_objs['EXTSIG'].manual_start()
-#     for ii in range(N_vols):
-#         save_filename = f"test_nr_{ii:04d}.nii.gz"
-#         fmri_img = nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine)
-#         fmri_img.set_filename(save_filename)
-#         st = time.time()
-#         rtp_app.rtp_objs['TSHIFT'].do_proc(fmri_img, ii, st)
-
-#     rtp_app.end_run()
-
-#     # --- Simulate scan (Copy data volume-by-volume) ------------------------
-#     rtp_app.ready_to_run()
-#     rtp_app.rtp_objs['EXTSIG'].manual_start()
-#     next_tr = 2.0
-#     for ii in range(N_vols):
-#         next_tr = (ii+1)*2.0
-#         while time.time() - rtp_app.rtp_objs['EXTSIG'].scan_onset < next_tr:
-#             time.sleep(0.001)
-
-#         save_filename = watch_dir / f"test_nr_{ii:04d}.nii.gz"
-#         nib.save(nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
-#                  save_filename)
-
-#     time.sleep(2.0)
-#     rtp_app.end_run()
 
 
 # %% __main__ =================================================================

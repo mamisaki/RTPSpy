@@ -259,7 +259,7 @@ class RtpRegress(RTP):
 
         if self.phys_reg != 'None':
             if self.rtp_physio is None:
-                errmsg = 'RtpTTLPhysio object is not set.'
+                errmsg = 'Physio recorder object is not set.'
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
                 self._proc_ready = False
@@ -1807,7 +1807,7 @@ if __name__ == '__main__':
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_smooth import RtpSmooth
-    from rtpspy.rtp_ttl_physio import RtpTTLPhysio
+    from rtpspy.rpc_socket_server import RPCSocketCom
 
     # RtpTshift
     rtp_tshift = RtpTshift()
@@ -1826,8 +1826,10 @@ if __name__ == '__main__':
     rtp_smooth.set_param('mask_file', mask_data_f)
 
     # Set RtpTTLPhysio
-    rtp_physio = RtpTTLPhysio(
-        sample_freq=40, device='Dummy', sim_card_f=ecg_f, sim_resp_f=resp_f)
+    rtp_physio = RPCSocketCom(
+        ["localhost", None, "RtTTLPhysioSocketServer"],
+        Path.home() / ".RTPSpy" / "rtmri_config.json"
+    )
 
     # RtpRegress
     rtp_regress = RtpRegress()
@@ -1843,10 +1845,10 @@ if __name__ == '__main__':
     rtp_regress.GS_mask = test_dir / 'work' / 'RTP' / 'GSR_mask.nii.gz'
     rtp_regress.WM_reg = True
     rtp_regress.WM_mask = test_dir / 'work' / 'RTP' / \
-        'anat_mprage_WM_al_func.nii.gz'
+        'anat_mprage_WM_alFunc.nii.gz'
     rtp_regress.Vent_reg = True
     rtp_regress.Vent_mask = test_dir / 'work' / 'RTP' / \
-        'anat_mprage_Vent_al_func.nii.gz'
+        'anat_mprage_Vent_alFunc.nii.gz'
     rtp_regress.mask_src_proc = rtp_volreg
     rtp_regress.wait_num = 45
     rtp_regress.set_param('mask_file', mask_data_f)
