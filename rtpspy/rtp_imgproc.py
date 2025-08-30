@@ -283,7 +283,7 @@ class RtpImgProc(RTP):
         return ret
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def load_image(self, fname, vidx=None):
+    def load_image(self, fname, vidx=-1):
         """Load image file and retur nibabel Nifti1Image object"""
         try:
             img = nib.load(fname)
@@ -587,7 +587,6 @@ class RtpImgProc(RTP):
         func_orig,
         total_ETA,
         progress_bar=None,
-        ask_cmd=False,
         overwrite=False,
     ):
         # Output files
@@ -617,27 +616,49 @@ class RtpImgProc(RTP):
             func_orig_aimg = ants.image_read(str(func_orig))
 
             # region: Align nega and posi to func_orig
-            reg_posi_to_orig = ants.registration(
-                fixed=func_orig_aimg,
-                moving=posi_aimg,
-                type_of_transform="Rigid",
-                verbose=True,
+            # Create aligned average of posi images
+            posi_reg_aimgs = []
+            for aimg in ants.ndimage_to_list(posi_aimg):
+                areg = ants.registration(
+                    fixed=func_orig_aimg,
+                    moving=aimg,
+                    type_of_transform="Rigid",
+                    verbose=True,
+                )
+            posi_reg_aimgs.append(areg["warpedmovout"])
+            mean_ndimg = ants.list_to_ndimage(
+                posi_aimg, posi_reg_aimgs).mean(axis=-1)
+            posi_reg_mean_aimg = ants.from_numpy(
+                mean_ndimg,
+                origin=posi_aimg.origin[:3],
+                spacing=posi_aimg.spacing[:3],
+                direction=posi_aimg.direction[:3, :3],
             )
-            reg_posi_img = reg_posi_to_orig["warpedmovout"]
 
-            reg_nega_to_orig = ants.registration(
-                fixed=func_orig_aimg,
-                moving=nega_aimg,
-                type_of_transform="Rigid",
-                verbose=True,
+            # Create aligned average of nega images
+            nega_reg_aimgs = []
+            for aimg in ants.ndimage_to_list(nega_aimg):
+                areg = ants.registration(
+                    fixed=func_orig_aimg,
+                    moving=aimg,
+                    type_of_transform="Rigid",
+                    verbose=True,
+                )
+            nega_reg_aimgs.append(areg["warpedmovout"])
+            mean_ndimg = ants.list_to_ndimage(
+                nega_aimg, nega_reg_aimgs).mean(axis=-1)
+            nega_reg_mean_aimg = ants.from_numpy(
+                mean_ndimg,
+                origin=nega_aimg.origin[:3],
+                spacing=nega_aimg.spacing[:3],
+                direction=nega_aimg.direction[:3, :3],
             )
-            reg_nega_img = reg_nega_to_orig["warpedmovout"]
             # endregion
 
             # region: Distortion correction by building a nonlinear template of
             # reg_posi_img and reg_nega_img
             sdc_template_aimg = build_template(
-                reg_posi_img, [reg_posi_img, reg_nega_img]
+                posi_reg_mean_aimg, [posi_reg_mean_aimg, nega_reg_mean_aimg]
             )
 
             # Rigid alignment sdc_template_aimg to func_orig_aimg
