@@ -2292,19 +2292,11 @@ class RtpApp(RTP):
                 progress_bar.close()
             return -1
 
-        # Wait until external application is alive
-        # while not self.isAlive_extApp():
-        #     time.sleep(0.1)
-
         if progress_bar is not None:
             progress_bar.add_desc(" done.")
 
         # Set extApp properties
-        setattr(self, "extApp_addr", extApp_addr)
-        print(f"External application address: {extApp_addr} {self.extApp_addr}")
-        if extApp_addr is not None:
-            self.set_param("extApp_addr", extApp_addr)
-        print(f"External application address: {extApp_addr} {self.extApp_addr}")
+        self.set_param("extApp_addr", extApp_addr)
         self.extApp_proc = extApp_proc
         self.connect_extApp()
 
@@ -2349,13 +2341,11 @@ class RtpApp(RTP):
     def isAlive_extApp(self):
         """Check if the external application is alive."""
         if self.extApp_addr is None:
-            print(f"a: {self.extApp_addr}")
             return False
 
         if self.extApp_sock is None:
             ret = self.connect_extApp(no_err_pop=True)
             if ret != 0:
-                print(f"b: {self.extApp_addr}")
                 return False
 
         try:
@@ -2373,32 +2363,25 @@ class RtpApp(RTP):
             recv = self.extApp_sock.recv(1024)
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
             if "Yes." in recv.decode():
-                print(f"f: {self.extApp_addr} {recv.decode()}")
                 return True
             else:
-                print(f"g: {self.extApp_addr} {recv.decode()}")
                 return False
 
         except socket.timeout as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
-            print(f"c: {self.extApp_addr} {errstr}")
             return False
 
         except BrokenPipeError as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
             self.extApp_sock = None
-            print(f"d: {self.extApp_addr} {errstr}")
             return False
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
-            print(f"e: {self.extApp_addr} {errstr}")
             return False
-
-        print(f"h: {self.extApp_addr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_extApp(self, data, pkl=False, no_err_pop=False):
@@ -2518,18 +2501,18 @@ class RtpApp(RTP):
         elif attr == "extApp_addr":
             if val is None:
                 return
-            
-            if not self.isAlive_extApp():
-                print(f"External application is not alive: {val}")
-                self.extApp_addr = None
-                return
 
             if type(val) is tuple:
                 if self.main_win is not None:
+                    self.extApp_addr = val
+                    if not self.isAlive_extApp():
+                        self.extApp_addr = None
+                        return
                     address_str = "{}:{}".format(*val)
                     self.ui_extApp_addr_lnEd.blockSignals(True)
                     self.ui_extApp_addr_lnEd.setText(address_str)
                     self.ui_extApp_addr_lnEd.blockSignals(False)
+
             elif type(val) is str:
                 try:
                     host, port = val.split(":")
