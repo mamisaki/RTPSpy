@@ -105,7 +105,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         ):
             # Get top right corner of the main window
             geo = self.geometry()
-            x = geo.x() + geo.width() + 55
+            x = geo.x() + geo.width() + 100
             y = geo.y()
             physio_geometry = f"450x450+{x}+{y}"
             self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
