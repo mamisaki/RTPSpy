@@ -44,7 +44,6 @@ class RtpTTLPhysio(RTP):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        del self.work_dir  # This is set by RTP base class but not used here.
 
         self._retrots = RtpRetroTS()
         self.config_path = config_path
@@ -56,7 +55,7 @@ class RtpTTLPhysio(RTP):
 
         self.physio_log_file = physio_log_file
         if self.physio_log_file is None:
-            self.physio_log_file = self.work_dir / "rt_physio.log"
+            self.physio_log_file = Path(self.work_dir) / "rt_physio.log"
         self.rt_physio_address_name = rt_physio_address_name
         self.config_path = config_path
         self.init_timeout = 2
