@@ -20,7 +20,6 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 import threading
 import time
 import shutil
-import pickle
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -46,7 +45,7 @@ class RTMRISimulator:
     def __init__(
         self,
         rpc_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
-        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json"
+        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json"
     ):
         self.root = tk.Tk()
         self.root.title("RT-MRI Simulator")
@@ -845,37 +844,7 @@ class RTMRISimulator:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _get_cache_file_path(self, session_path):
         """Get the path for the cached series info file"""
-        return session_path / ".rtmri_series_cache.pkl"
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _save_series_info_cache(self, session_path, series_data):
-        """Save series information to cache file"""
-        try:
-            cache_file = self._get_cache_file_path(session_path)
-
-            # Convert Path objects to strings for serialization
-            cache_data = {"timestamp": time.time(), "series": []}
-
-            for series in series_data:
-                series_cache = {
-                    "number": series["number"],
-                    "description": series["description"],
-                    "file_count": len(series["files"]),
-                    "size": series["size"],
-                    "files": [str(f) for f in series["files"]],
-                    "tr": series.get("tr"),
-                    "image_type": series.get("image_type"),
-                }
-                cache_data["series"].append(series_cache)
-
-            with open(cache_file, "wb") as f:
-                pickle.dump(cache_data, f)
-
-            self.log_message(f"Cached series info to {cache_file.name}")
-
-        except Exception as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self.err_message(f"Error saving cache: {errstr}")
+        return session_path / ".rtmri_series_cache.csv"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _populate_series_tree(self):
@@ -1396,8 +1365,8 @@ class RTMRISimulator:
                 series_df = self.dicom_series[
                     self.dicom_series.SeriesNumber == self.current_series_nr
                 ].copy()
-                series_df["ContentTime"] = series_df["ContentTime"].astype(
-                    float
+                series_df["ContentTime"] = (
+                    series_df["ContentTime"].astype(float)
                 )
                 series_df.sort_values("ContentTime", inplace=True)
                 series_df.reset_index(drop=True, inplace=True)
@@ -1406,19 +1375,20 @@ class RTMRISimulator:
                 if self.current_image_nr > 0:
                     series_df = series_df.iloc[self.current_image_nr:]
 
+                timings = (
+                    series_df["ContentTime"].values -
+                    series_df["ContentTime"].values[0]
+                )
+
                 if (
                     "FMRI" in series_df.ImageType.values[0] and
                     len(series_df) > 1
                 ):
-                    TR = np.median(np.diff(series_df["ContentTime"].values))
-                    timings = np.linspace(
-                        0, TR * (len(series_df) - 1), len(series_df)
-                    )
+                    # Get unique acqusitions
+                    sel_ser = series_df.drop_duplicates("AcquisitionNumber")
+                    TR = np.median(np.diff(sel_ser["ContentTime"].values))
                 else:
-                    timings = (
-                        series_df["ContentTime"].values -
-                        series_df["ContentTime"].values[0]
-                    )
+                    TR = 0
 
                 rel_path = Path(series_df["FilePath"].values[0]).relative_to(
                     self.current_session_path
@@ -1437,10 +1407,10 @@ class RTMRISimulator:
                 )
 
                 # region: Simulate file creation in a series ------------------
-                tr = np.median(np.diff(timings))
-                timings += tr
-                for ii, dicom_file in enumerate(series_df["FilePath"]):
-                    dicom_file = Path(dicom_file)
+                timings += TR
+                acqNr = 0
+                for ii, row in series_df.iterrows():
+                    dicom_file = Path(row["FilePath"])
                     dest_file = series_output_dir / dicom_file.name
 
                     if ii == 0:  # Start scan
@@ -1458,8 +1428,12 @@ class RTMRISimulator:
                     if not self.simulation_running:
                         break
 
-                    if ii < len(series_df) - 1:
+                    if (
+                        row["AcquisitionNumber"] != acqNr and
+                        ii < len(series_df) - 1
+                    ):
                         self.send_pulse()
+                        acqNr = row["AcquisitionNumber"]
 
                     # Copy file
                     shutil.copy(dicom_file, dest_file)

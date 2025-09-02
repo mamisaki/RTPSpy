@@ -86,7 +86,7 @@ class RtpApp(RTP):
         work_dir="",
         physio_log_file=None,
         rt_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
-        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
+        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json",
         **kwargs
     ):
         """

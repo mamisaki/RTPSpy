@@ -40,11 +40,10 @@ class RtpTTLPhysio(RTP):
         self,
         physio_log_file=None,
         rt_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
-        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
+        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json",
         **kwargs,
     ):
         super().__init__(**kwargs)
-        del self.work_dir  # This is set by RTP base class but not used here.
 
         self._retrots = RtpRetroTS()
         self.config_path = config_path
@@ -56,7 +55,7 @@ class RtpTTLPhysio(RTP):
 
         self.physio_log_file = physio_log_file
         if self.physio_log_file is None:
-            self.physio_log_file = self.work_dir / "rt_physio.log"
+            self.physio_log_file = Path(self.work_dir) / "rt_physio.log"
         self.rt_physio_address_name = rt_physio_address_name
         self.config_path = config_path
         self.init_timeout = 2
@@ -215,6 +214,18 @@ class RtpTTLPhysio(RTP):
     def end_scan(self):
         if self.available:
             self.TTLPhysioCom.call_rt_proc("END_SCAN")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def save_physio_data(self, onset=None, series_duration=None,
+                         fname_fmt=None):
+        if self.available:
+            args = (
+                "SAVE_PHYSIO_DATA",
+                onset,
+                series_duration,
+                fname_fmt,
+            )
+            self.TTLPhysioCom.call_rt_proc(args, pkl=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):
