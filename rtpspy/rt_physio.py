@@ -671,7 +671,7 @@ class NumatoGPIORecording:
                     cmd_pipe.send("END")
                     break
 
-            time.sleep(0.0005)
+            time.sleep(0.001)
         self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
