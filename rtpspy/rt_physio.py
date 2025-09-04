@@ -848,7 +848,7 @@ class DummyRecording:
                         except Empty:
                             pass
 
-            time.sleep(0.0005)
+            time.sleep(0.0001)
 
         self._queue_lock.release()
 
