@@ -2100,9 +2100,9 @@ class RtPhysio:
                     #     self._logger.handlers[0].flush()
 
             if not self._physio_que.empty():
-                while not self._physio_que.empty():
-                    tstamp, card, resp = self._physio_que.get()
-                    with self._rbuf_lock:
+                with self._rbuf_lock:
+                    while not self._physio_que.empty():
+                        tstamp, card, resp = self._physio_que.get()
                         self._rbuf["card"].append(card)
                         self._rbuf["resp"].append(resp)
                         self._rbuf["tstamp"].append(tstamp)
