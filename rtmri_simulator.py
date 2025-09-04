@@ -1385,8 +1385,19 @@ class RTMRISimulator:
                     len(series_df) > 1
                 ):
                     # Get unique acqusitions
-                    sel_ser = series_df.drop_duplicates("AcquisitionNumber")
-                    TR = np.median(np.diff(sel_ser["ContentTime"].values))
+                    sel_series = series_df.drop_duplicates("AcquisitionNumber")
+                    TR = np.median(np.diff(sel_series["ContentTime"].values))
+
+                    echo_tdiff = np.median(
+                        np.diff(series_df["ContentTime"].values))
+                    timings = np.zeros(len(series_df))
+                    timings[sel_series.index] = np.arange(
+                        0, len(sel_series)*TR, TR)
+                    num_echos = (len(series_df) // len(sel_series))
+                    for ei in range(1, num_echos):
+                        timings[ei::num_echos] = (
+                            timings[sel_series.index] + ei * echo_tdiff
+                        )
                 else:
                     TR = 0
 
