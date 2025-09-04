@@ -72,7 +72,7 @@ class RtDcmMonitor:
         rt_mri_main_address_name=["localhost", None, "RtMriMainSocketServer"],
         rt_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
         rt_mrib_address_name=["localhost", None, "RtMriBrowserSocketServer"],
-        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json",
+        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
         no_online=False,
         **kwargs,
     ):
@@ -728,7 +728,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config_path",
-        default=str(Path.home() / ".RT-MRI" / "rtmri_config.json"),
+        default=str(Path.home() / ".RTPSpy" / "rtmri_config.json"),
         help="Path to the configuration file",
     )
     parser.add_argument(

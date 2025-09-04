@@ -563,7 +563,7 @@ class RPCSocketServer:
         """
         Clean up resources and remove the port number from the config file.
         """
-        config_f = Path.home() / ".RT-MRI" / "rtmri_config.json"
+        config_f = Path.home() / ".RTPSpy" / "rtmri_config.json"
         if config_f.is_file():
             try:
                 with open(config_f, "r") as fid:
