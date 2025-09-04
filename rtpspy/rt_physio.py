@@ -778,6 +778,7 @@ class DummyRecording:
         next_rec = time.time() + physio_rec_interval
         st_physio_read = 0
         tstamp_physio = None
+        tstamp_physio0 = None
         while True:
             if time.time() >= next_rec - rec_delay:
                 st_physio_read = time.time()
@@ -792,6 +793,15 @@ class DummyRecording:
                     resp = 1
 
                 tstamp_physio = time.time()
+                if tstamp_physio0 is None:
+                    td = tstamp_physio - tstamp_physio0
+                    if td > 2 / self._sample_freq:
+                        self._logger.warning(
+                            f"Large time gap detected in physio data: "
+                            f"{td:.3f} sec"
+                        )
+                    tstamp_physio0 = tstamp_physio
+
                 try:
                     self._physio_que.put_nowait((tstamp_physio, card, resp))
                 except Full:
