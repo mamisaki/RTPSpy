@@ -833,19 +833,19 @@ class DummyRecording:
                 elif cmd == "PULSE":
                     # Add TTL pulse
                     try:
-                        self._ttl_onset_que.put_nowait(time.time())
+                        self._ttl_onset_que.put(time.time())
                     except Full:
                         try:
-                            self._ttl_onset_que.get_nowait()  # discard oldest
+                            self._ttl_onset_que.get()  # discard oldest
                         except Empty:
                             pass
 
                     time.sleep(0.001)
                     try:
-                        self._ttl_offset_que.put_nowait(time.time())
+                        self._ttl_offset_que.put(time.time())
                     except Full:
                         try:
-                            self._ttl_offset_que.get_nowait()  # discard oldest
+                            self._ttl_offset_que.get()  # discard oldest
                         except Empty:
                             pass
 
