@@ -316,6 +316,8 @@ class DicomReader():
             scan_info['StudyDateTime'] = dateTime.isoformat()
 
             scan_info['ContentTime'] = dcm.ContentTime
+            scan_info["InstanceCreationTime"] = dcm.InstanceCreationTime
+
             StationName = dcm.StationName
             if 'ManufacturerModelName' in dcm:
                 ModelName = dcm.ManufacturerModelName.replace(' ', '_')
@@ -338,6 +340,12 @@ class DicomReader():
             elif 'PulseSequenceName' in dcm:
                 scan_info['Pulse Sequence Name'] = dcm.PulseSequenceName
             scan_info['Protocol Name'] = dcm.ProtocolName
+
+            # Get Acquisition Number and Instance Number to judge multi-echo
+            if 'AcquisitionNumber' in dcm:
+                scan_info['AcquisitionNumber'] = int(dcm.AcquisitionNumber)
+            if 'InstanceNumber' in dcm:
+                scan_info['InstanceNumber'] = int(dcm.InstanceNumber)
 
             if 'Columns' in dcm and 'Rows' in dcm:
                 scan_info['Xres'] = dcm.Columns

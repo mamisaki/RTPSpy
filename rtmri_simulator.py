@@ -45,7 +45,7 @@ class RTMRISimulator:
     def __init__(
         self,
         rpc_physio_address_name=["localhost", None, "RtTTLPhysioSocketServer"],
-        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json"
+        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json"
     ):
         self.root = tk.Tk()
         self.root.title("RT-MRI Simulator")

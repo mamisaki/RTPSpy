@@ -288,7 +288,7 @@ class DicomConverter():
                         src_fs.append(dst)
 
                 if len(src_fs):
-                    cmd = f"dcm2niix -m 1 -f {out_fname} -o {out_dir}"
+                    cmd = f"dcm2niix -m n -f {out_fname} -o {out_dir}"
                     if overwrite:
                         cmd += " -w 1"
                     else:

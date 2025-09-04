@@ -1639,7 +1639,7 @@ class RtPhysio:
         save_ttl=True,
         rpc_socket_name="RtTTLPhysioSocketServer",
         rt_mri_main_address_name=["localhost", None, "RtMriMainSocketServer"],
-        config_path=Path.home() / ".RT-MRI" / "rtmri_config.json",
+        config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
         geometry="610x570+1025+0",
         disable_close=False,
         **kwargs,
@@ -2769,7 +2769,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config_path",
-        default=str(Path.home() / ".RT-MRI" / "rtmri_config.json"),
+        default=str(Path.home() / ".RTPSpy" / "rtmri_config.json"),
         help="Path to the configuration file",
     )
     parser.add_argument(
