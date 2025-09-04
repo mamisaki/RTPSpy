@@ -1696,7 +1696,7 @@ class RtPhysio:
         # Queues to retrieve recorded data from a recorder process
         self._ttl_onset_que = Queue(maxsize=1000)
         self._ttl_offset_que = Queue(maxsize=1000)
-        self._physio_que = Queue(maxsize=1000)
+        self._physio_que = Queue(maxsize=100000)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
