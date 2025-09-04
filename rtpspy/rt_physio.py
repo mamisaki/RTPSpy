@@ -803,7 +803,7 @@ class DummyRecording:
                     tstamp_physio0 = tstamp_physio
 
                 try:
-                    self._physio_que.put_nowait((tstamp_physio, card, resp))
+                    self._physio_que.put((tstamp_physio, card, resp))
                 except Full:
                     try:
                         self._physio_que.get_nowait()  # discard oldest
@@ -2109,11 +2109,11 @@ class RtPhysio:
 
                     if tstamp0 is not None:
                         td = tstamp - tstamp0
-                        if td > 2.0 / self.sample_freq:
-                            self._logger.warning(
-                                f"Large time gap detected in physio data: "
-                                f"{td:.3f} sec"
-                            )
+                        # if td > 2.0 / self.sample_freq:
+                        #     self._logger.warning(
+                        #         f"Large time gap detected in physio data: "
+                        #         f"{td:.3f} sec"
+                        #     )
                     tstamp0 = tstamp
 
             time.sleep(0.1 / self.sample_freq)
