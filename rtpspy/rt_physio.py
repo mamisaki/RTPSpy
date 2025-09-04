@@ -793,7 +793,7 @@ class DummyRecording:
                     resp = 1
 
                 tstamp_physio = time.time()
-                if tstamp_physio0 is None:
+                if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
                     if td > 2 / self._sample_freq:
                         self._logger.warning(
