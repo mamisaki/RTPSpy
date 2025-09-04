@@ -2048,6 +2048,8 @@ class RtPhysio:
         )
         _read_proc.start()
 
+        tstamp0 = None
+
         # Queue reading loop
         while True:
             if cmd_pipe.poll():
@@ -2095,7 +2097,16 @@ class RtPhysio:
                         self._rbuf["resp"].append(resp)
                         self._rbuf["tstamp"].append(tstamp)
 
-            time.sleep(0.5 / self.sample_freq)
+                    if tstamp0 is not None:
+                        td = tstamp - tstamp0
+                        if td > 2.0 / self.sample_freq:
+                            self._logger.warning(
+                                f"Large time gap detected in physio data: "
+                                f"{td:.3f} sec"
+                            )
+                    tstamp0 = tstamp
+
+            time.sleep(0.1 / self.sample_freq)
 
         # --- end loop ---
 
@@ -2749,7 +2760,7 @@ class RtPhysio:
 # %% main =====================================================================
 if __name__ == "__main__":
     LOG_FILE = (
-        Path(__file__).resolve().parent
+        Path(__file__).resolve().parent.parent
         / "log"
         / f"{Path(__file__).resolve().stem}.log"
     )
