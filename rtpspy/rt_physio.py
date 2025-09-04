@@ -655,10 +655,10 @@ class NumatoGPIORecording:
                     resp = np.nan
 
                 try:
-                    self._physio_que.put_nowait((tstamp_physio, card, resp))
+                    self._physio_que.put((tstamp_physio, card, resp))
                 except Full:
                     try:
-                        self._physio_que.get_nowait()  # discard oldest
+                        self._physio_que.get()  # discard oldest
                     except Empty:
                         pass
 
@@ -1706,9 +1706,9 @@ class RtPhysio:
         self._recorder_type = None  # Signal recorder type
 
         # Queues to retrieve recorded data from a recorder process
-        self._ttl_onset_que = SimpleQueue(maxsize=1000)
-        self._ttl_offset_que = SimpleQueue(maxsize=1000)
-        self._physio_que = SimpleQueue(maxsize=100000)
+        self._ttl_onset_que = SimpleQueue()
+        self._ttl_offset_que = SimpleQueue()
+        self._physio_que = SimpleQueue()
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
@@ -1940,7 +1940,11 @@ class RtPhysio:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
-        return self._rec_proc is not None and self._rec_proc.is_alive()
+        return (
+            hasattr(self, "_rec_proc") and
+            self._rec_proc is not None and
+            self._rec_proc.is_alive()
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_recording(self):
