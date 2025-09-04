@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 import time
 import traceback
-from multiprocessing import Process, Lock, Queue, Pipe
+from multiprocessing import Process, Lock, SimpleQueue, Pipe
 from queue import Full, Empty
 import re
 import logging
@@ -27,6 +27,7 @@ from tempfile import NamedTemporaryFile
 import subprocess
 from collections import deque
 import json
+import gc
 
 import numpy as np
 import pandas as pd
@@ -795,10 +796,11 @@ class DummyRecording:
                 tstamp_physio = time.time()
                 if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
-                    if td > 2 / self._sample_freq:
+                    if td > 2.0 / self._sample_freq:
+                        queue_size = self._physio_que.qsize()
                         self._logger.warning(
                             f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
+                            f"{td:.3f} sec (queue size: {queue_size})"
                         )
                     tstamp_physio0 = tstamp_physio
 
@@ -1704,9 +1706,9 @@ class RtPhysio:
         self._recorder_type = None  # Signal recorder type
 
         # Queues to retrieve recorded data from a recorder process
-        self._ttl_onset_que = Queue(maxsize=1000)
-        self._ttl_offset_que = Queue(maxsize=1000)
-        self._physio_que = Queue(maxsize=100000)
+        self._ttl_onset_que = SimpleQueue(maxsize=1000)
+        self._ttl_offset_que = SimpleQueue(maxsize=1000)
+        self._physio_que = SimpleQueue(maxsize=100000)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
@@ -1920,6 +1922,8 @@ class RtPhysio:
         #     except Exception:
         #         break
 
+        gc.disable()
+
         self._rec_proc_pipe, cmd_pipe = Pipe()
         self._rec_proc = Process(target=self._run_recording, args=(cmd_pipe,))
 
@@ -1957,6 +1961,7 @@ class RtPhysio:
 
         del self._rec_proc
         self._rec_proc = None
+        gc.enable()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(self):
