@@ -797,10 +797,9 @@ class DummyRecording:
                 if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
                     if td > 2.0 / self._sample_freq:
-                        queue_size = self._physio_que.qsize()
                         self._logger.warning(
                             f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec (queue size: {queue_size})"
+                            f"{td:.3f} sec"
                         )
                     tstamp_physio0 = tstamp_physio
 
@@ -2119,10 +2118,9 @@ class RtPhysio:
                         if tstamp0 is not None:
                             td = tstamp - tstamp0
                             if td > 2.0 / self.sample_freq:
-                                queue_size = self._physio_que.qsize()
                                 self._logger.warning(
                                     f"Large time gap detected in physio data: "
-                                    f"{td:.3f} sec (queue size: {queue_size})"
+                                    f"{td:.3f} sec"
                                 )
                         tstamp0 = tstamp
 
