@@ -2109,11 +2109,12 @@ class RtPhysio:
 
                     if tstamp0 is not None:
                         td = tstamp - tstamp0
-                        # if td > 2.0 / self.sample_freq:
-                        #     self._logger.warning(
-                        #         f"Large time gap detected in physio data: "
-                        #         f"{td:.3f} sec"
-                        #     )
+                        if td > 2.0 / self.sample_freq:
+                            queue_size = self._physio_que.qsize()
+                            self._logger.warning(
+                                f"Large time gap detected in physio data: "
+                                f"{td:.3f} sec (queue size: {queue_size})"
+                            )
                     tstamp0 = tstamp
 
             time.sleep(0.1 / self.sample_freq)
