@@ -688,7 +688,6 @@ class NumatoGPIORecording:
                     break
 
             time.sleep(0.0005)
-        self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
