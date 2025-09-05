@@ -670,7 +670,7 @@ class NumatoGPIORecording:
 
                 if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
-                    if td > 2.0 / self._sample_freq:
+                    if td > 2.5 / self._sample_freq:
                         self._logger.warning(
                             f"Large time gap detected in physio data: "
                             f"{td:.3f} sec"
@@ -822,9 +822,9 @@ class DummyRecording:
 
                 if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
-                    if td > 2.0 / self._sample_freq:
+                    if td > 2.5 / self._sample_freq:
                         self._logger.warning(
-                            f"Dummy: Large time gap detected in physio data: "
+                            f"Large time gap detected in physio data: "
                             f"{td:.3f} sec"
                         )
                 tstamp_physio0 = tstamp_physio
@@ -2134,7 +2134,7 @@ class RtPhysio:
 
                 if tstamp0 is not None:
                     td = drained[-1][0] - tstamp0
-                    if td > 2.0 / self.sample_freq:
+                    if td > 2.5 / self.sample_freq:
                         self._logger.warning(
                             f"Large time gap detected in physio data: "
                             f"{td:.3f} sec"
