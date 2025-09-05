@@ -416,7 +416,7 @@ class RPCSocketServer:
 
         # Start the server on another thread.
         self._server_thread = Thread(
-            target=self._server.serve_forever, args=(0.005,))
+            target=self._server.serve_forever, args=(0.001,))
         # Make the server thread exit when the main thread terminates
         self._server_thread.daemon = True
         self._server_thread.start()

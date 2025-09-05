@@ -667,7 +667,7 @@ class NumatoGPIORecording:
                         pass
                     except Full:
                         pass
-                
+
                 if tstamp_physio0 is not None:
                     td = tstamp_physio - tstamp_physio0
                     if td > 2.0 / self._sample_freq:
@@ -680,14 +680,14 @@ class NumatoGPIORecording:
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
                 next_rec += physio_rec_interval
 
-            if cmd_pipe is not None and cmd_pipe.poll():
+            if cmd_pipe is not None and cmd_pipe.poll(timeout=0):
                 cmd = cmd_pipe.recv()
                 self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
                     cmd_pipe.send("END")
                     break
 
-            time.sleep(0.001)
+            time.sleep(0.0005)
         self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -841,7 +841,7 @@ class DummyRecording:
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
                 next_rec += physio_rec_interval
 
-            if cmd_pipe is not None and cmd_pipe.poll():
+            if cmd_pipe is not None and cmd_pipe.poll(timeout=0):
                 cmd = cmd_pipe.recv()
                 self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
@@ -858,7 +858,8 @@ class DummyRecording:
                         except Empty:
                             pass
 
-                    time.sleep(0.001)
+                    time.sleep(0.0005)  # pulse width
+
                     try:
                         self._ttl_offset_que.put(time.time())
                     except Full:
@@ -867,7 +868,7 @@ class DummyRecording:
                         except Empty:
                             pass
 
-            time.sleep(0.0001)
+            time.sleep(0.0005)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, config):
@@ -2147,7 +2148,7 @@ class RtPhysio:
                         self._rbuf["resp"].append(resp)
                         self._rbuf["tstamp"].append(tstamp)
 
-            time.sleep(0.1 / self.sample_freq)
+            # time.sleep(0.1 / self.sample_freq)
 
         # --- end loop ---
 
@@ -2776,7 +2777,7 @@ class RtPhysio:
                         fname_fmt=dump_filename_fmt, nosignal_nosave=False
                     )
 
-            if self._rpc_pipe is not None and self._rpc_pipe.poll():
+            if self._rpc_pipe is not None and self._rpc_pipe.poll(timeout=0):
                 msg = self._rpc_pipe.recv()
                 if msg == "QUIT":
                     self.end()
