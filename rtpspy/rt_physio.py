@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 import time
 import traceback
-from multiprocessing import Process, Lock, SimpleQueue, Pipe
+from multiprocessing import Process, Lock, Queue, Pipe
 from queue import Full, Empty
 import re
 import logging
@@ -568,7 +568,6 @@ class NumatoGPIORecording:
         if not self.open_sig_port():
             return
 
-        self._queue_lock.acquire()
         self._logger.debug("Start recording in read_signal_loop.")
 
         ttl_state = 0
@@ -655,11 +654,15 @@ class NumatoGPIORecording:
                     resp = np.nan
 
                 try:
-                    self._physio_que.put((tstamp_physio, card, resp))
+                    self._physio_que.put_nowait((tstamp_physio, card, resp))
                 except Full:
                     try:
-                        self._physio_que.get()  # discard oldest
+                        self._physio_que.get_nowait()  # discard oldest
+                        self._physio_que.put_nowait(
+                            (tstamp_physio, card, resp))
                     except Empty:
+                        pass
+                    except Full:
                         pass
 
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
@@ -769,8 +772,6 @@ class DummyRecording:
             self._logger.error("Recording queues are not set.")
             return
 
-        self._queue_lock.acquire()
-
         self._logger.debug("Start recording in read_signal_loop.")
 
         physio_rec_interval = 1.0 / self._sample_freq
@@ -804,10 +805,12 @@ class DummyRecording:
                     tstamp_physio0 = tstamp_physio
 
                 try:
-                    self._physio_que.put((tstamp_physio, card, resp))
+                    self._physio_que.put_nowait((tstamp_physio, card, resp))
                 except Full:
                     try:
                         self._physio_que.get_nowait()  # discard oldest
+                        self._physio_que.put_nowait(
+                            (tstamp_physio, card, resp))
                     except Empty:
                         pass
 
@@ -832,10 +835,11 @@ class DummyRecording:
                 elif cmd == "PULSE":
                     # Add TTL pulse
                     try:
-                        self._ttl_onset_que.put(time.time())
+                        self._ttl_onset_que.put_nowait(time.time())
                     except Full:
                         try:
-                            self._ttl_onset_que.get()  # discard oldest
+                            self._ttl_onset_que.get_nowait()  # discard oldest
+                            self._ttl_onset_que.put_nowait(time.time())
                         except Empty:
                             pass
 
@@ -849,8 +853,6 @@ class DummyRecording:
                             pass
 
             time.sleep(0.0001)
-
-        self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, config):
@@ -1705,9 +1707,9 @@ class RtPhysio:
         self._recorder_type = None  # Signal recorder type
 
         # Queues to retrieve recorded data from a recorder process
-        self._ttl_onset_que = SimpleQueue()
-        self._ttl_offset_que = SimpleQueue()
-        self._physio_que = SimpleQueue()
+        self._ttl_onset_que = Queue(maxsize=512)
+        self._ttl_offset_que = Queue(maxsize=512)
+        self._physio_que = Queue(maxsize=512)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
