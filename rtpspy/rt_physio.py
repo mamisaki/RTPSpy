@@ -577,6 +577,7 @@ class NumatoGPIORecording:
         next_rec = time.time() + physio_rec_interval
         st_physio_read = 0
         tstamp_physio = None
+        tstamp_physio0 = None
         while True:
             # Read TTL
             self._sig_ser.reset_output_buffer()
@@ -621,6 +622,7 @@ class NumatoGPIORecording:
                     except Full:
                         try:
                             self._ttl_onset_que.get_nowait()  # discard oldest
+                            self._ttl_onset_que.put_nowait(tstamp_ttl)
                         except Empty:
                             pass
                     # self._logger.debug(f"TTL Onset: {tstamp_ttl}")
@@ -633,6 +635,7 @@ class NumatoGPIORecording:
                     except Full:
                         try:
                             self._ttl_offset_que.get_nowait()  # discard oldest
+                            self._ttl_offset_que.put_nowait(tstamp_ttl)
                         except Empty:
                             pass
                     # self._logger.debug(f"TTL Offset: {tstamp_ttl}")
@@ -664,6 +667,15 @@ class NumatoGPIORecording:
                         pass
                     except Full:
                         pass
+                
+                if tstamp_physio0 is not None:
+                    td = tstamp_physio - tstamp_physio0
+                    if td > 2.0 / self._sample_freq:
+                        self._logger.warning(
+                            f"Large time gap detected in physio data: "
+                            f"{td:.3f} sec"
+                        )
+                tstamp_physio0 = tstamp_physio
 
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
                 next_rec += physio_rec_interval
@@ -795,14 +807,6 @@ class DummyRecording:
                     resp = 1
 
                 tstamp_physio = time.time()
-                if tstamp_physio0 is not None:
-                    td = tstamp_physio - tstamp_physio0
-                    if td > 2.0 / self._sample_freq:
-                        self._logger.warning(
-                            f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
-                        )
-                    tstamp_physio0 = tstamp_physio
 
                 try:
                     self._physio_que.put_nowait((tstamp_physio, card, resp))
@@ -813,6 +817,17 @@ class DummyRecording:
                             (tstamp_physio, card, resp))
                     except Empty:
                         pass
+                    except Full:
+                        pass
+
+                if tstamp_physio0 is not None:
+                    td = tstamp_physio - tstamp_physio0
+                    if td > 2.0 / self._sample_freq:
+                        self._logger.warning(
+                            f"Dummy: Large time gap detected in physio data: "
+                            f"{td:.3f} sec"
+                        )
+                tstamp_physio0 = tstamp_physio
 
                 self._sim_data_pos += 1
                 self._sim_data_pos %= self._sim_data_len
@@ -2109,22 +2124,28 @@ class RtPhysio:
                     # if self._logger.handlers:
                     #     self._logger.handlers[0].flush()
 
-            if not self._physio_que.empty():
+            drained = []
+            while True:
+                try:
+                    drained.append(self._physio_que.get_nowait())
+                except Empty:
+                    break
+
+                if tstamp0 is not None:
+                    td = drained[-1][0] - tstamp0
+                    if td > 2.0 / self.sample_freq:
+                        self._logger.warning(
+                            f"Large time gap detected in physio data: "
+                            f"{td:.3f} sec"
+                        )
+                tstamp0 = drained[-1][0]
+
+            if drained:
                 with self._rbuf_lock:
-                    while not self._physio_que.empty():
-                        tstamp, card, resp = self._physio_que.get()
+                    for tstamp, card, resp in drained:
                         self._rbuf["card"].append(card)
                         self._rbuf["resp"].append(resp)
                         self._rbuf["tstamp"].append(tstamp)
-
-                        if tstamp0 is not None:
-                            td = tstamp - tstamp0
-                            if td > 2.0 / self.sample_freq:
-                                self._logger.warning(
-                                    f"Large time gap detected in physio data: "
-                                    f"{td:.3f} sec"
-                                )
-                        tstamp0 = tstamp
 
             time.sleep(0.1 / self.sample_freq)
 
