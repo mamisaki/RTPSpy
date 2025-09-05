@@ -32,3 +32,5 @@ build/*
 afni_module/librtp.dylib
 simulation_data
 RTMRI_simulation
+trace*
+jitter*
