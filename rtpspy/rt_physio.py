@@ -211,8 +211,8 @@ class SharedMemoryRingBuffer:
             cpos = self._cpos[0]
             self._data[cpos] = x
             self._cpos[0] = (cpos + 1) % self.length
-            self._data.flush()
-            self._cpos.flush()
+            # self._data.flush()
+            # self._cpos.flush()
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
@@ -578,6 +578,7 @@ class NumatoGPIORecording:
         next_rec = time.time() + physio_rec_interval
         st_physio_read = 0
         tstamp_physio = None
+        tstamp_physio0 = None
         while True:
             # Read TTL
             self._sig_ser.reset_output_buffer()
@@ -656,6 +657,16 @@ class NumatoGPIORecording:
 
                 try:
                     self._physio_que.put((tstamp_physio, card, resp))
+
+                    if tstamp_physio0 is not None:
+                        td = tstamp_physio - tstamp_physio0
+                        if td > 2.0 / self._sample_freq:
+                            self._logger.warning(
+                                f"Numato: Large time gap detected in physio data: "
+                                f"{td:.3f} sec"
+                            )
+                    tstamp_physio0 = tstamp_physio
+
                 except Full:
                     try:
                         self._physio_que.get()  # discard oldest
@@ -769,7 +780,7 @@ class DummyRecording:
             self._logger.error("Recording queues are not set.")
             return
 
-        self._queue_lock.acquire()
+        # self._queue_lock.acquire()
 
         self._logger.debug("Start recording in read_signal_loop.")
 
@@ -794,17 +805,18 @@ class DummyRecording:
                     resp = 1
 
                 tstamp_physio = time.time()
-                if tstamp_physio0 is not None:
-                    td = tstamp_physio - tstamp_physio0
-                    if td > 2.0 / self._sample_freq:
-                        self._logger.warning(
-                            f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
-                        )
-                    tstamp_physio0 = tstamp_physio
-
+                
                 try:
                     self._physio_que.put((tstamp_physio, card, resp))
+                    if tstamp_physio0 is not None:
+                        td = tstamp_physio - tstamp_physio0
+                        if td > 2.0 / self._sample_freq:
+                            self._logger.warning(
+                                f"Dummy: Large time gap detected in physio data: "
+                                f"{td:.3f} sec"
+                            )
+                    tstamp_physio0 = tstamp_physio
+
                 except Full:
                     try:
                         self._physio_que.get_nowait()  # discard oldest
@@ -850,7 +862,7 @@ class DummyRecording:
 
             time.sleep(0.0005)
 
-        self._queue_lock.release()
+        # self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, config):
@@ -2119,7 +2131,7 @@ class RtPhysio:
                             td = tstamp - tstamp0
                             if td > 2.0 / self.sample_freq:
                                 self._logger.warning(
-                                    f"Large time gap detected in physio data: "
+                                    f"RtPhysio:Large time gap detected in physio data: "
                                     f"{td:.3f} sec"
                                 )
                         tstamp0 = tstamp
