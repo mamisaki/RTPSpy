@@ -573,7 +573,7 @@ class RtDcmMonitor:
                 if re.match(r'\w\w\d\d\d', patient[0]):  # LIBR ID
                     sub = patient[0]
                 else:
-                    sub = '_'.join(patient)
+                    sub = '_'.join(patient).replace(" ", "_")
                 ses = str(dcm.PatientID).replace(" ", "_")
                 desc = str(dcm.SeriesDescription).replace(" ", "_")
                 fname_fmt = (

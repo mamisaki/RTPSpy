@@ -168,15 +168,18 @@ class RtpVolreg(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Volume registration;{f}"
+            if fmri_img.get_filename():
+                fname = Path(fmri_img.get_filename()).name
+            else:
+                fname = "unknown.nii.gz"
+            msg = f"#{vol_idx+1};Volume registration;{fname}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set save_name
-            fmri_img.set_filename('vr.' + Path(fmri_img.get_filename()).name)
+            fmri_img.set_filename('vr.' + fname)
 
             if self.next_proc:
                 # Keep the current processed data

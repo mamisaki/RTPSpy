@@ -2745,7 +2745,10 @@ class RtPhysio:
         while True:
             msg = None
             if self._rec_proc_pipe is not None and self._rec_proc_pipe.poll():
-                msg = self._rec_proc_pipe.recv()
+                try:
+                    msg = self._rec_proc_pipe.recv()
+                except EOFError:
+                    pass
                 if msg == "END_RECORDING":
                     break
 
