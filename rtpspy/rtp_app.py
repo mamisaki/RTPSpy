@@ -332,8 +332,11 @@ class RtpApp(RTP):
                     self.proc_delay.append(proc_delay)
 
             # Log message
-            f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx + 1};ROI signal extraction;{f}"
+            if fmri_img.get_filename():
+                fname = Path(fmri_img.get_filename()).name
+            else:
+                fname = "unknown.nii.gz"
+            msg = f"#{vol_idx + 1};ROI signal extraction;{fname}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
@@ -1063,7 +1066,7 @@ class RtpApp(RTP):
             progress = 0
             time.sleep(0.01)  # Give UI time to update the dialog
 
-        # --- Set RTP parameters ----------------------------------------------
+        # region: Set RTP parameters ------------------------------------------
         if self.enable_RTP > 0:
             # Set parameters in rtp_params
             for proc, params in rtp_params.items():
@@ -1244,7 +1247,8 @@ class RtpApp(RTP):
                     self._logger.info("Cancel experiment setup")
                     return -1
 
-        # --- End -------------------------------------------------------------
+        # endregion: Set RTP parameters
+
         if show_progress:
             progress = 100
             progress_bar.set_value(progress)
@@ -3499,7 +3503,7 @@ class RtpApp(RTP):
         ui_readyQiut_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
 
         # -- Quit button --
-        self.ui_quit_btn = QtWidgets.QPushButton("Quit session")
+        self.ui_quit_btn = QtWidgets.QPushButton("Cancel")
         self.ui_quit_btn.setStyleSheet("background-color: rgb(255,0,0);")
         self.ui_quit_btn.clicked.connect(partial(self.end_run, True))
         self.ui_quit_btn.setEnabled(False)

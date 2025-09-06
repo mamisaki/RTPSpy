@@ -477,8 +477,28 @@ class RtpRegress(RTP):
 
             # --- If the number of samples is not enough, return --------------
             if self._vol_num <= self.wait_num:
+                # Record process time
+                tstamp = time.time()
+                self._proc_time.append(tstamp)
+                if pre_proc_time is not None:
+                    proc_delay = self._proc_time[-1] - pre_proc_time
+                    if self.save_delay:
+                        self.proc_delay.append(proc_delay)
+
+                # log message
+                if fmri_img.get_filename():
+                    fname = Path(fmri_img.get_filename()).name
+                else:
+                    fname = "unknown.nii.gz"
                 wait_idx = self._proc_start_idx+self.wait_num
-                msg = f"#{vol_idx+1}:Wait until volume #{wait_idx+1}"
+                msg = (
+                    f"#{vol_idx+1};Regression;"
+                    f"Wait until volume #{wait_idx+1};{fname}"
+                    f";tstamp={tstamp}"
+                )
+                msg += f";tstamp={tstamp}"
+                if pre_proc_time is not None:
+                    msg += f";took {proc_delay:.4f}s"
                 self._logger.info(msg)
                 return
 
@@ -555,8 +575,12 @@ class RtpRegress(RTP):
                 self._logger.info(msg)
 
                 # Save filename template
-                save_name_temp = Path(fmri_img.get_filename()).name
-                save_name_temp = 'regRes.' + save_name_temp
+                if fmri_img.get_filename():
+                    fname = Path(fmri_img.get_filename()).name
+                else:
+                    fname = "unknown.nii.gz"
+
+                save_name_temp = 'regRes.' + fname
                 ma = re.search(f"0*{vol_idx+1}", save_name_temp)
                 if ma is not None:
                     dstr = ma.group()
@@ -593,7 +617,7 @@ class RtpRegress(RTP):
                     if self.save_proc:
                         self.keep_processed_image(retro_fmri_img, vi)
 
-                    time.sleep(0.01)  # To avoid too busy data send.
+                    time.sleep(0.005)  # To avoid too busy data send.
 
                 Resid = Resids[-1, :]
                 del Resids
@@ -623,16 +647,18 @@ class RtpRegress(RTP):
                     self.proc_delay.append(proc_delay)
 
             # log message
-            f = Path(fmri_img.get_filename()).name
-            msg = f"#{vol_idx+1};Regression;{f}"
+            if fmri_img.get_filename():
+                fname = Path(fmri_img.get_filename()).name
+            else:
+                fname = "unknown.nii.gz"
+            msg = f"#{vol_idx+1};Regression;{fname}"
             msg += f";tstamp={tstamp}"
             if pre_proc_time is not None:
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
             # Set filename
-            fmri_img.set_filename('regRes.' +
-                                  Path(fmri_img.get_filename()).name)
+            fmri_img.set_filename('regRes.' + fname)
 
             if self.next_proc:
                 # Keep the current processed data
@@ -730,7 +756,7 @@ class RtpRegress(RTP):
                 col_names = col_names[:desMtx.shape[1]]
             elif len(col_names) < desMtx.shape[1]:
                 while len(col_names) < desMtx.shape[1]:
-                    col_names.append("Reg{len(col_names)+2}")
+                    col_names.append(f"Reg{len(col_names)+2}")
 
         # Append nuisunce regressors
         if self.mot_reg != 'None':
