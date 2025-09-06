@@ -34,3 +34,4 @@ simulation_data
 RTMRI_simulation
 trace*
 jitter*
+dump/*
