@@ -108,9 +108,9 @@ The GUI application serves as just an example of library usage. However, users m
 
 To run the example application, users need to install the PsychoPy package in a conda environment named psychopy, as indicated below:
 ```
+sudo apt install libgtk-3-dev
 conda create -n psychopy python=3.10
 conda activate psychopy
-conda install conda-forge::wxpython
 pip install psychopy
 ```
 
