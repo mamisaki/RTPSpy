@@ -111,6 +111,7 @@ To run the example application, users need to install the PsychoPy package in a 
 sudo apt install libgtk-3-dev
 conda create -n psychopy python=3.10
 conda activate psychopy
+conda install wxpython -c conda-forge
 pip install psychopy
 ```
 
