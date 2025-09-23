@@ -2655,7 +2655,7 @@ class RtPhysio:
                 return None
 
         elif call == "QUIT":
-            self.close()
+            self.end()
 
         elif type(call) is tuple:  # Call with arguments
             try:
