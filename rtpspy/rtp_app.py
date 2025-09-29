@@ -2462,8 +2462,7 @@ class RtpApp(RTP):
             traceback.print_exception(exc_type, exc_obj, exc_tb)
             received = None
 
-        if timeout is not None:
-            self.extApp_sock.settimeout(self.extApp_sock_timeout)
+        self.extApp_sock.settimeout(self.extApp_sock_timeout)
 
         return received
 
