@@ -2429,7 +2429,7 @@ class RtpApp(RTP):
             reciving buffer size
         timeout : float, optional
             response waiting timeout (s). The default is None ==
-            self.extApp_sock_timeout.
+            no timeout.
 
         Returns
         -------
@@ -2445,8 +2445,7 @@ class RtpApp(RTP):
         if self.extApp_sock is None:
             return None
 
-        if timeout is not None:
-            self.extApp_sock.settimeout(timeout)
+        self.extApp_sock.settimeout(timeout)
 
         try:
             received = self.extApp_sock.recv(bufsize)
