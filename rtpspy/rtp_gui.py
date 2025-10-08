@@ -95,17 +95,21 @@ class RtpGUI(QtWidgets.QMainWindow):
         self._logger.info(msg)
 
         # Wait until the window is ready
+        self.show()
         QtWidgets.QApplication.processEvents()
         time.sleep(1)
 
-        # Move physio window next to the main window
+        self.set_physio_geometry()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_physio_geometry(self):
         if (
             "TTLPHYSIO" in self.rtp_objs and
             self.rtp_objs["TTLPHYSIO"] is not None
         ):
             # Get top right corner of the main window
             geo = self.geometry()
-            x = geo.x() + geo.width() + 100
+            x = geo.x() + geo.width() + 5
             y = geo.y()
             physio_geometry = f"450x450+{x}+{y}"
             self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
