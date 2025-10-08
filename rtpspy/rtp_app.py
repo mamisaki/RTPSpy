@@ -1266,6 +1266,8 @@ class RtpApp(RTP):
 
             self.main_win.show_options_list()
             self.main_win.options_tab.setCurrentIndex(2)
+            QtWidgets.QApplication.processEvents()
+            time.sleep(0.1)
 
         return 0
 
