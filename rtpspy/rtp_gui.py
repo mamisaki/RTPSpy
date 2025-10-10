@@ -82,9 +82,6 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.on_clicked_setOption("WATCH")
         self.options_tab.setCurrentIndex(0)
 
-        # Move window to screen top,left
-        self.move(0, 0)
-
         # Set log
         self._log_fd = None
         self._log_update_timer = QtCore.QTimer()
@@ -95,9 +92,9 @@ class RtpGUI(QtWidgets.QMainWindow):
         self._logger.info(msg)
 
         # Wait until the window is ready
+        self.resize(self.sizeHint())
+        self.move(50, 50)
         self.show()
-        QtWidgets.QApplication.processEvents()
-        time.sleep(1)
 
         self.set_physio_geometry()
 
@@ -111,7 +108,7 @@ class RtpGUI(QtWidgets.QMainWindow):
             geo = self.geometry()
             x = geo.x() + geo.width() + 5
             y = geo.y()
-            physio_geometry = f"450x450+{x}+{y}"
+            physio_geometry = f"450x450+{x}+0"
             self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
