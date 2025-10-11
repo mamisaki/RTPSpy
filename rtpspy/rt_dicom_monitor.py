@@ -151,6 +151,7 @@ class RtDcmMonitor:
 
         # Parameters to set the physio recording length
         self._TR = None
+        self._acqNr = 0
         self._NVol = 0
         self._process_lock = Lock()
         self._cancel = False
@@ -185,10 +186,10 @@ class RtDcmMonitor:
         while not self._cancel:
             try:
                 # Check if the series ends
-                if self._TR is not None:
-                    time_out = self._TR * 2.5
-                else:
-                    time_out = self.series_timeout
+                # if self._TR is not None:
+                #     time_out = self._TR * 2.5
+                # else:
+                #     time_out = self.series_timeout
 
                 if self._isRun_series and self._last_dicom_header:
                     # Check if the series ends
@@ -202,17 +203,18 @@ class RtDcmMonitor:
                         if self._NVol == nt:
                             ser_end = True
 
-                    if (
-                        not ser_end
-                        and self._last_dicom_time is not None
-                        and time.time() - self._last_dicom_time > time_out
-                    ):
-                        ser_end = True
-                        # No new image for time_out seconds.
-                        self._logger.info(
-                            f"No new DICOM file for {time_out}s. "
-                            "Closing series."
-                        )
+                    # Timeout
+                    # # if (
+                    #     not ser_end
+                    #     and self._last_dicom_time is not None
+                    #     and time.time() - self._last_dicom_time > time_out
+                    # ):
+                    #     ser_end = True
+                    #     # No new image for time_out seconds.
+                    #     self._logger.info(
+                    #         f"No new DICOM file for {time_out}s. "
+                    #         "Closing series."
+                    #     )
 
                     if ser_end:
                         self.end_series()
@@ -393,6 +395,15 @@ class RtDcmMonitor:
                 self._process_lock.release()
                 return
 
+        # Skip if not a first echo file
+        acqNr = dcm.AcquisitionNumber
+        if acqNr == self._acqNr:
+            # Skip multi-echo data of the same acquisition number
+            self._logger.debug(f"{dicom_file.name} is not a first echo file.")
+            self._process_lock.release()
+            return
+        self._acqNr = acqNr
+
         #  --- Process --------------------------------------------------------
         try:
             self._last_dicom_header = dcm
@@ -521,6 +532,25 @@ class RtDcmMonitor:
                     self.rt_physio_com.call_rt_proc("SHOW")
                     self._save_physio = True
 
+                    patient = str(dcm.PatientName).split('^')
+                    if re.match(r'\w\w\d\d\d', patient[0]):  # LIBR ID
+                        sub = patient[0]
+                    else:
+                        sub = '_'.join(patient)
+                    sub = sub.replace(" ", "_")
+                    ses = str(dcm.PatientID).replace(" ", "_")
+                    desc = str(dcm.SeriesDescription).replace(" ", "_")
+                    fname_fmt = (
+                        str(self._study_dir) +
+                        f"/sub-{sub}_ses-{ses}"
+                        f"_ser-{int(self._series_nr):02d}_desc-{desc}"
+                        "_physio.tsv"
+                    )
+                    self.rt_physio_com.call_rt_proc(
+                        ("SET_FNAME_FMT", fname_fmt),
+                        pkl=True,
+                    )
+
             # Send image to MRI browser
             if self.rt_mrib_com.rpc_ping():
                 # Convert to NIFTI
@@ -573,7 +603,8 @@ class RtDcmMonitor:
                 if re.match(r'\w\w\d\d\d', patient[0]):  # LIBR ID
                     sub = patient[0]
                 else:
-                    sub = '_'.join(patient).replace(" ", "_")
+                    sub = '_'.join(patient)
+                sub = sub.replace(" ", "_")
                 ses = str(dcm.PatientID).replace(" ", "_")
                 desc = str(dcm.SeriesDescription).replace(" ", "_")
                 fname_fmt = (
@@ -623,6 +654,7 @@ class RtDcmMonitor:
             self._TR = None
             self._last_dicom_header = None
             self._NVol = 0
+            self._acqNr = 0
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()

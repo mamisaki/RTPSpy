@@ -27,6 +27,7 @@ from tempfile import NamedTemporaryFile
 import subprocess
 from collections import deque
 import json
+import gc
 
 import numpy as np
 import pandas as pd
@@ -39,8 +40,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
-from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
-import gc
+try:
+    from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+except ImportError:
+    from .rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
 
 mpl.rcParams["font.size"] = 8
 

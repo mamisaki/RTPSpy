@@ -216,6 +216,12 @@ class RtpTTLPhysio(RTP):
             self.TTLPhysioCom.call_rt_proc("END_SCAN")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_physio_fname(self, fname_fmt):
+        if self.available:
+            args = ("SET_FNAME_FMT", fname_fmt)
+            self.TTLPhysioCom.call_rt_proc(args, pkl=True)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_physio_data(self, onset=None, series_duration=None,
                          fname_fmt=None):
         if self.available:
