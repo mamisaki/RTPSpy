@@ -2764,7 +2764,7 @@ class RtPhysio:
                     tr = np.median(np.diff(ttl_onsets))
                     silent_time = time.time() - ttl_onsets[-1]
                     if silent_time > max(2 * tr, 2.5):
-                        self._logger.debug(
+                        self._logger.info(
                             "Detected scan end due to silent TTL."
                         )
                         self.inScan = False
