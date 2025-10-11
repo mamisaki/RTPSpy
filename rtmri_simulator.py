@@ -1365,6 +1365,7 @@ class RTMRISimulator:
                 series_df = self.dicom_series[
                     self.dicom_series.SeriesNumber == self.current_series_nr
                 ].copy()
+
                 series_df["ContentTime"] = (
                     series_df["ContentTime"].astype(float)
                 )
@@ -1385,15 +1386,17 @@ class RTMRISimulator:
                     len(series_df) > 1
                 ):
                     # Get unique acqusitions
-                    sel_series = series_df.drop_duplicates("AcquisitionNumber")
-                    TR = np.median(np.diff(sel_series["ContentTime"].values))
-
+                    AcquisitionNumbers = series_df.AcquisitionNumber
+                    n_echos = [np.sum(AcquisitionNumbers == an)
+                               for an in AcquisitionNumbers.unique()]
+                    num_echos = np.max(n_echos)
                     echo_tdiff = np.median(
                         np.diff(series_df["ContentTime"].values))
-                    timings = np.zeros(len(series_df))
+                    sel_series = series_df.drop_duplicates("AcquisitionNumber")
+                    timings = np.zeros(len(sel_series) * num_echos)
+                    TR = np.median(np.diff(sel_series["ContentTime"].values))
                     timings[sel_series.index] = np.arange(
                         0, len(sel_series)*TR, TR)
-                    num_echos = (len(series_df) // len(sel_series))
                     for ei in range(1, num_echos):
                         timings[ei::num_echos] = (
                             timings[sel_series.index] + ei * echo_tdiff
@@ -1417,12 +1420,32 @@ class RTMRISimulator:
                     {"value": self.current_image_nr},
                 )
 
+                # Append phase images
+                ser_desc = series_df.iloc[0].SeriesDescription
+                phase_ser = f"{ser_desc}_Pha"
+                if np.any(
+                    phase_ser in self.dicom_series.SeriesDescription.unique()
+                ):
+                    pha_series_df = self.dicom_series[
+                        self.dicom_series.SeriesDescription == phase_ser
+                    ].copy()
+                else:
+                    pha_series_df = None
+
                 # region: Simulate file creation in a series ------------------
                 timings += TR
                 acqNr = 0
                 for ii, row in series_df.iterrows():
                     dicom_file = Path(row["FilePath"])
                     dest_file = series_output_dir / dicom_file.name
+                    if pha_series_df is not None:
+                        pha_file = pha_series_df[
+                            pha_series_df.InstanceNumber == row.InstanceNumber
+                        ]["FilePath"]
+                        pha_file = Path(pha_file.values[0])
+                        dest_pha_file = series_output_dir / pha_file.name
+                    else:
+                        dest_pha_file = None
 
                     if ii == 0:  # Start scan
                         if not dest_file.parent.is_dir():
@@ -1475,6 +1498,18 @@ class RTMRISimulator:
                             f"{dicom_file.name}"
                         ),
                     )
+
+                    if dest_pha_file is not None:
+                        shutil.copy(pha_file, dest_pha_file)
+                        self.root.after(
+                            0,
+                            self.log_message,
+                            (
+                                f"Copy file {self.current_image_nr}/"
+                                f"{len(series_df)}: "
+                                f"{pha_file.name}"
+                            ),
+                        )
 
                     if self.current_image_nr < len(series_df) and one_step:
                         self.root.after(0, self.simulation_finished)

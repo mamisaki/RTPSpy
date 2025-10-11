@@ -27,7 +27,6 @@ from tempfile import NamedTemporaryFile
 import subprocess
 from collections import deque
 import json
-import gc
 
 import numpy as np
 import pandas as pd
@@ -40,11 +39,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
-try:
-    from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
-except ImportError:
-    from .rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
-
+from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+import gc
 
 mpl.rcParams["font.size"] = 8
 
@@ -568,6 +564,7 @@ class NumatoGPIORecording:
         if not self.open_sig_port():
             return
 
+        self._queue_lock.acquire()
         self._logger.debug("Start recording in read_signal_loop.")
 
         ttl_state = 0
@@ -577,7 +574,6 @@ class NumatoGPIORecording:
         next_rec = time.time() + physio_rec_interval
         st_physio_read = 0
         tstamp_physio = None
-        tstamp_physio0 = None
         while True:
             # Read TTL
             self._sig_ser.reset_output_buffer()
@@ -622,7 +618,6 @@ class NumatoGPIORecording:
                     except Full:
                         try:
                             self._ttl_onset_que.get_nowait()  # discard oldest
-                            self._ttl_onset_que.put_nowait(tstamp_ttl)
                         except Empty:
                             pass
                     # self._logger.debug(f"TTL Onset: {tstamp_ttl}")
@@ -635,7 +630,6 @@ class NumatoGPIORecording:
                     except Full:
                         try:
                             self._ttl_offset_que.get_nowait()  # discard oldest
-                            self._ttl_offset_que.put_nowait(tstamp_ttl)
                         except Empty:
                             pass
                     # self._logger.debug(f"TTL Offset: {tstamp_ttl}")
@@ -661,26 +655,13 @@ class NumatoGPIORecording:
                 except Full:
                     try:
                         self._physio_que.get_nowait()  # discard oldest
-                        self._physio_que.put_nowait(
-                            (tstamp_physio, card, resp))
                     except Empty:
                         pass
-                    except Full:
-                        pass
-
-                if tstamp_physio0 is not None:
-                    td = tstamp_physio - tstamp_physio0
-                    if td > 2.5 / self._sample_freq:
-                        self._logger.warning(
-                            f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
-                        )
-                tstamp_physio0 = tstamp_physio
 
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
                 next_rec += physio_rec_interval
 
-            if cmd_pipe is not None and cmd_pipe.poll(timeout=0):
+            if cmd_pipe is not None and cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
@@ -688,6 +669,7 @@ class NumatoGPIORecording:
                     break
 
             time.sleep(0.0005)
+        self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -783,6 +765,8 @@ class DummyRecording:
             self._logger.error("Recording queues are not set.")
             return
 
+        self._queue_lock.acquire()
+
         self._logger.debug("Start recording in read_signal_loop.")
 
         physio_rec_interval = 1.0 / self._sample_freq
@@ -791,7 +775,6 @@ class DummyRecording:
         next_rec = time.time() + physio_rec_interval
         st_physio_read = 0
         tstamp_physio = None
-        tstamp_physio0 = None
         while True:
             if time.time() >= next_rec - rec_delay:
                 st_physio_read = time.time()
@@ -806,27 +789,13 @@ class DummyRecording:
                     resp = 1
 
                 tstamp_physio = time.time()
-
                 try:
                     self._physio_que.put_nowait((tstamp_physio, card, resp))
                 except Full:
                     try:
                         self._physio_que.get_nowait()  # discard oldest
-                        self._physio_que.put_nowait(
-                            (tstamp_physio, card, resp))
                     except Empty:
                         pass
-                    except Full:
-                        pass
-
-                if tstamp_physio0 is not None:
-                    td = tstamp_physio - tstamp_physio0
-                    if td > 2.5 / self._sample_freq:
-                        self._logger.warning(
-                            f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
-                        )
-                tstamp_physio0 = tstamp_physio
 
                 self._sim_data_pos += 1
                 self._sim_data_pos %= self._sim_data_len
@@ -840,7 +809,7 @@ class DummyRecording:
                 rec_delay = np.mean(rec_delays) if rec_delays else 0.0
                 next_rec += physio_rec_interval
 
-            if cmd_pipe is not None and cmd_pipe.poll(timeout=0):
+            if cmd_pipe is not None and cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
@@ -853,21 +822,21 @@ class DummyRecording:
                     except Full:
                         try:
                             self._ttl_onset_que.get_nowait()  # discard oldest
-                            self._ttl_onset_que.put_nowait(time.time())
                         except Empty:
                             pass
 
-                    time.sleep(0.0005)  # pulse width
-
+                    time.sleep(0.001)
                     try:
-                        self._ttl_offset_que.put(time.time())
+                        self._ttl_offset_que.put_nowait(time.time())
                     except Full:
                         try:
-                            self._ttl_offset_que.get()  # discard oldest
+                            self._ttl_offset_que.get_nowait()  # discard oldest
                         except Empty:
                             pass
 
             time.sleep(0.0005)
+
+        self._queue_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, config):
@@ -1722,9 +1691,9 @@ class RtPhysio:
         self._recorder_type = None  # Signal recorder type
 
         # Queues to retrieve recorded data from a recorder process
-        self._ttl_onset_que = Queue(maxsize=512)
-        self._ttl_offset_que = Queue(maxsize=512)
-        self._physio_que = Queue(maxsize=512)
+        self._ttl_onset_que = Queue(maxsize=1000)
+        self._ttl_offset_que = Queue(maxsize=1000)
+        self._physio_que = Queue(maxsize=1000)
 
         # Initializing recording process variables
         self._rec_proc = None  # Signal recording process
@@ -1740,6 +1709,8 @@ class RtPhysio:
 
         # Scan onset mmap file for sharing among multiple processes
         self._scan_onset = SharedMemoryRingBuffer(1, initial_value=-1.0)
+        self.inScan = False  # Flag for in-scan mode
+        self.fname_fmt = "./physio.tsv"
 
         # Prepare data buffer files for sharing among multiple processes
         # Buffer names for sharing data across processes
@@ -1938,8 +1909,6 @@ class RtPhysio:
         #     except Exception:
         #         break
 
-        gc.disable()
-
         self._rec_proc_pipe, cmd_pipe = Pipe()
         self._rec_proc = Process(target=self._run_recording, args=(cmd_pipe,))
 
@@ -1956,11 +1925,7 @@ class RtPhysio:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
-        return (
-            hasattr(self, "_rec_proc") and
-            self._rec_proc is not None and
-            self._rec_proc.is_alive()
-        )
+        return self._rec_proc is not None and self._rec_proc.is_alive()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_recording(self):
@@ -1981,7 +1946,8 @@ class RtPhysio:
 
         del self._rec_proc
         self._rec_proc = None
-        gc.enable()
+
+        gc.collect()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_plot(self):
@@ -2083,8 +2049,6 @@ class RtPhysio:
         )
         _read_proc.start()
 
-        tstamp0 = None
-
         # Queue reading loop
         while True:
             if cmd_pipe.poll():
@@ -2124,30 +2088,15 @@ class RtPhysio:
                     # if self._logger.handlers:
                     #     self._logger.handlers[0].flush()
 
-            drained = []
-            while True:
-                try:
-                    drained.append(self._physio_que.get_nowait())
-                except Empty:
-                    break
-
-                if tstamp0 is not None:
-                    td = drained[-1][0] - tstamp0
-                    if td > 2.5 / self.sample_freq:
-                        self._logger.warning(
-                            f"Large time gap detected in physio data: "
-                            f"{td:.3f} sec"
-                        )
-                tstamp0 = drained[-1][0]
-
-            if drained:
-                with self._rbuf_lock:
-                    for tstamp, card, resp in drained:
+            if not self._physio_que.empty():
+                while not self._physio_que.empty():
+                    tstamp, card, resp = self._physio_que.get()
+                    with self._rbuf_lock:
                         self._rbuf["card"].append(card)
                         self._rbuf["resp"].append(resp)
                         self._rbuf["tstamp"].append(tstamp)
 
-            # time.sleep(0.1 / self.sample_freq)
+            time.sleep(0.1 / self.sample_freq)
 
         # --- end loop ---
 
@@ -2216,6 +2165,24 @@ class RtPhysio:
         }
 
         return data
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_ttl_onsets(self, num=None):
+        if not self.is_recording():
+            # No recording
+            return None
+
+        # Check if the self._rbuf are on the same process
+        pid = os.getpid()
+        self._rbuf["ttl_onsets"] = self._rbuf["ttl_onsets"].validate(pid)
+        ttl_onsets = self._rbuf["ttl_onsets"].get().copy()
+
+        # Remove nan
+        ttl_onsets = ttl_onsets[~np.isnan(ttl_onsets)]
+        if num is not None:
+            ttl_onsets = ttl_onsets[-num:]
+
+        return ttl_onsets
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_physio_data(
@@ -2595,22 +2562,24 @@ class RtPhysio:
             return pack_data("pong")
 
         elif call == "WAIT_TTL_ON":
-            self._rec_proc_pipe.send("WAIT_TTL_ON")
-            self.wait_ttl_on = True
+            if hasattr(self, "_rec_proc_pipe") and self._rec_proc_pipe:
+                self._rec_proc_pipe.send("WAIT_TTL_ON")
 
         elif call == "CANCEL_WAIT_TTL":
-            self._rec_proc_pipe.send("WAIT_TTL_OFF")
-            self.wait_ttl_on = False
+            if hasattr(self, "_rec_proc_pipe") and self._rec_proc_pipe:
+                self._rec_proc_pipe.send("WAIT_TTL_OFF")
 
         elif call == "TTL_PULSE":
             if self._recorder_type == "Dummy":
                 self.send_dummy_pulse()
 
         elif call == "START_SCAN":
+            self.inScan = True
             if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
                 self._plot_proc_pipe.send("SCAN_ON")
 
         elif call == "END_SCAN":
+            self.inScan = False
             if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
                 self._plot_proc_pipe.send("SCAN_OFF")
 
@@ -2655,13 +2624,16 @@ class RtPhysio:
                 return None
 
         elif call == "QUIT":
-            self.end()
+            self.close()
 
         elif type(call) is tuple:  # Call with arguments
             try:
                 if call[0] == "SAVE_PHYSIO_DATA":
                     onset, len_sec, prefix = call[1:]
                     self.save_physio_data(onset, len_sec, prefix)
+
+                elif call[0] == "SET_FNAME_FMT":
+                    self.fname_fmt = call[1]
 
                 elif call[0] == "SET_SCAN_START_BACKWARD":
                     TR = call[1]
@@ -2745,10 +2717,7 @@ class RtPhysio:
         while True:
             msg = None
             if self._rec_proc_pipe is not None and self._rec_proc_pipe.poll():
-                try:
-                    msg = self._rec_proc_pipe.recv()
-                except EOFError:
-                    pass
+                msg = self._rec_proc_pipe.recv()
                 if msg == "END_RECORDING":
                     break
 
@@ -2779,11 +2748,25 @@ class RtPhysio:
                         fname_fmt=dump_filename_fmt, nosignal_nosave=False
                     )
 
-            if self._rpc_pipe is not None and self._rpc_pipe.poll(timeout=0):
+            if self._rpc_pipe is not None and self._rpc_pipe.poll():
                 msg = self._rpc_pipe.recv()
                 if msg == "QUIT":
                     self.end()
                     break
+
+            if self.inScan:
+                # Check pulse interval
+                ttl_onsets = self.get_ttl_onsets(10)
+                if len(ttl_onsets) >= 3:
+                    tr = np.median(np.diff(ttl_onsets))
+                    silent_time = time.time() - ttl_onsets[-1]
+                    if silent_time > max(2 * tr, 2.5):
+                        self._logger.debug(
+                            "Detected scan end due to silent TTL."
+                        )
+                        self.inScan = False
+                        self._plot_proc_pipe.send("SCAN_OFF")
+                        self.save_physio_data(None, None, self.fname_fmt)
 
             time.sleep(1)
 
@@ -2804,7 +2787,7 @@ class RtPhysio:
 # %% main =====================================================================
 if __name__ == "__main__":
     LOG_FILE = (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parent
         / "log"
         / f"{Path(__file__).resolve().stem}.log"
     )
