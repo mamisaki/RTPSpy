@@ -77,7 +77,11 @@ class RtpTTLPhysio(RTP):
                 f" --config_path {self.config_path}"
             )
 
-            self._rt_physio_proc = subprocess.Popen(shlex.split(cmd))
+            self._rt_physio_proc = subprocess.Popen(
+                shlex.split(cmd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
             # Check if the process is running
             if self._rt_physio_proc.poll() is not None:
                 self._logger.error(

@@ -93,7 +93,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # Wait until the window is ready
         self.resize(self.sizeHint())
-        self.move(50, 50)
+        self.move(50, 0)
         self.show()
 
         self.set_physio_geometry()
@@ -108,7 +108,7 @@ class RtpGUI(QtWidgets.QMainWindow):
             geo = self.geometry()
             x = geo.x() + geo.width() + 5
             y = geo.y()
-            physio_geometry = f"450x450+{x}+0"
+            physio_geometry = f"450x450+{x}+{y}"
             self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
