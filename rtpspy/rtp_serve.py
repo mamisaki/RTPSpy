@@ -48,7 +48,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
 
         # --- Request handling loop -------------------------------------------
         partial_recv_data = b''
-        self.request.settimeout(0.01)
+        self.request.settimeout(1)
 
         # Keep running until a client closes the connection.
         connected = True
@@ -64,7 +64,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                 # To avoid this, messages arriving in very short intervals are
                 # processed as one chunk.
                 try:
-                    recv_data = partial_recv_data + self.request.recv(262144)
+                    recv_data = partial_recv_data + self.request.recv(102400)
                     if not recv_data:
                         # recv_data is False when the connection is closed.
                         connected = False
@@ -77,7 +77,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                     else:
                         recvs.append(recv_data)
 
-                    time.sleep(0.001)  # Message interval to concatenate
+                    time.sleep(0.005)  # Message interval to concatenate
 
                 except socket.timeout:
                     break
