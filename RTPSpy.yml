@@ -1,32 +1,25 @@
 name: RTPSpy
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
-  - defaults
 dependencies:
-  - tqdm
-  - simpleitk
-  - h5py
   - cmake
   - dcm2niix
-  - pydicom
   - f2c
-  - matplotlib
-  - nibabel
   - openpyxl
-  - pandas
   - pexpect
   - pip
-  - pyqt
+  - psutil
+  - pydicom
+  - pyqt=5
   - pyserial
-  - python=3.10
-  - pytorch
-  - pytorch-cuda=12.1
-  - scikit-image
+  - python=3.12
   - scikit-sparse
-  - torchvision
+  - six
   - watchdog
-  - yacs
   - pip:
+    # PyTorch with CUDA 13.0 (requires NVIDIA driver >= 580).
+    # Replace cu130 with cu126 for older drivers, or cpu for CPU-only.
+    - --extra-index-url https://download.pytorch.org/whl/cu130
+    # FastSurfer v2.6.0 pinned requirements (torch 2.14, numpy 2.x, ...)
+    - -r rtpspy/FastSurfer/requirements.txt
     - antspyx

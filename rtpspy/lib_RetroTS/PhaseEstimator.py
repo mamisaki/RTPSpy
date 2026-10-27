@@ -19,7 +19,7 @@ __author__ = "Joshua Zosky"
 
 import numpy as np
 from numpy import zeros, ones, nonzero, pi, argmin, sin, cos
-from numpy import size, arange, clip, histogram, r_, Inf, divide, append, delete, array
+from numpy import size, arange, clip, histogram, r_, inf, divide, append, delete, array
 from .zscale import z_scale
 import matplotlib.pyplot as plt
 
@@ -32,7 +32,7 @@ def my_hist(x, bin_centers):
     :param bin_centers:bin values in a list to be moved from edges to centers
     :return: counts = the data in bin centers ready for pyplot.bar
     """
-    bin_edges = r_[-Inf, 0.5 * (bin_centers[:-1] + bin_centers[1:]), Inf]
+    bin_edges = r_[-inf, 0.5 * (bin_centers[:-1] + bin_centers[1:]), inf]
     counts, edges = histogram(x, bin_edges)
     return counts
 

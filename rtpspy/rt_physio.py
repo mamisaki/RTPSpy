@@ -866,6 +866,8 @@ class PlotTTLPhysio:
 
         # --- Initialize parameters ---
         self.signal_freq = signal_freq
+        # Recorder type to set the y-axis range (updated with RESET)
+        self.recorder_type = controller._recorder_type
         self._plot_len_sec = plot_len_sec
         self._buf_len_sec = buf_len_sec
         self._is_scanning = False
@@ -1278,25 +1280,7 @@ class PlotTTLPhysio:
         adjust_period = int(np.round(3 * self.signal_freq))
 
         self._ln_card[0].set_ydata(card)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            # Adjust ylim
-            ymin = max(0, np.floor(np.nanmin(card[-adjust_period:]) / 25) * 25)
-            ymax = min(
-                1024, np.ceil(np.nanmax(card[-adjust_period:]) / 25) * 25
-            )
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
-            self._ax_card.set_ylim((ymin, ymax))
+        self._set_signal_ylim(self._ax_card, card[-adjust_period:])
         # endregion
 
         # region: Card filtered
@@ -1313,45 +1297,13 @@ class PlotTTLPhysio:
         card_ex_filtered = np.flipud(card_ex_filtered)
         card_filtered = card_ex_filtered[xt_ex_mask]
         self._ln_card_flitered[0].set_ydata(card_filtered)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            # Adjust ylim
-            min_card_filtered = np.nanmin(card_filtered[-adjust_period:])
-            ymin = max(0, np.floor(min_card_filtered / 25) * 25)
-            max_card_filtered = np.nanmax(card_filtered[-adjust_period:])
-            ymax = min(1024, np.ceil(max_card_filtered / 25) * 25)
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
-            self._ax_card_filtered.set_ylim((ymin, ymax))
+        self._set_signal_ylim(
+            self._ax_card_filtered, card_filtered[-adjust_period:])
         # endregion
 
         # region: Resp
         self._ln_resp[0].set_ydata(resp)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            ymin = max(0, np.floor(np.nanmin(resp) / 25) * 25)
-            ymax = min(1024, np.ceil(np.nanmax(resp) / 25) * 25)
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
-            self._ax_resp.set_ylim((ymin, ymax))
+        self._set_signal_ylim(self._ax_resp, resp)
 
         if self._is_scanning:
             self._ln_card[0].set_color("r")
@@ -1363,80 +1315,6 @@ class PlotTTLPhysio:
         self._canvas.draw()
         self._plt_root.update_idletasks()
         # endregion
-
-        # Set next timer event
-        et = (time.time() - st) * 1000
-        self._plt_root.after(int(self._timer_interval_ms - et), self._update)
-
-        # Card
-        self._ln_card[0].set_ydata(card)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            # Adjust ylim
-            ymin = max(0, np.floor(np.nanmin(card[-adjust_period:]) / 25) * 25)
-            ymax = min(
-                1024, np.ceil(np.nanmax(card[-adjust_period:]) / 25) * 25
-            )
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if not np.isnan(ymin) and not np.isnan(ymax):
-            self._ax_card.set_ylim((ymin, ymax))
-
-        # Card filtered
-        b = firwin(
-            numtaps=41,
-            cutoff=3,
-            window="hamming",
-            pass_zero="lowpass",
-            fs=self.signal_freq,
-        )
-        card_ex_filtered = lfilter(b, 1, card_ex, axis=0)
-        card_ex_filtered = np.flipud(card_ex_filtered)
-        card_ex_filtered = lfilter(b, 1, card_ex_filtered)
-        card_ex_filtered = np.flipud(card_ex_filtered)
-        card_filtered = card_ex_filtered[xt_ex_mask]
-        self._ln_card_flitered[0].set_ydata(card_filtered)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            # Adjust ylim
-            min_card_filtered = np.nanmin(card_filtered[-adjust_period:])
-            ymin = max(0, np.floor(min_card_filtered / 25) * 25)
-            max_card_filtered = np.nanmax(card_filtered[-adjust_period:])
-            ymax = min(1024, np.ceil(max_card_filtered / 25) * 25)
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if not np.isnan(ymin) and not np.isnan(ymax):
-            self._ax_card_filtered.set_ylim((ymin, ymax))
-
-        # Resp
-        self._ln_resp[0].set_ydata(resp)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            ymin = max(0, np.floor(np.nanmin(resp) / 25) * 25)
-            ymax = min(1024, np.ceil(np.nanmax(resp) / 25) * 25)
-            if ymax - ymin < 50:
-                if ymin + 50 < 1024:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        if not np.isnan(ymin) and not np.isnan(ymax):
-            self._ax_resp.set_ylim((ymin, ymax))
-
-        if self._is_scanning:
-            self._ln_card[0].set_color("r")
-            self._ln_resp[0].set_color("b")
-        else:
-            self._ln_card[0].set_color("k")
-            self._ln_resp[0].set_color("k")
-
-        self._canvas.draw()
-        self._plt_root.update_idletasks()
 
         # Set next timer event
         et = (time.time() - st) * 1000
@@ -1444,6 +1322,38 @@ class PlotTTLPhysio:
         if self._running:
             self._update_after_id = self._plt_root.after(
                 after_ms, self._update)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_signal_ylim(self, ax, sig):
+        """Set the y-axis range of a signal plot.
+        Numato records with a 10-bit ADC, so the range is limited to
+        0-ADC_MAX_VALUE.
+        For other devices (e.g., GE), the range follows the signal values.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            sig_min = np.nanmin(sig)
+            sig_max = np.nanmax(sig)
+        if not (np.isfinite(sig_min) and np.isfinite(sig_max)):
+            return
+
+        if self.recorder_type == "Numato":
+            ymin = max(0, np.floor(sig_min / 25) * 25)
+            ymax = min(ADC_MAX_VALUE, np.ceil(sig_max / 25) * 25)
+            if ymax - ymin < 50:
+                if ymin + 50 < ADC_MAX_VALUE:
+                    ymax = ymin + 50
+                else:
+                    ymin = ymax - 50
+        else:
+            if sig_max > sig_min:
+                margin = (sig_max - sig_min) * 0.05
+            else:
+                margin = max(abs(sig_max) * 0.05, 1e-3)
+            ymin = sig_min - margin
+            ymax = sig_max + margin
+
+        ax.set_ylim((ymin, ymax))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def config(self):
@@ -1921,6 +1831,7 @@ class RtPhysio:
         if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
             config = {
                 "signal_freq": self.sample_freq,
+                "recorder_type": self._recorder_type,
             }
             self._logger.debug(f"Sending plot config: {config}")
             self._plot_proc_pipe.send("RESET")
@@ -2627,7 +2538,10 @@ class RtPhysio:
                 return None
 
         elif call == "QUIT":
-            self.close()
+            # Let mainloop call end(); shutting down the socket server from
+            # its own handler thread would deadlock.
+            if cmd_pipe is not None:
+                cmd_pipe.send("QUIT")
 
         elif type(call) is tuple:  # Call with arguments
             try:
@@ -2719,10 +2633,19 @@ class RtPhysio:
 
         while True:
             msg = None
-            if self._rec_proc_pipe is not None and self._rec_proc_pipe.poll():
-                msg = self._rec_proc_pipe.recv()
-                if msg == "END_RECORDING":
-                    break
+            rec_pipe = self._rec_proc_pipe
+            if rec_pipe is not None:
+                try:
+                    if rec_pipe.poll():
+                        msg = rec_pipe.recv()
+                        if msg == "END_RECORDING":
+                            break
+                except (EOFError, OSError):
+                    # The recording process has exited (e.g., no recorder
+                    # device is available) or the pipe was closed by
+                    # stop_recording. Keep the main loop running.
+                    if self._rec_proc_pipe is rec_pipe:
+                        self._rec_proc_pipe = None
 
             pipe_available = (
                 self._plot_proc_pipe is not None and
@@ -2776,7 +2699,9 @@ class RtPhysio:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end(self):
         self.stop_recording()
-        self.close_plot()
+        # The plot window runs in its own process. Stop it via the pipe;
+        # touching its Tk root from this process breaks the X connection.
+        self.stop_plot()
         self.socket_srv.shutdown()
         if hasattr(self, "_rbuf") and self._rbuf is not None:
             for lab, rbuf in self._rbuf.items():

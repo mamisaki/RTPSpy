@@ -675,6 +675,11 @@ class RtpApp(RTP):
                 else:
                     vidx = -1
 
+                # Remove the AFNI sub-brick selector from the file name
+                src_f = Path(func_orig)
+                src_f = src_f.parent / re.sub(
+                    "'", "", re.sub(r"\'*\[\d+\]\'*$", "", src_f.name))
+
                 if not src_f_stem.startswith("vr_base_"):
                     src_save_fname = "vr_base_" + src_f_stem
                 else:
@@ -685,7 +690,7 @@ class RtpApp(RTP):
                     dst_f != Path(func_orig) and
                     (not dst_f.is_file() or overwrite)
                 ):
-                    src_img = improc.load_image(Path(func_orig), vidx=vidx)
+                    src_img = improc.load_image(src_f, vidx=vidx)
                     if src_img is None:
                         if progress_dlg:
                             sys.stdout = original_stdout
@@ -706,7 +711,7 @@ class RtpApp(RTP):
                 dst_json_f = dst_f.with_suffix('.json')
                 if not dst_json_f.is_file() or overwrite:
                     # If a json file exists, copy it
-                    json_f = func_orig.with_suffix('').with_suffix('.json')
+                    json_f = src_f.with_suffix('').with_suffix('.json')
                     if not json_f.is_file():
                         json_f = (
                             json_f.parent /
@@ -722,7 +727,7 @@ class RtpApp(RTP):
                         shutil.copy(json_f, dst_json_f)
                     else:
                         # Save TR and slice timing
-                        header = nib.load(func_orig).header
+                        header = nib.load(src_f).header
 
                         slice_timing = []
                         if hasattr(header, "get_slice_times"):
@@ -1438,8 +1443,8 @@ class RtpApp(RTP):
         self._wait_start = False
 
         if (
-            "TTLPHYSIO" not in self.rtp_objs or
-            self.rtp_objs["TTLPHYSIO"] is None
+            "TTLPHYSIO" in self.rtp_objs and
+            self.rtp_objs["TTLPHYSIO"] is not None
         ):
             self.rtp_objs["TTLPHYSIO"].scan_onset = self.scan_onset
             self.rtp_objs["TTLPHYSIO"].release_standby_scan()
@@ -1977,7 +1982,7 @@ class RtpApp(RTP):
                             if np.nanmin(y) < yl[0]:
                                 yl[0] = max(np.nanmin(y), mu - 4 * sd)
 
-                            if np.nanmax(y) > yl[0]:
+                            if np.nanmax(y) > yl[1]:
                                 yl[1] = min(np.nanmax(y), mu + 4 * sd)
 
                             if np.any(yl != yl_orig):
