@@ -64,7 +64,7 @@ class MRIFeeder(threading.Thread):
             if self.imgType == 'GE DICOM':
                 ff = list(self.mri_src.glob('i*'))
                 self._mri_feed_num = len(ff)
-                dcm = pydicom.read_file(
+                dcm = pydicom.dcmread(
                     ff[0], defer_size="1 KB", stop_before_pixels=False,
                     force=False)
                 self.TR = float(dcm[(0x0018, 0x0080)].value) / 1000
@@ -72,7 +72,7 @@ class MRIFeeder(threading.Thread):
             elif self.imgType == 'SIemense Mosaic':
                 ff = list(self.mri_src.glob('*.dcm'))
                 self._mri_feed_num = len(ff)
-                dcm = pydicom.read_file(
+                dcm = pydicom.dcmread(
                     ff[0], defer_size="1 KB", stop_before_pixels=False,
                     force=False)
                 self.TR = float(dcm[(0x0018, 0x0080)].value) / 1000

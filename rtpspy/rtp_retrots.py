@@ -94,12 +94,11 @@ class RtpRetroTS():
         if detend_window is not None:
             # Detrend with moving average of this second
             ww = int(detend_window * self._phys_fs)
-            trend = convolve(v, np.ones(ww)/ww, mode='same')
-            n_conv = int(np.ceil(ww/2))
-            trend[0] *= ww/n_conv
-            for i in range(1, n_conv):
-                trend[i] *= ww/(i+n_conv)
-                trend[-i] *= ww/(i + n_conv - (ww % 2))
+            # Divide by the number of samples in the window at each point,
+            # which also corrects the edges. This works for any data length,
+            # including data shorter than the window.
+            trend = convolve(v, np.ones(ww), mode='same') / \
+                convolve(np.ones(len(v)), np.ones(ww), mode='same')
             v = v - trend
 
         # analytic_signal

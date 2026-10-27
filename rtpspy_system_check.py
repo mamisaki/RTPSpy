@@ -148,18 +148,13 @@ if __name__ == "__main__":
         # region: Set up RTP --------------------------------------------------
         logger.debug("### Start preparing the dummy physio recorder ###")
         # Set RtpTTLPhysio
-        rtp_app.rtp_objs["TTLPHYSIO"].stop_recording()
-        for k, val in {
-            "sample_freq": 40,
-            "sim_card_f": ecg_f,
-            "sim_resp_f": resp_f,
-        }.items():
-            rtp_app.rtp_objs["TTLPHYSIO"].set_param(k, val)
-        rtp_app.rtp_objs["TTLPHYSIO"].set_device("Dummy")
-
-        # Wait for the RTP physio to start recording
-        while not rtp_app.rtp_objs["TTLPHYSIO"].is_recording():
-            time.sleep(0.1)
+        ttl_physio = rtp_app.rtp_objs["TTLPHYSIO"]
+        assert ttl_physio.available, "rt_physio process is not available."
+        # Feed the dummy recorder of the rt_physio process with the test files
+        ttl_physio.TTLPhysioCom.call_rt_proc(
+            ("START_DUMMY_FEEDING_WITH_FILES", (str(ecg_f), str(resp_f), 40)),
+            pkl=True,
+        )
 
         logger.debug("### End preparing the dummy physio recorder ###")
 
@@ -232,7 +227,7 @@ if __name__ == "__main__":
         logger.debug("### Close RTP ###")
         rtp_app.end_run()
         logger.debug("### Close dummy physio recorder ###")
-        rtp_app.rtp_objs["TTLPHYSIO"].end()
+        rtp_app.rtp_objs["TTLPHYSIO"].quit()
 
         # End
         logger.info("-" * 80)
@@ -245,3 +240,7 @@ if __name__ == "__main__":
         logger.error("RTPSpy system check failed.")
         exc_type, exc_obj, exc_tb = sys.exc_info()
         traceback.print_exception(exc_type, exc_obj, exc_tb)
+        # Stop the rt_physio process so that it does not remain orphaned
+        if "rtp_app" in locals() and "TTLPHYSIO" in rtp_app.rtp_objs:
+            rtp_app.rtp_objs["TTLPHYSIO"].quit()
+        sys.exit(1)

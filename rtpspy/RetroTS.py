@@ -25,10 +25,18 @@ __author__ = "Joshua Zosky" # Modified a bit by gianfranco
 import gzip
 import json
 from numpy import zeros, size, savetxt, column_stack, shape, array
-from lib_RetroTS.PeakFinder import peak_finder
-from lib_RetroTS.PhaseEstimator import phase_estimator
-from lib_RetroTS.RVT_from_PeakFinder import rvt_from_peakfinder
-from lib_RetroTS.Show_RVT_Peak import show_rvt_peak
+try:
+    # Load modules from the package directory
+    from .lib_RetroTS.PeakFinder import peak_finder
+    from .lib_RetroTS.PhaseEstimator import phase_estimator
+    from .lib_RetroTS.RVT_from_PeakFinder import rvt_from_peakfinder
+    from .lib_RetroTS.Show_RVT_Peak import show_rvt_peak
+except ImportError:
+    # Run as a standalone script
+    from lib_RetroTS.PeakFinder import peak_finder
+    from lib_RetroTS.PhaseEstimator import phase_estimator
+    from lib_RetroTS.RVT_from_PeakFinder import rvt_from_peakfinder
+    from lib_RetroTS.Show_RVT_Peak import show_rvt_peak
 
 
 def setup_exceptionhook():

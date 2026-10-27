@@ -10,6 +10,7 @@ Anatomical image segmentation for real-time fMRI processing using FastSurfer
 
 # %% import ===================================================================
 import os
+import sys
 from pathlib import Path
 import subprocess
 import shlex
@@ -135,27 +136,30 @@ class FastSeg:
         if fastsurfer_dir is None:
             fastsurfer_dir = Path(__file__).absolute().parent / 'FastSurfer'
 
-        self.fastsurfer_dir = Path(fastsurfer_dir)
-        self.run_cmd = 'run_fastsurfer.sh'
+        self.fastsurfer_dir = Path(fastsurfer_dir).absolute()
+        self.run_cmd = self.fastsurfer_dir / 'run_fastsurfer.sh'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self, in_f, bias_correction=False, prefix=None, batch_size=1,
             segs=['aseg', 'Brain', 'WM', 'Vent'], overwrite=False):
+        src_f = Path(in_f).absolute()
+
         # --- Prepare files ---
-        in_f, prefix = self.prep_files(in_f, bias_correction, prefix)
+        in_f, prefix = self.prep_files(src_f, bias_correction, prefix)
 
         # --- Run FastSurferCNN ---
         fsSeg_mgz = self.run_seg_only(in_f, prefix, batch_size)
 
         # --- Get segmentation ---
-        out_fs = self.make_seg_images(fsSeg_mgz, prefix, segs)
+        out_fs = self.make_seg_images(in_f, fsSeg_mgz, prefix, segs)
 
         # --- Clean intermediate files ---
         if Path(prefix).is_dir():
             shutil.rmtree(prefix)
 
-        if Path(in_f).stat().st_ino != Path(in_f).stat().st_ino and \
-                in_f.is_file():
+        # Delete the intermediate input (NIfTI conversion or bias-corrected
+        # image), but never the source file.
+        if in_f.is_file() and not in_f.samefile(src_f):
             in_f.unlink()
 
         out_fs_str = '\n  '.join([str(p) for p in out_fs])
@@ -256,23 +260,28 @@ class FastSeg:
         """
 
         # Run
-        work_dir = Path(prefix).parent
-        cmd = f"./{self.run_cmd}"
-        cmd += f" --t1 {in_f} --sd {work_dir}"
-        cmd += f" --sid {Path(prefix).name} --seg_only --no_biasfield"
+        # FastSurfer requires absolute paths for --t1 and --sd.
+        in_f = Path(in_f).absolute()
+        prefix = Path(prefix).absolute()
+        work_dir = prefix.parent
+        cmd = [str(self.run_cmd),
+               '--t1', str(in_f), '--sd', str(work_dir),
+               '--sid', prefix.name, '--seg_only', '--no_biasfield',
+               '--no_hypothal', '--no_cc',
+               '--batch', str(batch_size), '--device', DEVICE,
+               # Run FastSurfer with the same Python as RTPSpy
+               '--py', sys.executable]
         if not seg_cereb:
-            cmd += " --no_cereb"
-        cmd += f" --batch {batch_size}"
-        cmd += f' --device {DEVICE}'
-        env = os.environ
+            cmd.append('--no_cereb')
+        env = os.environ.copy()
         env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
         env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
         if show_proc_progress is not None:
             proc = subprocess.Popen(
-                shlex.split(cmd), stdout=subprocess.PIPE,
+                cmd, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                cwd=Path(__file__).absolute().parent,
+                cwd=self.fastsurfer_dir,
                 env=env)
             assert proc.returncode is None or proc.returncode == 0, \
                 'Failed at run_seg_only.\n'
@@ -280,10 +289,7 @@ class FastSeg:
             if ret != 0:
                 return None
         else:
-            subprocess.check_call(
-                shlex.split(cmd),
-                cwd=prefix.parent
-                )
+            subprocess.check_call(cmd, cwd=self.fastsurfer_dir, env=env)
 
         fsSeg_mgz = Path(prefix) / 'mri' / 'aparc.DKTatlas+aseg.deep.mgz'
 
@@ -342,6 +348,7 @@ class FastSeg:
                     )
 
             ants.image_write(out_img, str(out_f))
+            out_fs.append(Path(out_f))
 
             cmd = f"3drefit -space {img_space} {out_f}"
             if show_proc_progress is not None:

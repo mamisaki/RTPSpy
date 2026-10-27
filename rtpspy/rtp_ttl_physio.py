@@ -6,6 +6,9 @@
 
 # %% import ===================================================================
 from pathlib import Path
+import os
+import signal
+import sys
 import time
 import traceback
 import subprocess
@@ -58,7 +61,7 @@ class RtpTTLPhysio(RTP):
             self.physio_log_file = Path(self.work_dir) / "rt_physio.log"
         self.rt_physio_address_name = rt_physio_address_name
         self.config_path = config_path
-        self.init_timeout = 2
+        self.init_timeout = 10
 
         self.init_rt_physio_access()
 
@@ -71,16 +74,21 @@ class RtpTTLPhysio(RTP):
             rtpspy_path = Path(__file__).resolve().parent
             physio = rtpspy_path / 'rt_physio.py'
             cmd = (
-                f"python {physio}"
+                f"{sys.executable} {physio}"
                 f" --log_file {self.physio_log_file.resolve()}"
                 f" --rpc_socket_name {self.rt_physio_address_name[2]}"
                 f" --config_path {self.config_path}"
             )
 
+            # rt_physio writes its log to physio_log_file. The output is
+            # discarded; an unread PIPE would block the process when full.
+            # A new session lets quit() stop rt_physio together with its
+            # recording and plot subprocesses.
             self._rt_physio_proc = subprocess.Popen(
                 shlex.split(cmd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
             # Check if the process is running
             if self._rt_physio_proc.poll() is not None:
@@ -127,6 +135,7 @@ class RtpTTLPhysio(RTP):
             self._logger.warning(
                 "Failed to get scan onset from rt_physio RPC server."
             )
+            return
 
         self._scan_onset = SharedMemoryRingBuffer(**scan_onset)
 
@@ -162,20 +171,54 @@ class RtpTTLPhysio(RTP):
     @property
     def available(self):
         if self.TTLPhysioCom is None:
+            return False
+
+        # Retry if the ring buffer access was not established at init
+        # (e.g., rt_physio was slow to start).
+        if self._scan_onset is None or len(self._rbuf) == 0:
             self.init_rbuf_access()
 
-        return self.TTLPhysioCom is not None
+        return True
 
     @scan_onset.setter
     def scan_onset(self, onset):
+        if self._scan_onset is None and self.TTLPhysioCom is not None:
+            self.init_rbuf_access()
+
         if self._scan_onset is not None:
             self._scan_onset.append(onset)
+        elif onset != 0:
+            self._logger.warning("Scan onset could not be sent to rt_physio.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def quit(self):
-        if self.available:
-            self.TTLPhysioCom.call_rt_proc("QUIT")
+        if self.TTLPhysioCom is not None:
+            try:
+                self.TTLPhysioCom.call_rt_proc("QUIT")
+            except Exception:
+                pass
             self.TTLPhysioCom = None
+
+        # Make sure the rt_physio process booted by this instance ends,
+        # with its subprocesses, even if the QUIT call did not reach it.
+        if self._rt_physio_proc is not None:
+            proc = self._rt_physio_proc
+            self._rt_physio_proc = None
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._logger.warning("rt_physio did not quit. Terminate it.")
+            # The process group id is the pid (start_new_session=True)
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    break
+                try:
+                    proc.wait(timeout=3)
+                    time.sleep(0.5)  # Let subprocesses handle the signal
+                except subprocess.TimeoutExpired:
+                    pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show(self):
@@ -352,7 +395,10 @@ class RtpTTLPhysio(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
-        self.quit()
+        try:
+            self.quit()
+        except Exception:
+            pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val, reset_fn=None, echo=False):
