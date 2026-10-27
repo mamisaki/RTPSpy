@@ -56,7 +56,7 @@ brew install git libpng jpeg expat freetype fontconfig openmotif libomp \
 
 ### GPU
 RTPSpy can take advantage of GPU computation; however, it is not mandatory for real-time image processing, as computational speed is sufficient for real-time fMRI even without a GPU. GPU acceleration is utilized in online fMRI data processing and anatomical image processing with FastSurfer (https://deep-mi.org/research/fastsurfer/).
-To use GPU computation, you need to install a GPU driver compatible with the CUDA toolkit. The toolkit will be installed using the RTPSpy YAML file provided.  
+To use GPU computation, you need to install an NVIDIA GPU driver. The RTPSpy YAML file installs PyTorch built with CUDA 13.0, which requires driver version 580 or later. For an older driver, replace `cu130` in RTPSpy.yml with `cu126`; for CPU only, replace it with `cpu`.  
 
 ## Installation
 Every command should be entered in the terminal (Terminal application on macOS and Ubuntu console on WSL).
@@ -65,8 +65,11 @@ The instructions below are intended to install the package in the home directory
 ### Clone the package  
 ```
 git clone https://github.com/mamisaki/RTPSpy.git ~/RTPSpy
-git clone https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
+git clone --branch v2.6.0 https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
 ```
+
+> [!NOTE]
+> RTPSpy is tested with FastSurfer v2.6.0. RTPSpy.yml installs the Python packages listed in `rtpspy/FastSurfer/requirements.txt`, so clone FastSurfer before creating the conda environment.
 
 ### Install the package in a conda environment
 ```
