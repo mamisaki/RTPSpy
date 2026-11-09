@@ -38,6 +38,9 @@ class RtpTTLPhysio(RTP):
     """
     Interface for rt_physio process
     """
+    # Ring buffers shared by rt_physio
+    RBUF_NAMES = ("ttl_onsets", "ttl_offsets", "card", "resp", "tstamp")
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
@@ -143,14 +146,20 @@ class RtpTTLPhysio(RTP):
         physio_rbufs = self.TTLPhysioCom.call_rt_proc(
             "GET_RBUF", get_return=True
         )
-        if physio_rbufs is None:
+        if physio_rbufs is None or not set(self.RBUF_NAMES).issubset(
+            physio_rbufs
+        ):
+            # Not ready yet (e.g., rt_physio is making the buffers).
+            # available retries later.
             self._logger.warning(
                 "Failed to get ring buffers from rt_physio RPC server."
             )
             return
 
+        rbuf = {}
         for lab, rb in physio_rbufs.items():
-            self._rbuf[lab] = SharedMemoryRingBuffer(**rb)
+            rbuf[lab] = SharedMemoryRingBuffer(**rb)
+        self._rbuf = rbuf
 
         # Get sampling frequency
         physio_params = self.TTLPhysioCom.call_rt_proc(
@@ -204,10 +213,16 @@ class RtpTTLPhysio(RTP):
         if self._rt_physio_proc is not None:
             proc = self._rt_physio_proc
             self._rt_physio_proc = None
+            # rt_physio stops its recording and plot processes before
+            # exiting, which can take several seconds.
+            st = time.time()
             try:
-                proc.wait(timeout=10)
+                proc.wait(timeout=20)
+                self._logger.info(
+                    f"rt_physio quit in {time.time() - st:.1f} s.")
             except subprocess.TimeoutExpired:
-                self._logger.warning("rt_physio did not quit. Terminate it.")
+                self._logger.warning(
+                    "rt_physio did not quit in 20 s. Terminate it.")
             # The process group id is the pid (start_new_session=True)
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:

@@ -4,9 +4,9 @@
 Real-time physiological signal recording class.
 @author: mmisaki@libr.net
 
-Model class : NumatoGPIORecoding, DummyRecording
+Model class : NumatoGPIORecording, DummyRecording
 View class : PlotTTLPhysio
-Controler class: RtPhysio
+Controller class: RtPhysio
 """
 
 # %% import ===================================================================
@@ -22,28 +22,58 @@ import argparse
 import warnings
 from datetime import datetime, timedelta
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from tempfile import NamedTemporaryFile
-import subprocess
 from collections import deque
 import json
 import gc
+import struct
+import threading
 
 import numpy as np
 import pandas as pd
 import serial
 from serial import SerialException
+try:
+    from termios import error as TermiosError
+except ImportError:  # Not POSIX
+    TermiosError = OSError
+
+# Errors of a serial device that is disconnected or reset: pyserial raises
+# SerialException, but also OSError (e.g., in_waiting) and termios.error
+# (e.g., reset_input_buffer).
+SERIAL_ERRORS = (SerialException, OSError, TermiosError)
+
+# Consecutive errors before the port is reopened, and the longest wait
+# between reopen attempts (s)
+N_ERR_REOPEN = 3
+MAX_REOPEN_WAIT = 5.0
+
+# Read timeout of the Numato poll loop (s). A response takes 0.4-0.9 ms
+# (longest seen 1.2 ms; measured on five boards, 2026-11-09). After the
+# timeout the command is sent again, so this is also the longest gap a lost
+# response adds between TTL reads; it must stay well below the 10 ms TTL
+# pulse.
+NUMATO_POLL_TIMEOUT = 0.003
 from serial.tools.list_ports import comports
 from scipy.interpolate import interp1d
-from scipy.signal import lfilter, firwin
+from scipy.signal import lfilter, firwin, butter, sosfiltfilt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
 try:
     from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+    from window_layout import default_geometry, screen_area
+    from alarm_sound import AlarmSound
+    import gui_theme
+    from gui_theme import COLORS
 except ImportError:
     from .rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+    from .window_layout import default_geometry, screen_area
+    from .alarm_sound import AlarmSound
+    from . import gui_theme
+    from .gui_theme import COLORS
 
 mpl.rcParams["font.size"] = 8
 
@@ -70,6 +100,14 @@ def create_temp_file(prefix, dir_path="/dev/shm", delete=False):
         )
     else:
         return NamedTemporaryFile(prefix=prefix, delete=delete)
+
+
+# %% physio_window_title ======================================================
+def physio_window_title(device):
+    """Title of the physio window with the recording device."""
+    if device is None:
+        return "Physio signals (no device)"
+    return f"Physio signals ({device})"
 
 
 # %% SharedMemoryRingBuffer ===================================================
@@ -119,13 +157,12 @@ class SharedMemoryRingBuffer:
         self._creator = False
 
         try:
-            if (
-                data_file is not None
-                and data_file.exists()
-                and cpos_file is not None
-                and cpos_file.exists()
-            ):
-                self._load_existing_files(data_file, cpos_file)
+            if data_file is not None or cpos_file is not None:
+                # Attach to the buffer of another process. If its files are
+                # missing, raise: a new empty buffer made here would be read
+                # as if it were the recorder's (e.g., no physio data for the
+                # respiration correction, without an error).
+                self._load_existing_files(Path(data_file), Path(cpos_file))
             else:
                 self._create_new_files()
 
@@ -204,7 +241,7 @@ class SharedMemoryRingBuffer:
         try:
             # Check if attributes exist
             if self._cpos is None or self._data is None:
-                self._logger.error("Ring buffer not properly initialized")
+                self._logger.error("The ring buffer is not initialized.")
                 return
 
             cpos = self._cpos[0]
@@ -223,7 +260,7 @@ class SharedMemoryRingBuffer:
         try:
             # Check if attributes exist
             if self._cpos is None or self._data is None:
-                self._logger.error("Ring buffer not properly initialized")
+                self._logger.error("The ring buffer is not initialized.")
                 return np.array([])
 
             cpos = self._cpos[0]
@@ -232,6 +269,28 @@ class SharedMemoryRingBuffer:
             else:
                 data = self._data
                 return np.concatenate([data[cpos:], data[:cpos]])
+
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error("Failed to get ring buffer data:\n" + errstr)
+            return np.array([])
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_tail(self, n):
+        """Return the last n elements, in the order of append. Cheaper than
+        get() when only recent data are needed (e.g., for the plot)."""
+        try:
+            if self._cpos is None or self._data is None:
+                self._logger.error("The ring buffer is not initialized.")
+                return np.array([])
+
+            n = int(min(n, self.length))
+            cpos = int(self._cpos[0])
+            if n <= cpos:
+                return self._data[cpos - n:cpos].copy()
+            return np.concatenate(
+                [self._data[self.length - (n - cpos):], self._data[:cpos]]
+            )
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
@@ -249,7 +308,7 @@ class SharedMemoryRingBuffer:
         try:
             # Check if attributes exist
             if self._cpos is None or self._data is None:
-                self._logger.error("Ring buffer not properly initialized")
+                self._logger.error("The ring buffer is not initialized.")
                 return
 
             # Reset position to start
@@ -352,7 +411,332 @@ class SharedMemoryRingBuffer:
             self._cpos_mmap_fd.close()
 
 
-# %% NumatoGPIORecoding class =================================================
+# %% fir_numtaps ==============================================================
+def fir_numtaps(fs, sec=1.0):
+    """Number of FIR taps for a filter of about `sec` seconds (odd number).
+
+    The filters were designed with 41 taps at 40 Hz. Scaling the number of
+    taps with the sampling frequency keeps the same filter length in seconds,
+    and so the same frequency response, at any sampling frequency.
+    """
+    n = int(round(sec * float(fs)))
+    return n + 1 if n % 2 == 0 else n
+
+
+# %% Physio signal check ======================================================
+# Signal check before saving (_save_physio_data), with thresholds per
+# recording device. For each signal, the amplitude (std of the signal
+# low-pass filtered at 3 Hz) and the periodicity (respiratory_periodicity,
+# cardiac_periodicity) are both checked:
+#   ok:        amplitude >= *_ok    and periodicity >= *_ac
+#   weak:      amplitude >= *_floor and periodicity >= *_ac (a real but weak
+#              signal, e.g., a loose belt or sensor)
+#   irregular: amplitude >= *_ok    and periodicity <  *_ac (e.g., movement,
+#              a clipped respiration signal, or a noisy cardiac input)
+#   none:      otherwise
+# The data are saved unless both signals are "none". For a subject, a
+# warning dialog is shown when a signal is not "ok".
+# GE values were set from 4056 runs recorded (2026, the
+# same GE physio output); see docs/OPERATION_SEQUENCE.md section 4.7. The
+# default (Numato, 10-bit ADC) keeps the former respiration check
+# (amplitude >= 1; the respiration periodicity is not used: on 684 rt1
+# runs it was below 0.37 in 25% of the saved runs, and there are no rt1
+# runs without a belt to set it) and uses the noise floor of a flat
+# cardiac input (cardiac periodicity checked on the runs).
+SIGNAL_CHECK = {
+    "GE": {"resp_ok": 30.0, "resp_floor": 1.0, "resp_ac": 0.35,
+           "card_ok": 60.0, "card_floor": 20.0, "card_ac": 0.4},
+    "default": {"resp_ok": 1.0, "resp_floor": 1.0, "resp_ac": 0.0,
+                "card_ok": 5.0, "card_floor": 5.0, "card_ac": 0.4},
+}
+
+
+def lowpass_std(x, fs, cutoff=3.0):
+    """Std of the signal low-pass filtered at `cutoff` Hz (zero phase),
+    without the filter edges. 0 for a signal shorter than 3 filter
+    lengths."""
+    x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
+    numtaps = fir_numtaps(fs)
+    if len(x) < 3 * numtaps:
+        return 0.0
+    b = firwin(numtaps=numtaps, cutoff=cutoff, window="hamming",
+               pass_zero="lowpass", fs=fs)
+    y = lfilter(b, 1, x)
+    y = np.flipud(lfilter(b, 1, np.flipud(y)))
+    return float(np.nanstd(y[numtaps:-numtaps]))
+
+
+def cardiac_periodicity(x, fs, win_sec=10.0):
+    """Periodicity of a cardiac signal: the median, over win_sec windows, of
+    the autocorrelation peak at lags of 0.33-1.7 s (35-180 beats/min) of
+    the signal band-passed at 0.6-3 Hz. About 0.8 for a pulse or ECG
+    signal, about 0.2 for noise."""
+    x = np.asarray(x, dtype=float)
+    if len(x) < 4 * fs or np.all(np.isnan(x)):
+        return 0.0
+    x = np.nan_to_num(x - np.nanmean(x))
+    sos = butter(2, [0.6, 3.0], btype="band", fs=fs, output="sos")
+    y = sosfiltfilt(sos, x)
+    w = int(min(win_sec * fs, len(y)))
+    lo, hi = int(0.33 * fs), int(1.7 * fs)
+    acs = []
+    for s0 in range(0, len(y) - w + 1, w):
+        seg = y[s0:s0 + w] - np.mean(y[s0:s0 + w])
+        den = float(np.dot(seg, seg))
+        if den <= 0:
+            acs.append(0.0)
+            continue
+        ac = np.correlate(seg, seg, "full")[w - 1:] / den
+        acs.append(float(np.max(ac[lo:min(hi, w)])))
+    return float(np.median(acs)) if acs else 0.0
+
+
+def respiratory_periodicity(x, fs, win_sec=20.0):
+    """Periodicity of a respiration signal: the median, over win_sec
+    windows, of the autocorrelation peak at lags of 1.5-12 s (5-40
+    breaths/min) of the signal band-passed at 0.05-1 Hz. 0.4-0.85 for a
+    breathing signal (also a weak one), <= 0.33 without a belt; low also
+    for a clipped or moving signal. 20-s windows keep it high when the
+    breathing rate changes slowly."""
+    x = np.asarray(x, dtype=float)
+    if len(x) < 15 * fs or np.all(np.isnan(x)):
+        return 0.0
+    x = np.nan_to_num(x - np.nanmean(x))
+    sos = butter(2, [0.05, 1.0], btype="band", fs=fs, output="sos")
+    y = sosfiltfilt(sos, x)
+    w = int(min(win_sec * fs, len(y)))
+    lo, hi = int(1.5 * fs), int(12 * fs)
+    acs = []
+    for s0 in range(0, len(y) - w + 1, w):
+        seg = y[s0:s0 + w] - np.mean(y[s0:s0 + w])
+        den = float(np.dot(seg, seg))
+        if den <= 0:
+            acs.append(0.0)
+            continue
+        ac = np.correlate(seg, seg, "full")[w - 1:] / den
+        acs.append(float(np.max(ac[lo:min(hi, w)])))
+    return float(np.median(acs)) if acs else 0.0
+
+
+def check_physio_signals(card, resp, fs, device=None):
+    """Signal check before saving. Return a dict with 'respiratory' and
+    'cardiac' ("ok", "weak", "irregular" or "none") and the values."""
+    th = SIGNAL_CHECK.get(device, SIGNAL_CHECK["default"])
+    resp_std = lowpass_std(resp, fs)
+    card_std = lowpass_std(card, fs)
+    resp_ac = respiratory_periodicity(resp, fs)
+    card_ac = cardiac_periodicity(card, fs)
+
+    def state(amp, ac, ok, floor, ac_th):
+        if amp >= ok:
+            return "ok" if ac >= ac_th else "irregular"
+        if amp >= floor and ac >= ac_th:
+            return "weak"
+        return "none"
+
+    resp_st = state(resp_std, resp_ac, th["resp_ok"], th["resp_floor"],
+                    th["resp_ac"])
+    card_st = state(card_std, card_ac, th["card_ok"], th["card_floor"],
+                    th["card_ac"])
+    return {
+        "respiratory": resp_st,
+        "cardiac": card_st,
+        "resp_std": round(resp_std, 2),
+        "resp_periodicity": round(resp_ac, 3),
+        "card_std": round(card_std, 2),
+        "card_periodicity": round(card_ac, 3),
+        "thresholds": dict(th),
+    }
+
+
+# %% load_bids_physio =========================================================
+def load_bids_physio(tsv_file):
+    """Read a BIDS physiological recording.
+
+    Parameters
+    ----------
+    tsv_file : str or Path
+        *_physio.tsv or *_physio.tsv.gz. The JSON sidecar with the same name
+        (*_physio.json) must exist.
+
+    Returns
+    -------
+    dict
+        "SamplingFrequency" (float), "StartTime" (float), "Columns" (list),
+        "cardiac" and "respiratory" (numpy arrays; zeros if the column is
+        missing), and "json" (the sidecar contents).
+        Columns are found by name, case-insensitively. At least one of
+        "cardiac" and "respiratory" must exist.
+    """
+    tsv_file = Path(tsv_file)
+    name = tsv_file.name
+    if name.endswith(".tsv.gz"):
+        stem = name[: -len(".tsv.gz")]
+    elif name.endswith(".tsv"):
+        stem = name[: -len(".tsv")]
+    else:
+        raise ValueError(f"{tsv_file} is not a .tsv or .tsv.gz file.")
+    json_file = tsv_file.with_name(stem + ".json")
+    if not json_file.is_file():
+        raise FileNotFoundError(f"JSON sidecar {json_file} is not found.")
+
+    with open(json_file, "r") as fid:
+        meta = json.load(fid)
+    for key in ("SamplingFrequency", "StartTime", "Columns"):
+        if key not in meta:
+            raise ValueError(f"{json_file} has no '{key}'.")
+
+    columns = [str(c).lower() for c in meta["Columns"]]
+    data = np.loadtxt(tsv_file, delimiter="\t", ndmin=2)
+    if data.shape[1] != len(columns):
+        raise ValueError(
+            f"{tsv_file} has {data.shape[1]} columns, but 'Columns' in "
+            f"{json_file.name} lists {len(columns)}: {meta['Columns']}"
+        )
+    if "cardiac" not in columns and "respiratory" not in columns:
+        raise ValueError(
+            f"Neither 'cardiac' nor 'respiratory' is in 'Columns' of "
+            f"{json_file.name}: {meta['Columns']}"
+        )
+
+    out = {
+        "SamplingFrequency": float(meta["SamplingFrequency"]),
+        "StartTime": float(meta["StartTime"]),
+        "Columns": list(meta["Columns"]),
+        "json": meta,
+    }
+    for col in ("cardiac", "respiratory"):
+        if col in columns:
+            out[col] = data[:, columns.index(col)].astype(float)
+        else:
+            out[col] = np.zeros(len(data))
+    return out
+
+
+# %% find_scans ===============================================================
+def find_scans(onsets, min_gap=3.0, min_pulses=3):
+    """Split TTL onsets into scans at gaps.
+
+    A gap longer than max(min_gap, 3 * median interval) separates scans.
+    The TR is not needed. Groups with fewer than min_pulses TTLs (e.g., a
+    stray pulse) are not returned.
+
+    Returns
+    -------
+    list of (onset, last TTL time, number of TTLs)
+    """
+    on = np.sort(np.asarray(onsets, dtype=float))
+    on = on[np.isfinite(on) & (on > 0)]
+    if len(on) == 0:
+        return []
+    iv = np.diff(on)
+    gap = max(min_gap, 3 * float(np.median(iv))) if len(iv) else min_gap
+    starts = np.r_[0, np.where(iv > gap)[0] + 1]
+    ends = np.r_[starts[1:], len(on)]
+    scans = []
+    for s0, e0 in zip(starts, ends):
+        if e0 - s0 >= min_pulses:
+            scans.append((float(on[s0]), float(on[e0 - 1]), int(e0 - s0)))
+    return scans
+
+
+# %% find_series_onset ========================================================
+def find_series_onset(onsets, TR, block_gap=0.3, tol_TR=0.05, max_missed=3,
+                      tol_int=0.3):
+    """Find the first TTL of the current series by walking back from the
+    latest TTL while the TTL pattern continues.
+
+    Scanners send a TTL per volume or per slice. TTLs of a prescan or a
+    previous scan can come shortly before the scan (e.g., GE prescans), so
+    the first TTL after a gap > 1.5 TR can be the start of those TTLs, not of
+    the scan. Walking back only while the pattern continues avoids this.
+    Volumes before the steady state that send no TTL make a gap longer than
+    TR before the first TTL, so the walk stops at the first TTL of the scan.
+    A missed TTL in the scan also stops the walk (the onset is then late).
+
+    Parameters
+    ----------
+    onsets : array
+        TTL onset times (NaN is ignored).
+    TR : float
+        Repetition time (s) of the scan.
+
+    Two patterns are handled:
+    - Block: TTLs come in TR blocks separated by gaps > block_gap. Walk back
+      while the previous block started one TR earlier (+- tol_TR * TR, plus
+      max_missed slice intervals for missed first pulses).
+    - Continuous: no gap in the last TR. Walk back while each interval is k
+      times the median interval (k = 1-3, +- tol_int). A single pulse whose
+      time is off (e.g., a delayed read) breaks two intervals; it is skipped
+      if the interval over it is k times the median interval (k = 2-4).
+
+    Returns
+    -------
+    float or None
+        Onset time of the series. None if there is no TTL.
+    """
+    on = np.sort(np.asarray(onsets, dtype=float))
+    on = on[~np.isnan(on)]
+    if len(on) == 0:
+        return None
+    if len(on) == 1:
+        return float(on[0])
+
+    iv = np.diff(on)
+    bstart = np.r_[0, np.where(iv > block_gap)[0] + 1]
+    last_block = on[bstart[-1]:]
+    slice_int = (
+        float(np.median(np.diff(last_block))) if len(last_block) > 1 else 0.0
+    )
+
+    if on[-1] - on[bstart[-1]] < TR:
+        # The last block is shorter than one TR: block pattern
+        tol = tol_TR * TR + max_missed * slice_int
+        k = len(bstart) - 1
+        while k > 0 and \
+                abs((on[bstart[k]] - on[bstart[k - 1]]) - TR) <= tol:
+            k -= 1
+        return float(on[bstart[k]])
+
+    # Continuous pattern: walk back over intervals
+    m = float(np.median(iv[-min(len(iv), 20):]))
+
+    def fits(d, kmin, kmax):
+        k = round(d / m)
+        return kmin <= k <= kmax and abs(d - k * m) <= tol_int * m
+
+    j = len(on) - 1
+    while j > 0:
+        if fits(on[j] - on[j - 1], 1, 3):
+            j -= 1
+        elif j > 1 and fits(on[j] - on[j - 2], 2, 4):
+            j -= 2  # on[j - 1] is displaced
+        else:
+            break
+    return float(on[j])
+
+
+# %% _put_drop_oldest =========================================================
+def _put_drop_oldest(que, item):
+    """Put item in the queue. If the queue is full, drop the oldest item."""
+    try:
+        que.put_nowait(item)
+    except Full:
+        try:
+            # Discard the oldest. A short wait, because a multiprocessing
+            # queue can report Empty while its items are being flushed.
+            que.get(timeout=0.01)
+        except Empty:
+            pass
+        # Then put the new item (it was dropped too before)
+        try:
+            que.put_nowait(item)
+        except Full:
+            pass
+
+
+# %% NumatoGPIORecording class =================================================
 class NumatoGPIORecording:
     """
     Receiving signals from USB GPIO device, Numato Lab 8 Channel USB GPIO (
@@ -369,6 +753,11 @@ class NumatoGPIORecording:
         "CDC RS-232 Emulation Demo",
         "Numato Lab 8 Channel USB GPIO",
     ]
+    TTL_CMD = b"gpio read 0\r"
+    CARD_CMD = b"adc read 1\r"
+    RESP_CMD = b"adc read 2\r"
+    # Response: b"gpio read 0\n\r1\n\r>" or b"adc read 1\n\r512\n\r>"
+    RESP_PAT = re.compile(rb"(?:gpio|adc) read (\d)\n\r(\d+)\n\r")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
@@ -391,7 +780,7 @@ class NumatoGPIORecording:
         sample_freq : float
             Recording sampling frequency (Hz).
         """
-        self._logger = logging.getLogger("NumatoGPIORecoding")
+        self._logger = logging.getLogger("NumatoGPIORecording")
 
         # Set parameters
         self._ttl_onset_que = ttl_onset_que
@@ -465,54 +854,44 @@ class NumatoGPIORecording:
     def open_sig_port(self):
         """Open serial port for signal communication."""
         if self._sig_sport is None:
-            self._logger.warning("There is no Numato GPIO device.")
+            self._logger.warning("No Numato GPIO device was found.")
             return False
 
         self._logger.debug(
             f"Attempting to open serial port: {self._sig_sport}")
         self._close_existing_port()
 
-        # Check if the serial port is accessed by other processes
-        try:
-            result = subprocess.run(
-                ["lsof", self._sig_sport],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.returncode == 0 and result.stdout:
-                self._logger.debug(
-                    f"Serial port {self._sig_sport} is already in use "
-                    "by another process."
-                )
-                return False
-
-        except FileNotFoundError:
-            self._logger.warning(
-                "`lsof` command not found. Skipping port access check."
-            )
-        except Exception as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(f"Error checking serial port access: {errstr}")
-
         if self._sig_sport not in self.dict_sig_sport:
             self._logger.error(f"{self._sig_sport} is not available.")
             return False
 
         try:
+            # exclusive=True locks the port (flock), so the port cannot be
+            # opened twice by processes that also open it with
+            # exclusive=True, e.g., two RT-MRI instances. A process that
+            # opened the port without the lock is not detected.
             self._sig_ser = serial.Serial(
                 self._sig_sport,
                 DEFAULT_SERIAL_BAUDRATE,
                 timeout=DEFAULT_SERIAL_TIMEOUT,
+                exclusive=True,
             )
             self._sig_ser.flushOutput()
             self._sig_ser.write(b"gpio clear 0\r")
-            self._logger.info(f"Open signal port {self._sig_sport}")
+            self._logger.info(f"Opened signal port {self._sig_sport}")
             return True
 
         except serial.serialutil.SerialException as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(f"Failed to open {self._sig_sport}: {errstr}")
+            if "exclusively lock" in str(e):
+                self._logger.error(
+                    f"Serial port {self._sig_sport} is already in use "
+                    "by another process."
+                )
+            else:
+                errstr = str(e) + "\n" + traceback.format_exc()
+                self._logger.error(
+                    f"Failed to open {self._sig_sport}: {errstr}"
+                )
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
@@ -520,6 +899,42 @@ class NumatoGPIORecording:
 
         self._sig_ser = None
         return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _reopen_sig_port(self, is_stop):
+        """Reopen the Numato port after device errors (e.g., the USB cable
+        was pulled or the hub was reset). The device can come back on another
+        /dev/ttyACM*, so the port list is searched again. Tries until it
+        succeeds or is_stop() returns True.
+
+        Returns the new serial port, or None if stopped.
+        """
+        try:
+            if self._sig_ser is not None:
+                self._sig_ser.close()
+        except Exception:
+            pass
+        self._sig_ser = None
+
+        wait = 0.5
+        while not is_stop():
+            ports = {
+                pt.device: pt.description for pt in comports()
+                if self._is_supported_device(pt.description)
+            }
+            if ports:
+                self.dict_sig_sport = dict(sorted(ports.items()))
+                if self._sig_sport not in ports:
+                    self._sig_sport = sorted(ports)[0]
+                if self.open_sig_port():
+                    return self._sig_ser
+            t_end = time.time() + wait
+            while time.time() < t_end:
+                if is_stop():
+                    return None
+                time.sleep(0.1)
+            wait = min(wait * 2, MAX_REOPEN_WAIT)
+        return None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _close_existing_port(self):
@@ -556,6 +971,7 @@ class NumatoGPIORecording:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_signal_loop(self, cmd_pipe=None):
+        """Read TTL (IO0) and physio (ADC1, ADC2) until QUIT is received."""
         if (
             self._ttl_onset_que is None
             or self._ttl_offset_que is None
@@ -570,109 +986,158 @@ class NumatoGPIORecording:
         self._queue_lock.acquire()
         self._logger.debug("Start recording in read_signal_loop.")
 
-        ttl_state = 0
-        physio_rec_interval = 1.0 / self._sample_freq
-        rec_delays = deque(maxlen=10)  # Stack to store delays, size = 10
-        rec_delay = 0
-        next_rec = time.time() + physio_rec_interval
-        st_physio_read = 0
-        tstamp_physio = None
-        while True:
-            # Read TTL
-            self._sig_ser.reset_output_buffer()
-            self._sig_ser.reset_input_buffer()
-            self._sig_ser.write(b"gpio read 0\r")
-
-            try:
-                port0 = self._sig_ser.read(1024)
-                tstamp_ttl = time.time()
-
-                if time.time() >= next_rec - rec_delay:
-                    st_physio_read = time.time()
-                    self._sig_ser.reset_output_buffer()
-                    self._sig_ser.reset_input_buffer()
-                    # Card
-                    self._sig_ser.write(b"adc read 1\r")
-                    port1 = self._sig_ser.read(25)
-                    # Resp
-                    self._sig_ser.write(b"adc read 2\r")
-                    port2 = self._sig_ser.read(25)
-                    tstamp_physio = time.time()
-                    rec_delays.append(time.time() - st_physio_read)
-                else:
-                    tstamp_physio = None
-                    port1 = None
-                    port2 = None
-            except SerialException as e:
-                self._logger.debug(f"Error reading signal: {e}")
-                pass
-
-            ma = re.search(r"gpio read 0\n\r(\d)\n", port0.decode())
-            if ma:
-                sig = ma.groups()[0]
-                ttl = int(sig == "1")
-            else:
-                ttl = 0
-
-            if ttl != ttl_state:
-                if ttl == 1 and ttl_state == 0:
-                    try:
-                        self._ttl_onset_que.put_nowait(tstamp_ttl)
-                    except Full:
-                        try:
-                            self._ttl_onset_que.get_nowait()  # discard oldest
-                        except Empty:
-                            pass
-                    # self._logger.debug(f"TTL Onset: {tstamp_ttl}")
-                    # if self._logger.handlers:
-                    #     self._logger.handlers[0].flush()
-
-                elif ttl == 0 and ttl_state == 1:
-                    try:
-                        self._ttl_offset_que.put_nowait(tstamp_ttl)
-                    except Full:
-                        try:
-                            self._ttl_offset_que.get_nowait()  # discard oldest
-                        except Empty:
-                            pass
-                    # self._logger.debug(f"TTL Offset: {tstamp_ttl}")
-                    # if self._logger.handlers:
-                    #     self._logger.handlers[0].flush()
-                ttl_state = ttl
-
-            if tstamp_physio is not None:
-                # Card
-                try:
-                    card = float(port1.decode().split("\n\r")[1])
-                except Exception:
-                    card = np.nan
-
-                # Resp
-                try:
-                    resp = float(port2.decode().split("\n\r")[1])
-                except Exception:
-                    resp = np.nan
-
-                try:
-                    self._physio_que.put_nowait((tstamp_physio, card, resp))
-                except Full:
-                    try:
-                        self._physio_que.get_nowait()  # discard oldest
-                    except Empty:
-                        pass
-
-                rec_delay = np.mean(rec_delays) if rec_delays else 0.0
-                next_rec += physio_rec_interval
-
+        def is_quit():
             if cmd_pipe is not None and cmd_pipe.poll():
                 cmd = cmd_pipe.recv()
                 self._logger.debug(f"Receive {cmd} in read_signal_loop.")
                 if cmd == "QUIT":
-                    cmd_pipe.send("END")
-                    break
+                    return True
+            return False
 
-            time.sleep(0.0005)
+        self.poll_loop(is_quit, read_adc=True)
+
+        if cmd_pipe is not None:
+            cmd_pipe.send("END")
         self._queue_lock.release()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def poll_loop(self, is_stop, read_adc=True):
+        """Polling loop of the Numato device.
+
+        A command is sent as soon as the response to the previous one (ending
+        with the prompt '>') arrives, without waiting for a read timeout. The
+        Numato device answers a command in 0.4-0.9 ms, and sending several
+        commands ahead does not increase the rate. So IO0 (TTL) is read about
+        every 0.5-0.85 ms, except when ADC1 (cardiac) and ADC2 (respiration)
+        are read at self._sample_freq. If no response arrives within
+        NUMATO_POLL_TIMEOUT, the TTL command is sent again.
+
+        Parameters
+        ----------
+        is_stop : callable
+            Called at every command. The loop ends when it returns True.
+        read_adc : bool
+            Read ADC1 and ADC2 as physio signals. If False, only TTL is read.
+
+        The time stamp of a TTL sample is the midpoint between sending the
+        command and receiving the response. The time stamp of a physio sample
+        is the midpoint between sending the ADC1 command and receiving the
+        ADC2 response.
+        """
+        ser = self._sig_ser
+        ser.timeout = NUMATO_POLL_TIMEOUT
+        physio_rec_interval = 1.0 / float(self._sample_freq)
+        next_rec = time.time() + physio_rec_interval
+
+        ttl_state = 0
+        card = np.nan
+        t_card_send = None
+        buf = b""
+        cmd = None  # Command waiting for the response
+        t_send = None
+        n_err = 0  # Consecutive device errors
+        while not is_stop():
+            try:
+                if cmd is None:
+                    # (Re)start the command cycle
+                    ser.reset_input_buffer()
+                    buf = b""
+                    cmd = NumatoGPIORecording.TTL_CMD
+                    ser.write(cmd)
+                    t_send = time.time()
+
+                data = ser.read(max(ser.in_waiting, 1))
+                t_recv = time.time()
+                if not data:
+                    # No response within the timeout. Send again.
+                    cmd = None
+                    continue
+
+                buf += data
+                # A late response to an earlier command (sent again after a
+                # timeout) is skipped, and the response to this command is
+                # waited for. Taking it as this command's response would
+                # shift every later response by one command, e.g., the
+                # cardiac command would get the TTL response and every
+                # physio sample would be NaN. A late response to the same
+                # command (TTL after TTL) cannot be told apart and is used;
+                # it is at most NUMATO_POLL_TIMEOUT old.
+                resp = None
+                while b">" in buf:
+                    resp, buf = buf.split(b">", 1)
+                    ma = NumatoGPIORecording.RESP_PAT.search(resp)
+                    if ma is None or cmd.startswith(
+                            resp[ma.start():ma.start(1) + 1]):
+                        break
+                    resp = None
+                if resp is None:
+                    continue
+                resp_cmd, resp_t_send = cmd, t_send
+
+                # Send the next command before processing the response
+                if resp_cmd == NumatoGPIORecording.CARD_CMD:
+                    cmd = NumatoGPIORecording.RESP_CMD
+                elif read_adc and t_recv >= next_rec:
+                    cmd = NumatoGPIORecording.CARD_CMD
+                    next_rec += physio_rec_interval
+                    if next_rec < t_recv:
+                        # Too late. Restart the schedule from now.
+                        next_rec = t_recv + physio_rec_interval
+                else:
+                    cmd = NumatoGPIORecording.TTL_CMD
+                ser.write(cmd)
+                t_send = time.time()
+
+            except SERIAL_ERRORS as e:
+                cmd = None
+                n_err += 1
+                if n_err < N_ERR_REOPEN:
+                    self._logger.debug(f"Error reading signal: {e}")
+                    time.sleep(0.01)
+                    continue
+                # The device is gone or reset: reopen the port
+                self._logger.warning(
+                    f"Numato device error ({e}). TTLs"
+                    + (" and physio signals" if read_adc else "")
+                    + " are not recorded until it is reconnected."
+                )
+                ser = self._reopen_sig_port(is_stop)
+                if ser is None:
+                    break  # Stopped while reconnecting
+                ser.timeout = NUMATO_POLL_TIMEOUT
+                self._logger.warning(
+                    f"Numato device reconnected on {self._sig_sport}."
+                )
+                n_err = 0
+                next_rec = time.time() + physio_rec_interval
+                continue
+
+            n_err = 0
+            # ma is None for a broken response. A response to another command
+            # was skipped above, so it is never read as this one (e.g.,
+            # "adc read 1 ... 512" as TTL 0, a false TTL offset and onset).
+            ma = NumatoGPIORecording.RESP_PAT.search(resp)
+            if resp_cmd == NumatoGPIORecording.TTL_CMD:
+                if ma is None:
+                    continue  # Keep the TTL state
+                ttl = int(ma.group(2) == b"1")
+                tstamp_ttl = (resp_t_send + t_recv) / 2
+                if ttl == 1 and ttl_state == 0:
+                    _put_drop_oldest(self._ttl_onset_que, tstamp_ttl)
+                elif ttl == 0 and ttl_state == 1:
+                    _put_drop_oldest(self._ttl_offset_que, tstamp_ttl)
+                ttl_state = ttl
+
+            elif resp_cmd == NumatoGPIORecording.CARD_CMD:
+                card = float(ma.group(2)) if ma else np.nan
+                t_card_send = resp_t_send
+
+            elif resp_cmd == NumatoGPIORecording.RESP_CMD:
+                resp_val = float(ma.group(2)) if ma else np.nan
+                tstamp_physio = (t_card_send + t_recv) / 2
+                _put_drop_oldest(
+                    self._physio_que, (tstamp_physio, card, resp_val)
+                )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -684,6 +1149,523 @@ class NumatoGPIORecording:
                 self._sig_ser = None
         except Exception:
             # Ignore all cleanup errors to prevent X server conflicts
+            pass
+
+
+# %% _SequenceClock ===========================================================
+class _SequenceClock:
+    """Time stamps of GE physio packets from their sequence numbers.
+
+    GE sends a packet every 5 ms by its own clock, and each packet has a
+    16-bit sequence number. The arrival time of a packet, estimated from the
+    read time and the number of packets still waiting in the buffer, has an
+    error of about +-2.5 ms. A line, time = a + b * packet count, is fitted to
+    the arrival times of the last window_sec seconds, and the time stamp is
+    taken from the line. This removes the packet-to-packet jitter and follows
+    the rate difference between the GE clock and the PC clock (30-60 ppm,
+    about 0.1-0.2 s per hour).
+    Not corrected: a constant latency (inside GE, serial transfer), and a
+    slow offset of up to about +-2.5 ms. The arrival estimate drifts slowly
+    within one packet period (5 ms) and then jumps back by one period, so the
+    true offset is known only within one period. A long window averages this.
+
+    Packets arriving more than reset_err seconds off the line (e.g., after a
+    stall of this process) are stamped from the line and not used for the
+    fit. If this continues for refit_sec, the fit is reset. The fit is also
+    reset at once when the sequence number jumps ahead of the arrival time
+    by more than reset_err, e.g., when GE restarts the counter.
+    """
+
+    def __init__(self, period, window_sec=120.0, refit_sec=1.0, min_sec=2.0,
+                 reset_err=0.05):
+        self.period = period
+        self._maxlen = int(window_sec / period)
+        self._refit_n = int(refit_sec / period)
+        self._min_n = int(min_sec / period)
+        self._reset_err = reset_err
+        self.reset()
+
+    def reset(self):
+        self._prev_seq = None
+        self._prev_t = None
+        self._count = 0
+        self._cnt = deque(maxlen=self._maxlen)
+        self._t = deque(maxlen=self._maxlen)
+        self._fit = None
+        self._since_fit = 0
+        self._n_out = 0
+
+    def stamp(self, seq, t_arrival):
+        """Return (time stamp, number of lost packets before this one).
+        The time stamp is None for a duplicate packet."""
+        lost = 0
+        if self._prev_seq is not None:
+            d = (seq - self._prev_seq) % 65536
+            if d == 0:
+                return None, 0
+            if d * self.period - (t_arrival - self._prev_t) > \
+                    self._reset_err:
+                # The counter jumped ahead of the time (e.g., GE restarted
+                # the counter). Lost packets do not cause this, because
+                # their time also passes.
+                self.reset()
+                d = 1
+            else:
+                lost = d - 1
+            self._count += d
+        self._prev_seq = seq
+        self._prev_t = t_arrival
+
+        if self._fit is not None:
+            pred = self._fit[0] + self._fit[1] * self._count
+            if abs(t_arrival - pred) > self._reset_err:
+                self._n_out += 1
+                if self._n_out < self._refit_n:
+                    return pred, lost
+                # The line does not fit any more. Start again.
+                self.reset()
+                self._prev_seq = seq
+                self._prev_t = t_arrival
+            else:
+                self._n_out = 0
+
+        self._cnt.append(self._count)
+        self._t.append(t_arrival)
+        self._since_fit += 1
+        if len(self._cnt) >= self._min_n and \
+                (self._fit is None or self._since_fit >= self._refit_n):
+            c = np.array(self._cnt, dtype=float)
+            t = np.array(self._t)
+            b, a = np.polyfit(c - c[0], t - t[0], 1)
+            self._fit = (t[0] + a - b * c[0], b)
+            self._since_fit = 0
+
+        if self._fit is None:
+            return t_arrival, lost
+        return self._fit[0] + self._fit[1] * self._count, lost
+
+
+# %% GEPhysioRecording ========================================================
+class GEPhysioRecording:
+    """
+    Receiving GE physio signals from a serial port and the TTL signal from the
+    Numato GPIO device (IO0/DIO0, as NumatoGPIORecording).
+
+    The GE MRI system sends physio data from its serial port (115200 baud) as
+    12-byte packets at 200 Hz:
+        struct '<Hhhhhh' = (sequence number, -, -, respiration, cardiac,
+                            checksum)
+    The checksum is the sum of the first 10 bytes.
+    A moving average of MOVING_AVERAGE packets is taken at every packet, and
+    every DECIMATE-th value is recorded, so the recording frequency is
+    200 / 2 = 100 Hz. The time stamp of a value is the center of the averaged
+    packets. Packet times are taken from the sequence numbers
+    (_SequenceClock).
+
+    The packet format was taken from rt_physio_ge.py, which is kept as a
+    record of the original implementation.
+    """
+
+    PHYSIO_BAUDRATE = 115200
+    PHYSIO_PACKET_FREQ = 200  # Hz
+    MOVING_AVERAGE = 3
+    DECIMATE = 2
+    SAMPLE_FREQ = PHYSIO_PACKET_FREQ / DECIMATE  # 100 Hz
+    PACKET_SIZE = 12
+    PACKET_FORMAT = "<Hhhhhh"
+    SIGNAL_RANGE = (-32768, 32767)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __init__(
+        self,
+        ttl_onset_que=None,
+        ttl_offset_que=None,
+        physio_que=None,
+        physio_sport=None,
+    ):
+        """Initialize
+
+        Parameters
+        ----------
+        ttl_onset_que, ttl_offset_que, physio_que : multiprocessing.Queue
+           Queues for sharing the recorded data with the controller class.
+        physio_sport : str, optional
+            Serial port of the GE physio output.
+            The default is None, in which case the first non-Numato port that
+            sends valid GE packets is used.
+        """
+        self._logger = logging.getLogger("GEPhysioRecording")
+
+        self._ttl_onset_que = ttl_onset_que
+        self._ttl_offset_que = ttl_offset_que
+        self._physio_que = physio_que
+        self._queue_lock = Lock()
+
+        if physio_sport is None:
+            physio_sport = GEPhysioRecording.find_physio_port()
+            if physio_sport is None:
+                ports = GEPhysioRecording.physio_port_candidates(
+                    with_description_only=True
+                )
+                if len(ports):
+                    physio_sport = ports[0]
+                    self._logger.warning(
+                        "No GE physio packets were found on any serial port. "
+                        f"Using {physio_sport}."
+                    )
+        self.physio_sport = physio_sport
+        self._physio_ser = None
+
+        # TTL is read with the Numato device
+        self._ttl_rec = NumatoGPIORecording(
+            ttl_onset_que=ttl_onset_que,
+            ttl_offset_que=ttl_offset_que,
+        )
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def physio_port_candidates(with_description_only=False):
+        """Serial ports that are not Numato GPIO devices.
+
+        Ports with a device description (e.g., USB-serial adapters) come
+        first. Legacy ports without hardware info (description 'n/a', e.g.,
+        /dev/ttyS*) come last, or are excluded if with_description_only.
+        """
+        ports = []
+        for pt in comports():
+            if any(
+                re.match(pattern, pt.description) is not None
+                for pattern in NumatoGPIORecording.SUPPORT_DEVICES
+            ):
+                continue
+            no_desc = pt.description in ("", "n/a")
+            if with_description_only and no_desc:
+                continue
+            ports.append((no_desc, pt.device))
+        return [dev for _, dev in sorted(ports)]
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def is_packet_good(packet):
+        if len(packet) != GEPhysioRecording.PACKET_SIZE:
+            return False
+        chksum = struct.unpack("<h", bytes(packet[10:12]))[0]
+        return chksum == sum(packet[:10])
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def probe_physio_port(port, probe_sec=0.5, n_good=3):
+        """Check whether the port sends GE physio packets.
+
+        Returns True if n_good consecutive valid packets with consecutive
+        sequence numbers are received within probe_sec seconds.
+        """
+        try:
+            # exclusive=True: a port used by another RT-MRI process is not
+            # touched (open fails).
+            ser = serial.Serial(
+                port,
+                GEPhysioRecording.PHYSIO_BAUDRATE,
+                timeout=0.05,
+                exclusive=True,
+            )
+        except Exception:
+            return False
+
+        psize = GEPhysioRecording.PACKET_SIZE
+        buf = bytearray()
+        n_seq = 0
+        prev_seqn = None
+        try:
+            ser.reset_input_buffer()
+            end_t = time.time() + probe_sec
+            while time.time() < end_t:
+                buf += ser.read(psize)
+                while len(buf) >= psize:
+                    if not GEPhysioRecording.is_packet_good(buf[:psize]):
+                        del buf[0]
+                        n_seq = 0
+                        prev_seqn = None
+                        continue
+                    seqn = struct.unpack("<H", bytes(buf[:2]))[0]
+                    del buf[:psize]
+                    if prev_seqn is not None and \
+                            seqn == (prev_seqn + 1) % 65536:
+                        n_seq += 1
+                    else:
+                        n_seq = 1
+                    prev_seqn = seqn
+                    if n_seq >= n_good:
+                        return True
+        except Exception:
+            return False
+        finally:
+            ser.close()
+
+        return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def find_physio_port():
+        """Return the first port that sends GE physio packets, or None."""
+        for port in GEPhysioRecording.physio_port_candidates():
+            if GEPhysioRecording.probe_physio_port(port):
+                return port
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def is_device_available(probe=True):
+        """Check if the GE physio port is available.
+
+        Parameters
+        ----------
+        probe : bool
+            If True, a port must send valid GE packets. If False, any
+            non-Numato serial port is accepted.
+        """
+        if probe:
+            return GEPhysioRecording.find_physio_port() is not None
+        else:
+            return (
+                len(
+                    GEPhysioRecording.physio_port_candidates(
+                        with_description_only=True
+                    )
+                )
+                > 0
+            )
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _reopen_physio_port(self, is_stop):
+        """Reopen the GE physio port after device errors. If the port is
+        gone (e.g., a USB serial adapter came back under another name), the
+        port that sends GE packets is searched. Tries until it succeeds or
+        is_stop() returns True. Returns True when reopened."""
+        try:
+            if self._physio_ser is not None:
+                self._physio_ser.close()
+        except Exception:
+            pass
+        self._physio_ser = None
+
+        wait = 0.5
+        while not is_stop():
+            if self.physio_sport is None or \
+                    not Path(self.physio_sport).exists():
+                port = GEPhysioRecording.find_physio_port()
+                if port is not None:
+                    self.physio_sport = port
+            if self.physio_sport is not None and \
+                    Path(self.physio_sport).exists() and \
+                    self.open_physio_port():
+                return True
+            t_end = time.time() + wait
+            while time.time() < t_end:
+                if is_stop():
+                    return False
+                time.sleep(0.1)
+            wait = min(wait * 2, MAX_REOPEN_WAIT)
+        return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def open_physio_port(self):
+        if self.physio_sport is None:
+            self._logger.error("No serial port was found for GE physio.")
+            return False
+
+        try:
+            # exclusive=True locks the port (flock). See
+            # NumatoGPIORecording.open_sig_port.
+            self._physio_ser = serial.Serial(
+                self.physio_sport,
+                GEPhysioRecording.PHYSIO_BAUDRATE,
+                timeout=0.01,
+                exclusive=True,
+            )
+            self._physio_ser.reset_input_buffer()
+            self._logger.info(f"Opened GE physio port {self.physio_sport}")
+            return True
+
+        except Exception as e:
+            if "exclusively lock" in str(e):
+                self._logger.error(
+                    f"Serial port {self.physio_sport} is already in use "
+                    "by another process."
+                )
+            else:
+                errstr = str(e) + "\n" + traceback.format_exc()
+                self._logger.error(
+                    f"Failed to open {self.physio_sport}: {errstr}"
+                )
+
+        self._physio_ser = None
+        return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_config(self):
+        return {
+            "GE physio port": str(self.physio_sport),
+            "IO port": self._ttl_rec.get_config()["IO port"],
+        }
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_config(self, conf):
+        self._ttl_rec.set_config(conf)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def read_signal_loop(self, cmd_pipe=None):
+        if (
+            self._ttl_onset_que is None
+            or self._ttl_offset_que is None
+            or self._physio_que is None
+        ):
+            self._logger.error("Recording queues are not set.")
+            return
+
+        if not self.open_physio_port():
+            return
+
+        self._queue_lock.acquire()
+        self._logger.debug("Start recording in read_signal_loop.")
+
+        # TTL thread
+        stop_event = threading.Event()
+        ttl_thread = None
+        if self._ttl_rec.open_sig_port():
+            ttl_thread = threading.Thread(
+                target=self._ttl_rec.poll_loop,
+                args=(stop_event.is_set,),
+                kwargs={"read_adc": False},
+                daemon=True,
+            )
+            ttl_thread.start()
+        else:
+            self._logger.warning(
+                "No Numato GPIO device for TTL. Only physio is recorded."
+            )
+
+        psize = GEPhysioRecording.PACKET_SIZE
+        pck_intv = 1.0 / GEPhysioRecording.PHYSIO_PACKET_FREQ
+        n_ave = GEPhysioRecording.MOVING_AVERAGE
+        clock = _SequenceClock(pck_intv)
+        ave_buf = deque(maxlen=n_ave)  # (time stamp, card, resp)
+        n_since_out = 0
+        buf = bytearray()
+        n_skip_bytes = 0
+        n_lost = 0
+        n_err = 0  # Consecutive device errors
+        quit_received = False
+
+        def is_quit():
+            nonlocal quit_received
+            if cmd_pipe is not None and cmd_pipe.poll():
+                cmd = cmd_pipe.recv()
+                self._logger.debug(f"Receive {cmd} in read_signal_loop.")
+                if cmd == "QUIT":
+                    quit_received = True
+            return quit_received
+
+        while not is_quit():
+            try:
+                data = self._physio_ser.read(
+                    max(self._physio_ser.in_waiting, 1)
+                )
+            except SERIAL_ERRORS as e:
+                n_err += 1
+                if n_err < N_ERR_REOPEN:
+                    self._logger.debug(f"Error reading GE physio: {e}")
+                    time.sleep(0.1)
+                    continue
+                self._logger.warning(
+                    f"GE physio port error ({e}). Physio signals are not "
+                    "recorded until the port is available again."
+                )
+                if not self._reopen_physio_port(is_quit):
+                    break  # Stopped while reconnecting
+                self._logger.warning(
+                    f"GE physio port reopened ({self.physio_sport}).")
+                n_err = 0
+                buf = bytearray()
+                clock.reset()
+                ave_buf.clear()
+                continue
+            n_err = 0
+            tnow = time.time()
+            if not data:
+                continue
+            buf += data
+
+            while len(buf) >= psize:
+                if not GEPhysioRecording.is_packet_good(buf[:psize]):
+                    # Shift one byte to synchronize with packets
+                    del buf[0]
+                    n_skip_bytes += 1
+                    continue
+
+                seqn, _, _, resp, card, _ = struct.unpack(
+                    GEPhysioRecording.PACKET_FORMAT, bytes(buf[:psize])
+                )
+                del buf[:psize]
+
+                # Arrival time of this packet, estimated from the packets
+                # still in buf, then corrected by the sequence clock.
+                t_arrival = tnow - (len(buf) // psize) * pck_intv
+                try:
+                    tstamp, lost = clock.stamp(seqn, t_arrival)
+                except Exception:
+                    # Do not stop the recording for an error in the clock
+                    self._logger.error(
+                        "GE physio clock error. Resetting the clock.\n"
+                        + traceback.format_exc()
+                    )
+                    clock.reset()
+                    continue
+                if tstamp is None:
+                    continue  # Duplicate packet
+                n_lost += lost
+
+                ave_buf.append((tstamp, card, resp))
+                n_since_out += 1
+                if len(ave_buf) == n_ave and \
+                        n_since_out >= GEPhysioRecording.DECIMATE:
+                    vals = np.array(ave_buf)
+                    _put_drop_oldest(
+                        self._physio_que,
+                        (vals[:, 0].mean(), vals[:, 1].mean(),
+                         vals[:, 2].mean()),
+                    )
+                    n_since_out = 0
+
+            if n_skip_bytes > 0 or n_lost > 0:
+                self._logger.debug(
+                    f"GE physio: {n_skip_bytes} bytes skipped to synchronize,"
+                    f" {n_lost} packets lost."
+                )
+                n_skip_bytes = 0
+                n_lost = 0
+
+        # --- end loop ---
+        stop_event.set()
+        if ttl_thread is not None:
+            ttl_thread.join(1)
+        try:
+            self._physio_ser.close()
+        except Exception:
+            pass
+        self._physio_ser = None
+        if cmd_pipe is not None:
+            cmd_pipe.send("END")
+        self._queue_lock.release()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __del__(self):
+        try:
+            if hasattr(self, "_physio_ser") and self._physio_ser:
+                self._physio_ser.close()
+                self._physio_ser = None
+        except Exception:
             pass
 
 
@@ -699,7 +1681,11 @@ class DummyRecording:
         sim_card_f=None,
         sim_resp_f=None,
         sample_freq=40,
+        sim_bids_f=None,
     ):
+        """sim_bids_f: BIDS *_physio.tsv[.gz] file. If given, it is used
+        instead of sim_card_f and sim_resp_f, and the sampling frequency is
+        taken from its JSON sidecar."""
         self._logger = logging.getLogger("DummyRecording")
 
         # Set parameters
@@ -711,7 +1697,29 @@ class DummyRecording:
         self._sim_resp = None
         self._queue_lock = Lock()
 
-        self.set_sim_data(sample_freq, sim_card_f, sim_resp_f)
+        if sim_bids_f is not None:
+            self.set_sim_bids(sim_bids_f)
+        else:
+            self.set_sim_data(sample_freq, sim_card_f, sim_resp_f)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_sim_bids(self, sim_bids_f):
+        """Set the dummy signals from a BIDS physio file."""
+        try:
+            bids = load_bids_physio(sim_bids_f)
+        except Exception as e:
+            self._logger.error(f"Error reading {sim_bids_f}: {e}")
+            self.set_sim_data(self._sample_freq)
+            return
+        self._sample_freq = bids["SamplingFrequency"]
+        self._sim_card = bids["cardiac"]
+        self._sim_resp = bids["respiratory"]
+        self._sim_data_len = len(self._sim_card)
+        self._sim_data_pos = 0
+        self._logger.info(
+            f"Dummy signals from {Path(sim_bids_f).name}: "
+            f"{self._sim_data_len} samples at {self._sample_freq} Hz"
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_sim_data(self, sample_freq, sim_card_f=None, sim_resp_f=None):
@@ -721,7 +1729,7 @@ class DummyRecording:
             sim_card_f = Path(sim_card_f)
             if not sim_card_f.is_file():
                 self._logger.error(
-                    f"Not found {sim_card_f} for cardiac dummy signal."
+                    f"File for the cardiac dummy signal not found: {sim_card_f}"
                 )
             else:
                 try:
@@ -735,7 +1743,7 @@ class DummyRecording:
             sim_resp_f = Path(sim_resp_f)
             if not sim_resp_f.is_file():
                 self._logger.error(
-                    f"Not found {sim_resp_f} for respiration dummy signal."
+                    f"File for the respiration dummy signal not found: {sim_resp_f}"
                 )
             else:
                 try:
@@ -818,19 +1826,26 @@ class DummyRecording:
                 if cmd == "QUIT":
                     cmd_pipe.send("END")
                     break
-                elif cmd == "PULSE":
-                    # Add TTL pulse
+                elif cmd == "PULSE" or (
+                    type(cmd) is tuple and cmd[0] == "PULSE"
+                ):
+                    # Add TTL pulse. ("PULSE", t): pulse at time t
+                    t_on = cmd[1] if type(cmd) is tuple else time.time()
                     try:
-                        self._ttl_onset_que.put_nowait(time.time())
+                        self._ttl_onset_que.put_nowait(t_on)
                     except Full:
                         try:
                             self._ttl_onset_que.get_nowait()  # discard oldest
                         except Empty:
                             pass
 
-                    time.sleep(0.001)
+                    if type(cmd) is not tuple:
+                        time.sleep(0.001)
                     try:
-                        self._ttl_offset_que.put_nowait(time.time())
+                        self._ttl_offset_que.put_nowait(
+                            t_on + 0.001 if type(cmd) is tuple
+                            else time.time()
+                        )
                     except Full:
                         try:
                             self._ttl_offset_que.get_nowait()  # discard oldest
@@ -855,45 +1870,49 @@ class PlotTTLPhysio:
     def __init__(
         self,
         controller,
-        geometry="610x570+1025+0",
+        geometry=None,
         signal_freq=DEFAULT_SAMPLE_FREQ,
         plot_len_sec=10,
         buf_len_sec=3600,
         disable_close=False,
+        signal_range=(0, ADC_MAX_VALUE),
     ):
         self._logger = logging.getLogger("PlotTTLPhysio")
         self.controller = controller
 
         # --- Initialize parameters ---
         self.signal_freq = signal_freq
-        # Recorder type to set the y-axis range (updated with RESET)
-        self.recorder_type = controller._recorder_type
+        self.signal_range = signal_range  # (min, max) of the signal values
         self._plot_len_sec = plot_len_sec
         self._buf_len_sec = buf_len_sec
         self._is_scanning = False
         self._cmd_pipe = None
-        self._timer_interval_ms = int(1000 / 10)
+        # Redraw 6 times per second: smooth enough for the physio signals,
+        # with less CPU than 10 times
+        self._timer_interval_ms = int(1000 / 6)
         self._rbuf_lock = None
         self._rbuf = None
 
         # --- Plot window ---
         self._plt_root = tk.Tk()
+        gui_theme.apply_tk(self._plt_root)
+        gui_theme.apply_mpl()
         self._disable_close = disable_close
 
         self._plt_root.title(
-            f"Physio signals ({self.controller._recorder_type})"
-        )
+            physio_window_title(self.controller._recorder_type))
+        if geometry is None:
+            geometry = default_geometry("physio")
         self.set_position(geometry)
 
         # Set the margins in inches
-        self._left_margin_inch = 0.3
+        self._left_margin_inch = 0.42
         self._right_margin_inch = 0.4
         self._top_margin_inch = 0.1
         self._bottom_margin_inch = 0.38
 
-        # initialize plot
+        # initialize plot (packed after the button below)
         plot_widget = self.init_plot()
-        plot_widget.pack(side=tk.TOP, fill="both", expand=True)
         self.reset_plot()
 
         # config button
@@ -911,7 +1930,10 @@ class PlotTTLPhysio:
             command=self.dump_data,
             font=("Helvetica", 10),
         )
-        dump_button.pack(side=tk.RIGHT, anchor=tk.SW)
+        # Pack the button before the plot, so that it keeps its space and
+        # the plot takes the rest.
+        dump_button.pack(side=tk.BOTTOM, anchor=tk.SE)
+        plot_widget.pack(side=tk.TOP, fill="both", expand=True)
 
         self._resize_debounce_id = None
         self._plt_root.bind("<Configure>", self.update_plot_size)
@@ -928,6 +1950,7 @@ class PlotTTLPhysio:
     def init_plot(self):
         self._plot_fig = Figure(figsize=(6, 4.2))
         self._canvas = FigureCanvasTkAgg(self._plot_fig, master=self._plt_root)
+        gui_theme.fix_mpl_canvas(self._canvas)
         self._ax_ttl, self._ax_card, self._ax_card_filtered, self._ax_resp = (
             self._plot_fig.subplots(4, 1)
         )
@@ -945,9 +1968,11 @@ class PlotTTLPhysio:
 
         # Set TTL axis
         self._ax_ttl.clear()
-        self._ax_ttl.set_ylabel("Scanner Pulse")
+        self._ax_ttl.set_ylabel("Scanner\nPulse", fontsize=9)
         zeros_data = np.zeros(self._buf_size)
-        self._ln_ttl = self._ax_ttl.plot(sig_xi, zeros_data, "k-")
+        self._ln_ttl = self._ax_ttl.plot(
+            sig_xi, zeros_data, "-", color=COLORS["green"]
+        )
         self._ax_ttl.set_xlim(sig_xi[0], sig_xi[-1])
         self._ax_ttl.set_ylim((-0.1, 1.1))
         self._ax_ttl.set_yticks((0, 1))
@@ -955,36 +1980,46 @@ class PlotTTLPhysio:
 
         # Set card axis
         self._ax_card.clear()
-        self._ax_card.set_ylabel("Cardiogram")
+        self._ax_card.set_ylabel("Cardiogram", fontsize=9)
         self._ln_card = self._ax_card.plot(
-            sig_xi, np.zeros(self._buf_size), "k-"
+            sig_xi, np.zeros(self._buf_size), "-", color=COLORS["cyan"]
         )
         self._ax_card.set_xlim(sig_xi[0], sig_xi[-1])
         self._ax_card.yaxis.set_ticks_position("right")
 
         # Set filtered card axis
         self._ax_card_filtered.clear()
-        self._ax_card_filtered.set_ylabel("Cardiogram(flitered)")
-        self._ln_card_flitered = self._ax_card_filtered.plot(
-            sig_xi, np.zeros(self._buf_size), "k-"
+        self._ax_card_filtered.set_ylabel("Cardiogram\n(filtered)", fontsize=9)
+        self._ln_card_filtered = self._ax_card_filtered.plot(
+            sig_xi, np.zeros(self._buf_size), "-", color=COLORS["purple"]
         )
         self._ax_card_filtered.set_xlim(sig_xi[0], sig_xi[-1])
         self._ax_card_filtered.yaxis.set_ticks_position("right")
 
         # Set Resp axis
         self._ax_resp.clear()
-        self._ax_resp.set_ylabel("Respiration")
+        self._ax_resp.set_ylabel("Respiration", fontsize=9)
         self._ln_resp = self._ax_resp.plot(
-            sig_xi, np.zeros(self._buf_size), "k-"
+            sig_xi, np.zeros(self._buf_size), "-", color=COLORS["cyan"]
         )
         self._ax_resp.set_xlim(sig_xi[0], sig_xi[-1])
         self._ax_resp.yaxis.set_ticks_position("right")
-        self._ax_resp.set_xlabel("second")
+        self._ax_resp.set_xlabel("second", fontsize=9)
+        for ax in (self._ax_ttl, self._ax_card, self._ax_card_filtered,
+                   self._ax_resp):
+            ax.tick_params(labelsize=8)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def run(self, cmd_pipe, rbuf_lock, rbuf):
+    def run(self, cmd_pipe, rbuf_lock, rbuf, dump_pipe=None,
+            reply_pipe=None):
         self._plt_root.deiconify()
         self._cmd_pipe = cmd_pipe
+        # Replies to GET_GEOMETRY/GET_WINDOW_STATE. A separate pipe, so that
+        # the recorder's mainloop, which reads cmd_pipe, never takes them.
+        self._reply_pipe = reply_pipe if reply_pipe is not None else cmd_pipe
+        # Dump requests and results (see dump_data)
+        self._dump_pipe = dump_pipe
+        self._dump_win = None
         self._rbuf_lock = rbuf_lock
         self._rbuf = rbuf
         self._running = True
@@ -1028,13 +2063,20 @@ class PlotTTLPhysio:
         if self._rbuf is None or self._rbuf_lock is None:
             return None
 
+        # Read only the recent part of the signal buffers (with a margin for
+        # samples out of order). Reading and sorting the whole buffers
+        # (buf_len_sec) every frame made the plot loop use all the CPU, and
+        # the window did not respond to clicks (e.g., the dump button).
+        n_tail = int(plot_len_sec * self.signal_freq * 2) + 100
         try:
             with self._rbuf_lock:
-                ttl_onsets = self._rbuf["ttl_onsets"].get().copy()
-                ttl_offsets = self._rbuf["ttl_offsets"].get().copy()
-                card = self._rbuf["card"].get().copy()
-                resp = self._rbuf["resp"].get().copy()
-                tstamp = self._rbuf["tstamp"].get().copy()
+                # TTLs are sampled with the signals, so there are no more
+                # TTLs than samples in the tail
+                ttl_onsets = self._rbuf["ttl_onsets"].get_tail(n_tail)
+                ttl_offsets = self._rbuf["ttl_offsets"].get_tail(n_tail)
+                card = self._rbuf["card"].get_tail(n_tail)
+                resp = self._rbuf["resp"].get_tail(n_tail)
+                tstamp = self._rbuf["tstamp"].get_tail(n_tail)
         except Exception as e:
             self._logger.debug(f"Error getting plot signals: {e}")
             return None
@@ -1105,6 +2147,7 @@ class PlotTTLPhysio:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _update(self):
         """Update timer callback"""
+        smin, smax = self.signal_range  # y range limits of the signals
         if not self._running:
             return
 
@@ -1127,20 +2170,25 @@ class PlotTTLPhysio:
                 self.show()
             elif msg == "HIDE":
                 self.hide()
-            elif msg == "RESIZE":
-                geometry = self._cmd_pipe.recv()
-                self.set_position(geometry)
+            elif isinstance(msg, tuple) and msg[0] == "SET_TITLE":
+                self._plt_root.title(physio_window_title(msg[1]))
+            elif isinstance(msg, tuple) and msg[0] == "RESIZE":
+                self.set_position(msg[1])
+            elif isinstance(msg, tuple) and msg[0] == "TTL_ALARM":
+                self.show_ttl_alarm(msg[1])
+            elif isinstance(msg, tuple) and msg[0] == "PHYSIO_ALARM":
+                self.show_physio_alarm(msg[1])
             elif msg == "SCAN_ON":
                 self._is_scanning = True
             elif msg == "SCAN_OFF":
                 self._is_scanning = False
             elif msg == "GET_GEOMETRY":
                 geometry = self._plt_root.geometry()
-                self._cmd_pipe.send(geometry)
+                self._reply_pipe.send(geometry)
             elif msg == "GET_WINDOW_STATE":
-                self._cmd_pipe.send(self._plt_root.wm_state())
-            elif msg == "RESET":
-                config = self._cmd_pipe.recv()
+                self._reply_pipe.send(self._plt_root.wm_state())
+            elif isinstance(msg, tuple) and msg[0] == "RESET":
+                config = msg[1]
                 for key, value in config.items():
                     if hasattr(self, key):
                         if key == "signal_freq":
@@ -1198,7 +2246,9 @@ class PlotTTLPhysio:
             plt_xt[-1] + xt_interval, tstamp[-1] + xt_interval, xt_interval
         )
         xt_interval_ex = np.concatenate([l_xt_extend, plt_xt, r_xt_extend])
-        xt_ex_mask = [t in plt_xt for t in xt_interval_ex]
+        # The plotted points within the extended points (a slice; testing
+        # each point for membership in plt_xt was O(N^2))
+        xt_ex_mask = slice(len(l_xt_extend), len(l_xt_extend) + len(plt_xt))
 
         # --- Resample in regular interval ------------------------------------
         try:
@@ -1280,12 +2330,32 @@ class PlotTTLPhysio:
         adjust_period = int(np.round(3 * self.signal_freq))
 
         self._ln_card[0].set_ydata(card)
-        self._set_signal_ylim(self._ax_card, card[-adjust_period:])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            # Adjust ylim
+            ymin = max(
+                smin, np.floor(np.nanmin(card[-adjust_period:]) / 25) * 25
+            )
+            ymax = min(
+                smax, np.ceil(np.nanmax(card[-adjust_period:]) / 25) * 25
+            )
+            if ymax - ymin < 50:
+                if ymin + 50 < smax:
+                    ymax = ymin + 50
+                else:
+                    ymin = ymax - 50
+        if (
+            not np.isnan(ymin)
+            and not np.isinf(ymin)
+            and not np.isnan(ymax)
+            and not np.isinf(ymax)
+        ):
+            self._ax_card.set_ylim((ymin, ymax))
         # endregion
 
         # region: Card filtered
         b = firwin(
-            numtaps=41,
+            numtaps=fir_numtaps(self.signal_freq),
             cutoff=3,
             window="hamming",
             pass_zero="lowpass",
@@ -1296,21 +2366,53 @@ class PlotTTLPhysio:
         card_ex_filtered = lfilter(b, 1, card_ex_filtered)
         card_ex_filtered = np.flipud(card_ex_filtered)
         card_filtered = card_ex_filtered[xt_ex_mask]
-        self._ln_card_flitered[0].set_ydata(card_filtered)
-        self._set_signal_ylim(
-            self._ax_card_filtered, card_filtered[-adjust_period:])
+        self._ln_card_filtered[0].set_ydata(card_filtered)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            # Adjust ylim
+            min_card_filtered = np.nanmin(card_filtered[-adjust_period:])
+            ymin = max(smin, np.floor(min_card_filtered / 25) * 25)
+            max_card_filtered = np.nanmax(card_filtered[-adjust_period:])
+            ymax = min(smax, np.ceil(max_card_filtered / 25) * 25)
+            if ymax - ymin < 50:
+                if ymin + 50 < smax:
+                    ymax = ymin + 50
+                else:
+                    ymin = ymax - 50
+        if (
+            not np.isnan(ymin)
+            and not np.isinf(ymin)
+            and not np.isnan(ymax)
+            and not np.isinf(ymax)
+        ):
+            self._ax_card_filtered.set_ylim((ymin, ymax))
         # endregion
 
         # region: Resp
         self._ln_resp[0].set_ydata(resp)
-        self._set_signal_ylim(self._ax_resp, resp)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            ymin = max(smin, np.floor(np.nanmin(resp) / 25) * 25)
+            ymax = min(smax, np.ceil(np.nanmax(resp) / 25) * 25)
+            if ymax - ymin < 50:
+                if ymin + 50 < smax:
+                    ymax = ymin + 50
+                else:
+                    ymin = ymax - 50
+        if (
+            not np.isnan(ymin)
+            and not np.isinf(ymin)
+            and not np.isnan(ymax)
+            and not np.isinf(ymax)
+        ):
+            self._ax_resp.set_ylim((ymin, ymax))
 
         if self._is_scanning:
-            self._ln_card[0].set_color("r")
-            self._ln_resp[0].set_color("b")
+            self._ln_card[0].set_color(COLORS["magenta"])
+            self._ln_resp[0].set_color(COLORS["yellow"])
         else:
-            self._ln_card[0].set_color("k")
-            self._ln_resp[0].set_color("k")
+            self._ln_card[0].set_color(COLORS["cyan"])
+            self._ln_resp[0].set_color(COLORS["cyan"])
 
         self._canvas.draw()
         self._plt_root.update_idletasks()
@@ -1318,42 +2420,13 @@ class PlotTTLPhysio:
 
         # Set next timer event
         et = (time.time() - st) * 1000
-        after_ms = int(max(10, self._timer_interval_ms - et))
+        # A negative delay makes Tk call _update at once, which redraws
+        # continuously (100% CPU) when drawing takes longer than the interval.
+        # Keep at least 30 ms idle, so that clicks are handled.
+        after_ms = int(max(30, self._timer_interval_ms - et))
         if self._running:
             self._update_after_id = self._plt_root.after(
                 after_ms, self._update)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _set_signal_ylim(self, ax, sig):
-        """Set the y-axis range of a signal plot.
-        Numato records with a 10-bit ADC, so the range is limited to
-        0-ADC_MAX_VALUE.
-        For other devices (e.g., GE), the range follows the signal values.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            sig_min = np.nanmin(sig)
-            sig_max = np.nanmax(sig)
-        if not (np.isfinite(sig_min) and np.isfinite(sig_max)):
-            return
-
-        if self.recorder_type == "Numato":
-            ymin = max(0, np.floor(sig_min / 25) * 25)
-            ymax = min(ADC_MAX_VALUE, np.ceil(sig_max / 25) * 25)
-            if ymax - ymin < 50:
-                if ymin + 50 < ADC_MAX_VALUE:
-                    ymax = ymin + 50
-                else:
-                    ymin = ymax - 50
-        else:
-            if sig_max > sig_min:
-                margin = (sig_max - sig_min) * 0.05
-            else:
-                margin = max(abs(sig_max) * 0.05, 1e-3)
-            ymin = sig_min - margin
-            ymax = sig_max + margin
-
-        ax.set_ylim((ymin, ymax))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def config(self):
@@ -1461,12 +2534,259 @@ class PlotTTLPhysio:
         self.config_win.destroy()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _buffer_times(self):
+        """Return (the oldest time stamp in the buffer, True if the buffer is
+        full, list of scans in the buffer (see find_scans)).
+
+        When the buffer is full, the oldest data are overwritten as new data
+        come, so the oldest time moves on until the data are saved.
+        """
+        if self._rbuf is None or self._rbuf_lock is None:
+            return None, False, []
+        with self._rbuf_lock:
+            tstamp = self._rbuf["tstamp"].get()
+            ttl_onsets = self._rbuf["ttl_onsets"].get()
+        valid = np.isfinite(tstamp) & (tstamp > 0)
+        is_full = bool(valid.all())
+        tstamp = tstamp[valid]
+        if len(tstamp) == 0:
+            return None, False, []
+        oldest = float(np.min(tstamp))
+        ttl_onsets = ttl_onsets[np.isfinite(ttl_onsets)]
+        scans = find_scans(ttl_onsets[ttl_onsets >= oldest])
+        return oldest, is_full, scans
+
     def dump_data(self):
-        if hasattr(self, "_cmd_pipe") and self._cmd_pipe:
-            self._logger.info("Dumping data...")
-            if self._logger.handlers:
-                self._logger.handlers[0].flush()
-            self._cmd_pipe.send("DUMP")
+        """Dump button: choose the start time and confirm, then the
+        recorder process saves the data (progress bar while saving), and
+        the saved period is shown."""
+        if self._dump_pipe is None:
+            return
+        if not hasattr(self, "_dump_req_id"):
+            self._dump_req_id = 0
+        if self._dump_win is not None and self._dump_win.winfo_exists():
+            self._dump_win.lift()
+            return
+
+        oldest, is_full, scans = self._buffer_times()
+        if oldest is None:
+            messagebox.showinfo(
+                "Dump", "No physio data in the buffer.",
+                parent=self._plt_root,
+            )
+            return
+
+        def tstr(t):
+            return datetime.fromtimestamp(t).strftime("%H:%M:%S")
+
+        def dstr(sec):
+            return str(timedelta(seconds=int(round(sec))))
+
+        # Start time choices: the oldest data and each scan onset. When the
+        # buffer is full, the oldest data move on, so the start is the
+        # oldest data at the time of saving (onset None), and the time shown
+        # is a guide.
+        if is_full:
+            choices = [(
+                f"Oldest available data (about {tstr(oldest)})", None
+            )]
+        else:
+            choices = [
+                (f"Oldest data in the buffer ({tstr(oldest)})", oldest)
+            ]
+        for ii, (ons, last, n) in enumerate(scans):
+            choices.append((
+                f"Scan {ii + 1}: {tstr(ons)} ({n} TTLs, {dstr(last - ons)})",
+                ons,
+            ))
+
+        win = tk.Toplevel(self._plt_root)
+        self._dump_win = win
+        win.title("Dump physio data")
+        win.transient(self._plt_root)
+        win.resizable(False, False)
+        font = ("Helvetica", 11)
+        frm = tk.Frame(win, padx=12, pady=10)
+        frm.pack(fill="both", expand=True)
+
+        tk.Label(
+            frm, text="Save the buffered physio data from:", font=font
+        ).pack(anchor="w")
+        choice_var = tk.StringVar(value=choices[0][0])
+        combo = ttk.Combobox(
+            frm, textvariable=choice_var, state="readonly", font=font,
+            values=[c[0] for c in choices], width=42,
+        )
+        combo.pack(anchor="w", pady=(4, 4))
+        tk.Label(
+            frm, text="to the latest data, in the folder\n"
+            f"{self.controller.dump_dir}", font=font, justify="left",
+        ).pack(anchor="w")
+
+        btn_frm = tk.Frame(frm)
+        btn_frm.pack(fill="x", pady=(10, 0))
+
+        def cancel():
+            win.destroy()
+
+        def save():
+            onset = dict(choices)[choice_var.get()]
+            self._logger.info(
+                "Dump physio data from "
+                + ("the oldest available data" if onset is None
+                   else datetime.fromtimestamp(onset).isoformat())
+            )
+            # Each request has an id, so that a late result of an earlier
+            # request (after its timeout) is not shown as this one's
+            self._dump_req_id += 1
+            req_id = self._dump_req_id
+            self._dump_pipe.send(("DUMP", onset, req_id))
+
+            # Progress view
+            for w in frm.winfo_children():
+                w.destroy()
+            tk.Label(
+                frm, text="Saving the physio data ...", font=font
+            ).pack(anchor="w")
+            pbar = ttk.Progressbar(frm, mode="indeterminate", length=320)
+            pbar.pack(fill="x", pady=8)
+            pbar.start(15)
+            win.protocol("WM_DELETE_WINDOW", lambda: None)
+            self._wait_dump_result(win, frm, pbar, time.time(), req_id)
+
+        tk.Button(btn_frm, text="Cancel", command=cancel, font=font,
+                  width=8).pack(side=tk.RIGHT, padx=(6, 0))
+        tk.Button(btn_frm, text="Save", command=save, font=font,
+                  width=8).pack(side=tk.RIGHT)
+
+        # Put the dialog over the plot window
+        win.update_idletasks()
+        x = self._plt_root.winfo_rootx() + 20
+        y = self._plt_root.winfo_rooty() + 40
+        win.geometry(f"+{x}+{y}")
+        win.grab_set()
+
+    def _wait_dump_result(self, win, frm, pbar, start_t, req_id,
+                          timeout=600):
+        """Poll the result of dump request req_id from the recorder
+        process. Results of earlier requests (arriving after their timeout)
+        are logged and skipped."""
+        if not win.winfo_exists():
+            return
+        result = None
+        while result is None and self._dump_pipe.poll():
+            msg = self._dump_pipe.recv()
+            if len(msg) >= 3 and msg[2] == req_id:
+                result = msg
+            else:
+                self._logger.info(
+                    f"Late result of an earlier dump request: {msg[:2]}")
+        if result is None and time.time() - start_t > timeout:
+            result = ("DUMP_FAILED", "No response from the recorder.")
+        if result is None:
+            win.after(200, self._wait_dump_result, win, frm, pbar, start_t,
+                      req_id)
+            return
+
+        pbar.stop()
+        for w in frm.winfo_children():
+            w.destroy()
+        font = ("Helvetica", 11)
+        if result[0] == "DUMP_DONE":
+            info = result[1]
+            t0 = datetime.fromtimestamp(info["onset"])
+            t1 = datetime.fromtimestamp(info["offset"])
+            dur = timedelta(seconds=int(round(info["offset"] - info["onset"])))
+            msg = (
+                f"Saved {dur} (h:mm:ss) of physio data\n"
+                f"from {t0.strftime('%Y-%m-%d %H:%M:%S')}"
+                f" to {t1.strftime('%H:%M:%S')}.\n\n"
+                f"File: {info['path']}"
+            )
+            fg = COLORS["fg"]
+        else:
+            msg = f"Failed to save the physio data.\n{result[1]}"
+            fg = COLORS["red"]
+        tk.Label(frm, text=msg, font=font, justify="left", fg=fg,
+                 wraplength=520).pack(anchor="w")
+        tk.Button(frm, text="OK", command=win.destroy, font=font,
+                  width=8).pack(anchor="e", pady=(10, 0))
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    TTL_ALARM_INTERVAL_MS = 3000  # Alarm sound interval while the dialog is open
+
+    def show_ttl_alarm(self, message):
+        """Open the missing TTL warning dialog. The alarm sounds every
+        TTL_ALARM_INTERVAL_MS until the dialog is closed."""
+        win = getattr(self, "_ttl_alarm_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return
+        if getattr(self, "_alarm", None) is None:
+            self._alarm = AlarmSound()
+
+        c = gui_theme.COLORS
+        win = tk.Toplevel(self._plt_root)
+        self._ttl_alarm_win = win
+        win.title("TTL missing")
+        win.attributes("-topmost", True)
+        win.configure(highlightthickness=3, highlightbackground=c["red"],
+                      highlightcolor=c["red"])
+        frm = tk.Frame(win, padx=20, pady=16)
+        frm.pack(fill="both", expand=True)
+        tk.Label(frm, text="⚠  NO TTL FROM THE SCANNER", fg=c["red"],
+                 font=("Helvetica", 16, "bold")).pack(anchor="w")
+        tk.Label(frm, text=message, font=("Helvetica", 12), justify="left",
+                 wraplength=520).pack(anchor="w", pady=(10, 14))
+        tk.Button(frm, text="OK", font=("Helvetica", 12), width=10,
+                  command=win.destroy).pack(anchor="e")
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+        # Center on the primary screen
+        win.update_idletasks()
+        x0, y0, sw, sh = screen_area()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        win.geometry(f"+{x0 + (sw - w) // 2}+{y0 + (sh - h) // 3}")
+
+        def beep():
+            if win.winfo_exists():
+                self._alarm.play(tk_widget=win)
+                win.after(self.TTL_ALARM_INTERVAL_MS, beep)
+
+        beep()
+
+    def show_physio_alarm(self, message):
+        """Open the physio signal warning dialog (one alarm
+        sound)."""
+        win = getattr(self, "_physio_alarm_win", None)
+        if win is not None and win.winfo_exists():
+            win.destroy()
+        if getattr(self, "_alarm", None) is None:
+            self._alarm = AlarmSound()
+
+        c = gui_theme.COLORS
+        win = tk.Toplevel(self._plt_root)
+        self._physio_alarm_win = win
+        win.title("Physio signal problem")
+        win.attributes("-topmost", True)
+        win.configure(highlightthickness=3, highlightbackground=c["red"],
+                      highlightcolor=c["red"])
+        frm = tk.Frame(win, padx=20, pady=16)
+        frm.pack(fill="both", expand=True)
+        tk.Label(frm, text="⚠  PHYSIO SIGNAL PROBLEM", fg=c["red"],
+                 font=("Helvetica", 16, "bold")).pack(anchor="w")
+        tk.Label(frm, text=message, font=("Helvetica", 12), justify="left",
+                 wraplength=520).pack(anchor="w", pady=(10, 14))
+        tk.Button(frm, text="OK", font=("Helvetica", 12), width=10,
+                  command=win.destroy).pack(anchor="e")
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+
+        win.update_idletasks()
+        x0, y0, sw, sh = screen_area()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        win.geometry(f"+{x0 + (sw - w) // 2}+{y0 + (sh - h) // 3}")
+        self._alarm.play(tk_widget=win)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show(self):
@@ -1515,6 +2835,15 @@ class PlotTTLPhysio:
                 left=left, right=right, top=top, bottom=bottom
             )
 
+            # When the Tk scaling is not 96 dpi, matplotlib draws the figure
+            # slightly smaller than the canvas, and the strip outside it
+            # keeps the image drawn at the earlier size. Clear the image;
+            # the timer update draws the figure again.
+            try:
+                self._canvas._tkphoto.blank()
+            except Exception:
+                pass
+
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
@@ -1550,7 +2879,7 @@ class RtPhysio:
         rpc_socket_name="RtTTLPhysioSocketServer",
         rt_mri_main_address_name=["localhost", None, "RtMriMainSocketServer"],
         config_path=Path.home() / ".RTPSpy" / "rtmri_config.json",
-        geometry="610x570+1025+0",
+        geometry=None,
         disable_close=False,
         **kwargs,
     ):
@@ -1569,7 +2898,8 @@ class RtPhysio:
         rt_mri_main_address_name : list, optional
             RtMRIMain RPC address and socket name.
         geometry : str, optional
-            Plot window position. The default is "610x570+1025+0".
+            Plot window geometry (WxH+X+Y). The default (None) fits it to
+            the screen.
         disable_close : bool, optional
             Disable close button. The default is False.
         save_ttl : bool, optional
@@ -1584,9 +2914,13 @@ class RtPhysio:
         # --- Initialize parameters ---
         self.buf_len_sec = buf_len_sec
         self.sample_freq = sample_freq
+        self._numato_sample_freq = sample_freq
         self.save_ttl = save_ttl
         self.sim_card_f = None
         self.sim_resp_f = None
+        self.sim_bids_f = None  # BIDS physio file for the Dummy device
+        # (min, max) of the Dummy signals, for the plot range
+        self._sim_signal_range = None
 
         config_path = Path(config_path)
         self.rt_mri_main_com = RPCSocketCom(
@@ -1612,9 +2946,21 @@ class RtPhysio:
         self._rec_proc = None  # Signal recording process
         self._rec_proc_pipe = None
 
-        # Clear shared memory buffers
+        # Clear shared memory buffers left by processes that have ended.
+        # The files of a running process (e.g., another instance) are kept:
+        # deleting them broke its readers (the motion monitor).
         dir_path = Path("/dev/shm")
         for rm_f in dir_path.glob("rtmri_physio_*"):
+            ma = re.match(r"rtmri_physio_(\d+)_", rm_f.name)
+            if ma is None:
+                continue
+            try:
+                os.kill(int(ma.group(1)), 0)
+                continue  # The process is running
+            except ProcessLookupError:
+                pass  # Ended
+            except PermissionError:
+                continue  # Running, of another user
             try:
                 rm_f.unlink()
             except Exception:
@@ -1624,6 +2970,29 @@ class RtPhysio:
         self._scan_onset = SharedMemoryRingBuffer(1, initial_value=-1.0)
         self.inScan = False  # Flag for in-scan mode
         self.fname_fmt = "./physio.tsv"
+        # Files written by the automatic save (scan end detected from TTL),
+        # keyed by fname_fmt. A later SAVE_PHYSIO_DATA for the same file
+        # name replaces them, so that one scan has one set of files.
+        self._auto_saved = {}
+        # save_physio_data runs in the RPC thread (SAVE_PHYSIO_DATA) and in
+        # the mainloop thread (automatic save at the TTL end, dump). One at
+        # a time, so that a save that replaces the automatic save finds it.
+        self._save_lock = threading.RLock()
+        self._scan_start_time = None  # time.time() of START_SCAN
+        self._no_ttl_warned = False
+        # fMRI series in progress (START_SCAN to END_SCAN from the DICOM
+        # monitor), and its volumes: (acquisition time or None, arrival
+        # time, TR) from FMRI_VOLUME
+        self._series_active = False
+        self._fmri_vols = deque(maxlen=10)
+        # Physio signal states already warned {(session, state)}
+        self._physio_warned = set()
+        self._ttl_alarm_done = False
+        # A series (any type) started: (time, study UID, series number,
+        # description), checked by _check_no_ttl_at_all. Studies already
+        # warned of.
+        self._mri_series = None
+        self._no_ttl_warned_studies = set()
 
         # Prepare data buffer files for sharing among multiple processes
         # Buffer names for sharing data across processes
@@ -1650,6 +3019,10 @@ class RtPhysio:
         self.dump_dir.mkdir(exist_ok=True)
         self._logger.info(f"Dump directory: {self.dump_dir}")
 
+        # Ring buffers are created even if no device is available, so that
+        # the plot and the RPC commands work without a device.
+        self._init_ring_buffers()
+
         # Set device and start recording
         self.set_device(device)
 
@@ -1665,15 +3038,18 @@ class RtPhysio:
                     pass
 
         buf_len = self.buf_len_sec * self.sample_freq
-        self._rbuf = {}
+        # Make all buffers first and then set self._rbuf at once, so that
+        # GET_RBUF in the RPC thread never returns a partial set.
+        rbuf = {}
         for label in self._rbuf_names:
             if label == "tstamp":
                 initial_value = 0.0
             else:
                 initial_value = np.nan
-            self._rbuf[label] = SharedMemoryRingBuffer(
+            rbuf[label] = SharedMemoryRingBuffer(
                 buf_len, initial_value=initial_value
             )
+        self._rbuf = rbuf
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_device(self, device=None):
@@ -1708,11 +3084,21 @@ class RtPhysio:
                         break
 
                 elif dev == "GE":
-                    recorder_type = dev
-                    break
+                    # In auto selection, the port must send GE packets.
+                    if not GEPhysioRecording.is_device_available(
+                        probe=device is None
+                    ):
+                        self._logger.debug("GE physio port not available.")
+                        continue
+                    else:
+                        recorder_type = dev
+                        break
 
                 elif dev == "Dummy":
                     if (
+                        self.sim_bids_f is not None
+                        and self.sim_bids_f.is_file()
+                    ) or (
                         self.sim_card_f is not None
                         and self.sim_card_f.is_file()
                         and self.sim_resp_f is not None
@@ -1732,7 +3118,7 @@ class RtPhysio:
 
         if recorder_type is None and device != "NULL":
             self._logger.warning(
-                "No suitable device found. Defaulting to NULL."
+                "No suitable device was found. The NULL device is used."
             )
             return
 
@@ -1741,6 +3127,18 @@ class RtPhysio:
             return
         else:
             self._recorder_type = recorder_type
+
+        # Recording frequency depends on the device
+        if self._recorder_type == "GE":
+            self.sample_freq = GEPhysioRecording.SAMPLE_FREQ
+        elif self._recorder_type == "Numato":
+            self.sample_freq = self._numato_sample_freq
+        self._logger.info(
+            f"Recording device: {self._recorder_type}, "
+            f"{self.sample_freq} Hz"
+        )
+        # The plot process can be made before the device is chosen
+        self._plot_send(("SET_TITLE", self._recorder_type))
 
         if self._recorder_type is not None:
             self._logger.debug(
@@ -1778,7 +3176,11 @@ class RtPhysio:
                 sample_freq=self.sample_freq,
             )
         elif device_type == "GE":
-            return None
+            return GEPhysioRecording(
+                ttl_onset_que=self._ttl_onset_que,
+                ttl_offset_que=self._ttl_offset_que,
+                physio_que=self._physio_que,
+            )
         elif device_type == "Dummy":
             return DummyRecording(
                 ttl_onset_que=self._ttl_onset_que,
@@ -1787,6 +3189,7 @@ class RtPhysio:
                 sim_card_f=self.sim_card_f,
                 sim_resp_f=self.sim_resp_f,
                 sample_freq=self.sample_freq,
+                sim_bids_f=self.sim_bids_f,
             )
         elif device_type == "NULL":
             return None
@@ -1796,6 +3199,33 @@ class RtPhysio:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # getter, setter
+    @property
+    def signal_range(self):
+        if self._recorder_type == "GE":
+            return GEPhysioRecording.SIGNAL_RANGE
+        elif (
+            self._recorder_type == "Dummy"
+            and self._sim_signal_range is not None
+        ):
+            return self._sim_signal_range
+        else:
+            return (0, ADC_MAX_VALUE)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_sim_signal_range(self, *signals):
+        """Set the plot range from the Dummy signals. Recorded signals (e.g.,
+        GE int16 values) can be outside the Numato ADC range."""
+        vals = [np.asarray(v, dtype=float).ravel() for v in signals
+                if v is not None]
+        vals = np.concatenate(vals) if vals else np.array([])
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0 or vals.min() == vals.max():
+            self._sim_signal_range = None
+        else:
+            self._sim_signal_range = (
+                float(np.floor(vals.min())), float(np.ceil(vals.max()))
+            )
+
     @property
     def scan_onset(self):
         return self._scan_onset.get()[0]
@@ -1831,11 +3261,10 @@ class RtPhysio:
         if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
             config = {
                 "signal_freq": self.sample_freq,
-                "recorder_type": self._recorder_type,
+                "signal_range": self.signal_range,
             }
             self._logger.debug(f"Sending plot config: {config}")
-            self._plot_proc_pipe.send("RESET")
-            self._plot_proc_pipe.send(config)
+            self._plot_send(("RESET", config))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def is_recording(self):
@@ -1872,14 +3301,57 @@ class RtPhysio:
                 signal_freq=self.sample_freq,
                 plot_len_sec=self.plot_len_sec,
                 disable_close=self.disable_close,
+                signal_range=self.signal_range,
             )
 
         self._plot_proc_pipe, cmd_pipe = Pipe()
+        # Dump requests from the dump button and their results
+        self._dump_pipe, dump_pipe = Pipe()
+        # Replies of the plot to GET_GEOMETRY/GET_WINDOW_STATE (see
+        # _plot_request)
+        self._plot_reply_pipe, reply_pipe = Pipe(duplex=False)
+        # The RPC thread and the mainloop thread both send to the plot.
+        self._plot_send_lock = threading.Lock()
+        self._plot_request_lock = threading.Lock()
         self._plot_proc = Process(
             target=self._plot.run,
-            args=(cmd_pipe, self._rbuf_lock, self._rbuf),
+            args=(cmd_pipe, self._rbuf_lock, self._rbuf, dump_pipe,
+                  reply_pipe),
         )
         self._plot_proc.start()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _plot_send(self, msg):
+        """Send a command to the plot process (thread-safe). Returns False
+        if there is no plot or the pipe is broken."""
+        pipe = getattr(self, "_plot_proc_pipe", None)
+        if not pipe:
+            return False
+        try:
+            with self._plot_send_lock:
+                pipe.send(msg)
+            return True
+        except (OSError, EOFError, ValueError) as e:
+            self._logger.error(f"Failed to send {msg!r} to the plot: {e}")
+            return False
+
+    def _plot_request(self, cmd, timeout=2.0):
+        """Send cmd and return the plot's reply, or None if there is no
+        reply within timeout (e.g., the plot is not running yet)."""
+        reply = getattr(self, "_plot_reply_pipe", None)
+        if reply is None:
+            return None
+        with self._plot_request_lock:
+            try:
+                while reply.poll():  # Drop a late reply to an earlier call
+                    reply.recv()
+                if not self._plot_send(cmd):
+                    return None
+                if reply.poll(timeout):
+                    return reply.recv()
+            except (OSError, EOFError) as e:
+                self._logger.error(f"No reply from the plot to {cmd}: {e}")
+        return None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_plot(self):
@@ -1889,7 +3361,7 @@ class RtPhysio:
         if self._plot_proc.is_alive():
             try:
                 # Send stop message to exit gracefully
-                self._plot_proc_pipe.send("QUIT")
+                self._plot_send("QUIT")
                 # Wait briefly for graceful exit
                 self._plot_proc.join(timeout=1.0)
             except (BrokenPipeError, EOFError):
@@ -1972,8 +3444,10 @@ class RtPhysio:
                         "Receive QUIT in _run_recording. Break recording loop."
                     )
                     break
-                elif cmd == "PULSE":
-                    _recorder_pipe.send("PULSE")
+                elif cmd == "PULSE" or (
+                    type(cmd) is tuple and cmd[0] == "PULSE"
+                ):
+                    _recorder_pipe.send(cmd)
                 elif cmd == "WAIT_TTL_ON":
                     self.wait_ttl_on = True
                 elif cmd == "WAIT_TTL_OFF":
@@ -2099,15 +3573,109 @@ class RtPhysio:
         return ttl_onsets
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def save_physio_data(
+    def _warn_physio_signal(self, fname_fmt, sig):
+        """Show a warning dialog when the respiration or the cardiac signal
+        is weak or missing in a scan of a subject. Once per session for the
+        same state of the signals."""
+        state = (sig["respiratory"], sig["cardiac"])
+        if state == ("ok", "ok"):
+            return
+        name = Path(fname_fmt).name
+        ma = re.search(r"_ses-([^_]+)", name)
+        key = (ma.group(1) if ma else name, state)
+        if key in self._physio_warned:
+            return
+        self._physio_warned.add(key)
+        run = re.sub(r"_physio\.tsv$", "", name)
+        text = {
+            ("respiratory", "none"): "RESPIRATION: not detected. Check the "
+            "respiration belt.",
+            ("respiratory", "weak"): "RESPIRATION: weak. The belt may be "
+            "loose or out of place; check its position and tightness.",
+            ("cardiac", "none"): "CARDIAC: not detected. Check the pulse "
+            "oximeter (PPG) or the ECG leads.",
+            ("cardiac", "weak"): "CARDIAC: weak. The pulse sensor may be "
+            "loose or poorly placed.",
+            ("respiratory", "irregular"): "RESPIRATION: irregular (no "
+            "regular breathing cycle). Check for movement, and that the "
+            "belt is not too tight (clipped signal).",
+            ("cardiac", "irregular"): "CARDIAC: irregular (no regular "
+            "pulse; noise). Check the pulse sensor contact or the ECG "
+            "leads.",
+        }
+        lines = [text[(k, sig[k])] for k in ("respiratory", "cardiac")
+                 if sig[k] != "ok"]
+        if state == ("none", "none"):
+            lines.append("The physio data of this scan were NOT saved.")
+        msg = ("\n".join(lines)
+               + f"\n\nScan: {run}\n(respiration std {sig['resp_std']}, "
+               f"periodicity {sig['resp_periodicity']}; cardiac std "
+               f"{sig['card_std']}, periodicity {sig['card_periodicity']})"
+               "\n\nThis warning is not shown again in this session for "
+               "the same state.")
+        self._logger.warning("Physio signal: " + " ".join(lines))
+        self._plot_send(("PHYSIO_ALARM", msg))
+
+    def save_physio_data(self, *args, **kwargs):
+        """Save the physio data of a scan (see _save_physio_data). Saves
+        are serialized."""
+        with self._save_lock:
+            return self._save_physio_data(*args, **kwargs)
+
+    def _save_physio_data(
         self,
         onset=None,
         len_sec=None,
         fname_fmt="./physio.tsv",
         resample_regular_interval=True,
         nosignal_nosave=True,
+        auto=False,
+        whole_buffer=False,
+        est_onset=None,
+        est_tol=None,
+        is_phantom=None,
     ):
+        """Save the physio data of a scan.
+
+        auto : bool
+            True for the automatic save at the scan end detected from TTL.
+            A later save with the same fname_fmt and auto=False (e.g.,
+            SAVE_PHYSIO_DATA from rt_dicom_monitor) overwrites the files of
+            the automatic save instead of adding new ones.
+        whole_buffer : bool
+            True to save the whole buffer, ignoring the scan onset (the dump
+            button). Otherwise, the data are cut at the last scan onset.
+        est_onset, est_tol : float
+            Scan onset estimated from the DICOM times by the DICOM monitor
+            (the scan end minus the series duration), and its tolerance (s).
+            It is used when the onset from the TTLs is not set or differs
+            from it by more than est_tol (e.g., no TTL in this scan, and the
+            onset of an earlier scan remains). The onset used is recorded
+            in the log and in the JSON (ScanOnsetSource).
+        is_phantom : bool or None
+            From the DICOM monitor. False (a subject): a warning dialog is
+            shown when the respiration or the cardiac signal is missing.
+            None (e.g., the automatic save): no dialog.
+        """
+        scan_onset = 0 if whole_buffer else self.scan_onset
+        onset_source = "TTL"
+        if not whole_buffer and est_onset is not None:
+            tol = est_tol if est_tol is not None else 10.0
+            if scan_onset <= 0 or abs(scan_onset - est_onset) > tol:
+                ttl_str = (datetime.fromtimestamp(scan_onset).isoformat()
+                           if scan_onset > 0 else "none")
+                self._logger.warning(
+                    f"The scan onset was not found from the TTLs (TTL onset: "
+                    f"{ttl_str}). Using the onset estimated from the DICOM "
+                    f"times: {datetime.fromtimestamp(est_onset).isoformat()}"
+                )
+                scan_onset = est_onset
+                onset_source = "DICOM time (estimated)"
+        elif scan_onset <= 0:
+            onset_source = None
+
         # region: Get data ----------------------------------------------------
+        wait_end = None  # Limit of waiting for the data until the scan end
         while True:
             data = self.dump()
             if data is None:
@@ -2120,8 +3688,8 @@ class RtPhysio:
 
             if onset is None:
                 onset = tstamp[0]
-                if self.scan_onset > 0 and self.scan_onset > onset:
-                    onset = self.scan_onset - 1
+                if scan_onset > 0 and scan_onset > onset:
+                    onset = scan_onset - 1
                     # Save from 1 second before the scan onset
 
             # Always ensure we don't exceed buffer capacity or create
@@ -2139,23 +3707,68 @@ class RtPhysio:
                 # invalid TTL events at timestamp 0 at the source
                 onset = buffer_limited_onset
 
+            scan_end = None
             if len_sec is not None:
-                if self.scan_onset > 0 and self.scan_onset > onset:
-                    offset = self.scan_onset + len_sec + 1
+                if scan_onset > 0 and scan_onset > onset:
+                    scan_end = scan_onset + len_sec
+                    offset = scan_end + 1
                     # Save until 1 second after the scan offset
                 else:
                     offset = onset + len_sec
                 if tstamp[-1] < offset + 2:
-                    time.sleep(1)
-                    continue
+                    # Wait for the data until the scan end. If no data come
+                    # (e.g., the device stopped), save what is there after
+                    # a limit, rather than waiting forever (this runs in the
+                    # RPC thread and would block all later calls).
+                    if wait_end is None:
+                        wait_end = (time.time()
+                                    + max(0.0, offset + 2 - tstamp[-1])
+                                    + 10.0)
+                    if time.time() < wait_end:
+                        time.sleep(1)
+                        continue
+                    self._logger.warning(
+                        "Physio data did not reach the scan end "
+                        f"({datetime.fromtimestamp(offset).isoformat()}). "
+                        "Saving the data recorded until "
+                        f"{datetime.fromtimestamp(tstamp[-1]).isoformat()}."
+                    )
+                    offset = tstamp[-1]
             else:
                 offset = tstamp[-1]
+                if scan_onset > 0:
+                    # Scan end is not given (e.g., saved when TTL stopped).
+                    # Use the last TTL of the scan plus the median interval.
+                    scan_ttl = data["ttl_onsets"]
+                    scan_ttl = np.sort(
+                        scan_ttl[scan_ttl >= scan_onset]
+                    )
+                    if len(scan_ttl) > 1:
+                        scan_end = scan_ttl[-1] + np.median(
+                            np.diff(scan_ttl[-10:])
+                        )
+                        offset = min(offset, scan_end + 1)
+
+            if scan_end is not None:
+                # The margin after the scan ends just before the first TTL
+                # of the next scan, if that comes within 1 second.
+                next_ttl = data["ttl_onsets"]
+                next_ttl = next_ttl[
+                    (next_ttl >= scan_end) & (next_ttl < offset)
+                ]
+                if len(next_ttl):
+                    offset = float(np.min(next_ttl))
+                    self._logger.info(
+                        "The next scan starts "
+                        f"{offset - scan_end:.3f} s after the end of this "
+                        "scan. The data are saved until just before it."
+                    )
 
             break
 
         # Add debug logging for onset/offset values
         self._logger.info(
-            "Save physio data"
+            "Saving physio data"
             f" from {datetime.fromtimestamp(onset).isoformat()}"
             f" for {timedelta(seconds=offset - onset)}"
         )
@@ -2181,10 +3794,10 @@ class RtPhysio:
         ttl_onsets = ttl_onsets[ttl_onsets > buffer_limited_onset]
 
         # Filter TTL data based on scan onset if available
-        if self.scan_onset > 0:
+        if scan_onset > 0:
             # If scan onset is set, filter relative to scan start
             ttl_onsets = ttl_onsets[
-                (ttl_onsets >= self.scan_onset) & (ttl_onsets < offset)
+                (ttl_onsets >= scan_onset) & (ttl_onsets < offset)
             ]
         else:
             # If scan onset is not set, use the original onset/offset range
@@ -2197,6 +3810,10 @@ class RtPhysio:
         if not save_path.exists():
             save_path.mkdir(parents=True, exist_ok=True)
 
+        save_key = str(Path(fname_fmt).resolve())
+        replace = {} if auto else self._auto_saved.pop(save_key, {})
+        written = {}
+
         if self.save_ttl:
             # region: Save TTL onsets -----------------------------------------
             if len(ttl_onsets) > 0:
@@ -2206,25 +3823,21 @@ class RtPhysio:
                     for ons in ttl_onsets
                 ]
                 # Set TimefromScanOnset only if scan onset is properly set
-                if self.scan_onset > 0:
+                if scan_onset > 0:
                     ttl_onset_df["TimefromScanOnset"] = (
-                        ttl_onsets - self.scan_onset
+                        ttl_onsets - scan_onset
                     )
 
                 # Set filename
                 ttl_onset_stem = Path(fname_fmt).stem.replace(
                     "physio", "PulseOnset"
                 )
-                ttl_onset_fname = save_path / (ttl_onset_stem + ".tsv")
-                # Rotate filename
-                ii = 0
-                while ttl_onset_fname.is_file():
-                    ii += 1
-                    ttl_onset_fname = (
-                        save_path / ttl_onset_fname.stem + f"_{ii}.tsv"
-                    )
+                ttl_onset_fname = self._output_path(
+                    save_path / (ttl_onset_stem + ".tsv"), "onset", replace
+                )
                 # Save DataFrame to TSV
                 ttl_onset_df.to_csv(ttl_onset_fname, sep="\t")
+                written["onset"] = ttl_onset_fname
             # endregion
 
             # region: Save TTL offsets ----------------------------------------
@@ -2236,10 +3849,10 @@ class RtPhysio:
                 ttl_offsets = ttl_offsets[ttl_offsets > buffer_limited_onset]
 
                 # Filter TTL offset data based on scan onset if available
-                if self.scan_onset > 0:
+                if scan_onset > 0:
                     # If scan onset is set, filter relative to scan start
                     ttl_offsets = ttl_offsets[
-                        (ttl_offsets >= self.scan_onset)
+                        (ttl_offsets >= scan_onset)
                         & (ttl_offsets < offset)
                     ]
                 else:
@@ -2254,25 +3867,20 @@ class RtPhysio:
                     for ons in ttl_offsets
                 ]
                 # Set TimefromScanOnset only if scan onset is properly set
-                if self.scan_onset > 0:
+                if scan_onset > 0:
                     ttl_offset_df["TimefromScanOnset"] = (
-                        ttl_offsets - self.scan_onset
+                        ttl_offsets - scan_onset
                     )
 
                 # Set filename
                 ttl_offset_stem = Path(fname_fmt).stem.replace(
                     "physio", "PulseOffset"
                 )
-                ttl_offset_fname = save_path / (ttl_offset_stem + ".tsv")
-                # Rotate filename
-                ii = 0
-                while ttl_offset_fname.is_file():
-                    ii += 1
-                    ttl_offset_fname = (
-                        save_path / ttl_offset_fname.stem + f"_{ii}.tsv"
-                    )
-                # Save DataFrame to TSV
+                ttl_offset_fname = self._output_path(
+                    save_path / (ttl_offset_stem + ".tsv"), "offset", replace
+                )
                 ttl_offset_df.to_csv(ttl_offset_fname, sep="\t")
+                written["offset"] = ttl_offset_fname
             # endregion
 
         # region: Clean and resample physio data ------------------------------
@@ -2324,33 +3932,29 @@ class RtPhysio:
                 errstr = str(e) + "\n" + traceback.format_exc()
                 self._logger.error(errstr)
         else:
-            tmask = (tstamp >= onset) & (tstamp <= offset)
+            tmask = (tstamp >= onset) & (tstamp < offset)
             save_card = data["card"][tmask]
             save_resp = data["resp"][tmask]
             tstamp = tstamp[tmask]
 
         # endregion
 
+        sig = None
         if nosignal_nosave:
-            # Evaluate the variance of the filtered signal to determine whether
-            # the signal should be saved.
-            # A low variance indicates that no meaningful recording has
-            # occurred.
-            # The Resp signal is used for this check as it typically exhibits
-            # better quality than the Card signal during actual recordings.
-            b = firwin(
-                numtaps=41,
-                cutoff=3,
-                window="hamming",
-                pass_zero="lowpass",
-                fs=self.sample_freq,
-            )
-            resp_filtered = lfilter(b, 1, save_resp, axis=0)
-            resp_filtered = np.flipud(resp_filtered)
-            resp_filtered = lfilter(b, 1, resp_filtered)
-            resp_filtered = np.flipud(resp_filtered)
-            resp_std = np.nanstd(resp_filtered[40:-40])
-            if resp_std < 1:
+            # The data are saved unless both signals are "none"
+            # (check_physio_signals, thresholds per device).
+            sig = check_physio_signals(save_card, save_resp,
+                                       self.sample_freq, self._recorder_type)
+            self._logger.info(
+                f"Physio signal check: respiration {sig['respiratory']} "
+                f"(std {sig['resp_std']}, periodicity "
+                f"{sig['resp_periodicity']}), cardiac {sig['cardiac']} (std "
+                f"{sig['card_std']}, periodicity {sig['card_periodicity']}),"
+                f" thresholds {sig['thresholds']}")
+            if is_phantom is False and (sig["respiratory"] != "ok"
+                                        or sig["cardiac"] != "ok"):
+                self._warn_physio_signal(fname_fmt, sig)
+            if sig["respiratory"] == "none" and sig["cardiac"] == "none":
                 # No saving
                 msg = "Physio data not saved: "
                 msg += "No significant signal changes detected."
@@ -2365,22 +3969,28 @@ class RtPhysio:
         physio_df["respiratory"] = save_resp
         physio_df.index.name = "Time"
 
-        # Add trigger
-        physio_df["trigger"] = 0
-        for ons in ttl_onsets:
-            # Find the closest timestamp to the TTL onset
-            ttl_idx = np.argmin(np.abs(tstamp - ons))
-            if ttl_idx < len(physio_df):
-                physio_df.loc[physio_df.index[ttl_idx], "trigger"] = 1
+        # Add trigger: 1 at the time stamp closest to each TTL onset.
+        # tstamp is sorted, so the closest one is found by searchsorted
+        # (the same as argmin(|tstamp - onset|), but fast for long data).
+        trigger = np.zeros(len(physio_df), dtype=int)
+        if len(ttl_onsets) and len(tstamp):
+            if len(tstamp) == 1:
+                ttl_idx = np.zeros(len(ttl_onsets), dtype=int)
+            else:
+                ttl_idx = np.clip(
+                    np.searchsorted(tstamp, ttl_onsets), 1, len(tstamp) - 1
+                )
+                left = np.abs(ttl_onsets - tstamp[ttl_idx - 1])
+                right = np.abs(tstamp[ttl_idx] - ttl_onsets)
+                ttl_idx = np.where(left <= right, ttl_idx - 1, ttl_idx)
+            ttl_idx = ttl_idx[ttl_idx < len(physio_df)]
+            trigger[ttl_idx] = 1
+        physio_df["trigger"] = trigger
 
         # Set filename
-        tsv_path = Path(fname_fmt).with_suffix(".tsv")
-        if tsv_path.is_file():
-            # Rotate filename
-            ii = 0
-            while tsv_path.is_file():
-                ii += 1
-                tsv_path = save_path / (Path(fname_fmt).stem + f"_{ii}.tsv")
+        tsv_path = self._output_path(
+            Path(fname_fmt).with_suffix(".tsv"), "physio", replace
+        )
         json_fname = tsv_path.with_suffix(".json")
 
         # Save
@@ -2389,17 +3999,67 @@ class RtPhysio:
             "SamplingFrequency": self.sample_freq,
             "StartTime": 0,
             "Columns": list(physio_df.columns),
-            "Manufacturer": "BIOPAC",
+            "Manufacturer": {
+                "GE": "GE", "Dummy": "Dummy"
+            }.get(self._recorder_type, "BIOPAC"),
         }
-        if self.scan_onset > 0:
-            metadata["StartTime"] = onset - self.scan_onset
+        if sig is not None:
+            metadata["SignalCheck"] = {
+                k: sig[k] for k in ("respiratory", "cardiac", "resp_std",
+                                    "resp_periodicity", "card_std",
+                                    "card_periodicity")}
+        if scan_onset > 0:
+            metadata["StartTime"] = onset - scan_onset
+            if not whole_buffer and onset_source is not None:
+                metadata["ScanOnsetSource"] = onset_source
+                metadata["ScanOnset"] = datetime.fromtimestamp(
+                    scan_onset).isoformat()
 
         with open(json_fname, "w") as f:
             json.dump(metadata, f)
 
+        written["physio"] = tsv_path
         self._logger.info(
             f"Physio data has been saved to {tsv_path.resolve()}")
+
+        if auto:
+            self._auto_saved[save_key] = written
+        elif replace:
+            # Remove files of the automatic save that were not rewritten
+            for kind, path in replace.items():
+                if kind in written:
+                    continue
+                stale = [path]
+                if kind == "physio":
+                    stale.append(path.with_suffix(".json"))
+                for f in stale:
+                    if f.is_file():
+                        f.unlink()
+            self._logger.info(
+                "Replaced the automatically saved files of this scan: "
+                f"{', '.join(str(p.name) for p in replace.values())}"
+            )
         # endregion
+
+        return {"onset": onset, "offset": offset, "path": tsv_path}
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _output_path(path, kind, replace):
+        """Path to write the `kind` output to.
+
+        If the automatic save of the same scan wrote this kind of file, that
+        file is overwritten. Otherwise an existing file is not overwritten,
+        and _1, _2, ... is appended to the file name.
+        """
+        if kind in replace:
+            return Path(replace[kind])
+        path = Path(path)
+        stem, ii = path.stem, 0
+        while path.is_file():
+            ii += 1
+            path = path.with_name(f"{stem}_{ii}{path.suffix}")
+        return path
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _clean_resamp(self, v, tstamp=None):
@@ -2426,10 +4086,27 @@ class RtPhysio:
         return v
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def send_dummy_pulse(self):
+    def _restart_dummy(self):
+        """Start the Dummy device with the current simulation files.
+        It is restarted if it is already running, so that new files are
+        used."""
+        if self._recorder_type == "Dummy":
+            self.stop_recording()
+            self._recorder_type = None
+        self.set_device("Dummy")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def send_dummy_pulse(self, tstamp=None):
+        """Send a TTL pulse to the Dummy device.
+        tstamp: time of the pulse (time.time()). None: the time it arrives.
+        A simulator sends the planned times so that the RPC delay does not
+        change the TTL timing."""
         if self._recorder_type == "Dummy" and self.is_recording():
             self._logger.debug("Sending dummy pulse")
-            self._rec_proc_pipe.send("PULSE")
+            if tstamp is None:
+                self._rec_proc_pipe.send("PULSE")
+            else:
+                self._rec_proc_pipe.send(("PULSE", float(tstamp)))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_scan_onset_bkwd(self, TR=None):
@@ -2441,6 +4118,18 @@ class RtPhysio:
         ttl_onsets = data["ttl_onsets"]
         ttl_onsets = ttl_onsets[~np.isnan(ttl_onsets)]
         if len(ttl_onsets) == 0:
+            return
+
+        if TR is not None:
+            # Walk back from the latest TTL while the TTL pattern of the
+            # scan continues (TTL per volume or per slice; see
+            # find_series_onset).
+            ser_onset = find_series_onset(ttl_onsets, TR)
+            self._logger.info(
+                "Scan onset from the TTL pattern: "
+                f"{datetime.fromtimestamp(ser_onset).isoformat()}"
+            )
+            self.scan_onset = ser_onset
             return
 
         elif len(ttl_onsets) == 1:
@@ -2488,38 +4177,31 @@ class RtPhysio:
                 self.send_dummy_pulse()
 
         elif call == "START_SCAN":
+            self._scan_start_time = time.time()
+            self._no_ttl_warned = False
+            self._series_active = True
+            self._fmri_vols.clear()
+            self._ttl_alarm_done = False
             self.inScan = True
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("SCAN_ON")
+            self._plot_send("SCAN_ON")
 
         elif call == "END_SCAN":
+            self._series_active = False
             self.inScan = False
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("SCAN_OFF")
+            self._plot_send("SCAN_OFF")
 
         elif call == "SHOW":
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("SHOW")
+            self._plot_send("SHOW")
 
         elif call == "HIDE":
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("HIDE")
+            self._plot_send("HIDE")
 
         elif call == "GET_GEOMETRY":
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("GET_GEOMETRY")
-                geometry = self._plot_proc_pipe.recv()
-                return geometry
-            else:
-                return None
+            return self._plot_request("GET_GEOMETRY")
 
         elif call == "GET_WINDOW_STATE":
-            if hasattr(self, "_plot_proc_pipe") and self._plot_proc_pipe:
-                self._plot_proc_pipe.send("GET_WINDOW_STATE")
-                win_state = self._plot_proc_pipe.recv()
-                return win_state
-            else:
-                return "None"
+            state = self._plot_request("GET_WINDOW_STATE")
+            return state if state is not None else "None"
 
         elif call == "GET_SCAN_ONSET":
             if hasattr(self, "_scan_onset") and self._scan_onset is not None:
@@ -2546,8 +4228,28 @@ class RtPhysio:
         elif type(call) is tuple:  # Call with arguments
             try:
                 if call[0] == "SAVE_PHYSIO_DATA":
-                    onset, len_sec, prefix = call[1:]
-                    self.save_physio_data(onset, len_sec, prefix)
+                    # (onset, len_sec, fname_fmt[, est_onset, est_tol,
+                    #  is_phantom])
+                    onset, len_sec, prefix = call[1:4]
+                    est_onset = call[4] if len(call) > 4 else None
+                    est_tol = call[5] if len(call) > 5 else None
+                    is_phantom = call[6] if len(call) > 6 else None
+                    self.save_physio_data(
+                        onset, len_sec, prefix, est_onset=est_onset,
+                        est_tol=est_tol, is_phantom=is_phantom)
+
+                elif call[0] == "FMRI_VOLUME":
+                    # (acquisition time or None, arrival time, TR)
+                    self._fmri_vols.append(tuple(call[1:4]))
+
+                elif call[0] == "MRI_SERIES":
+                    # (study UID, series number, description)
+                    self._mri_series = (time.time(),) + tuple(call[1:4])
+
+                elif call[0] == "TTL_PULSE":
+                    # call[1]: time of the pulse (time.time())
+                    if self._recorder_type == "Dummy":
+                        self.send_dummy_pulse(call[1])
 
                 elif call[0] == "SET_FNAME_FMT":
                     self.fname_fmt = call[1]
@@ -2558,12 +4260,7 @@ class RtPhysio:
 
                 elif call[0] == "SET_GEOMETRY":
                     geometry = call[1]
-                    if (
-                        hasattr(self, "_plot_proc_pipe")
-                        and self._plot_proc_pipe
-                    ):
-                        self._plot_proc_pipe.send("RESIZE")
-                        self._plot_proc_pipe.send(geometry)
+                    self._plot_send(("RESIZE", geometry))
 
                 elif call[0] == "SET_CONFIG":
                     conf = call[1]
@@ -2612,14 +4309,27 @@ class RtPhysio:
                 elif call[0] == "START_DUMMY_FEEDING_WITH_FILES":
                     self.sim_card_f = Path(call[1][0])
                     self.sim_resp_f = Path(call[1][1])
+                    self.sim_bids_f = None
                     self.sample_freq = float(call[1][2])
-                    self.set_device("Dummy")
-                    self.send_dummy_pulse()
+                    sigs = []
+                    for f in (self.sim_card_f, self.sim_resp_f):
+                        try:
+                            sigs.append(np.loadtxt(f))
+                        except Exception:
+                            pass  # DummyRecording reports the error
+                    self._set_sim_signal_range(*sigs)
+                    self._restart_dummy()
 
-                elif call[0] == "GET_RICOR":
-                    tr, nvol = call[1:]
-                    ricor = self.get_retrots(tr, nvol)
-                    return ricor
+                elif call[0] == "START_DUMMY_FEEDING_WITH_BIDS":
+                    # call[1]: BIDS *_physio.tsv[.gz] file
+                    bids = load_bids_physio(call[1])  # Raises if invalid
+                    self.sim_bids_f = Path(call[1])
+                    self.sim_card_f = None
+                    self.sim_resp_f = None
+                    self.sample_freq = bids["SamplingFrequency"]
+                    self._set_sim_signal_range(
+                        bids["cardiac"], bids["respiratory"])
+                    self._restart_dummy()
 
             except Exception as e:
                 errstr = str(e) + "\n" + traceback.format_exc()
@@ -2633,19 +4343,19 @@ class RtPhysio:
 
         while True:
             msg = None
+            # The recording process ends when the device is changed or reset
+            # (stop_recording in the RPC thread, which also closes this
+            # pipe). That must not end this loop: ending it ended the
+            # physio process, and the launcher then stopped all of RT-MRI.
             rec_pipe = self._rec_proc_pipe
             if rec_pipe is not None:
                 try:
                     if rec_pipe.poll():
                         msg = rec_pipe.recv()
                         if msg == "END_RECORDING":
-                            break
-                except (EOFError, OSError):
-                    # The recording process has exited (e.g., no recorder
-                    # device is available) or the pipe was closed by
-                    # stop_recording. Keep the main loop running.
-                    if self._rec_proc_pipe is rec_pipe:
-                        self._rec_proc_pipe = None
+                            self._logger.debug("The recording process ended.")
+                except (OSError, EOFError, ValueError):
+                    pass  # Closed by stop_recording
 
             pipe_available = (
                 self._plot_proc_pipe is not None and
@@ -2659,20 +4369,19 @@ class RtPhysio:
                     break
                 elif msg == "GET_CONFIG":
                     conf = self.get_config()
-                    self._plot_proc_pipe.send(conf)
+                    self._plot_send(conf)
 
                 elif msg == "SET_CONFIG":
                     conf = self._plot_proc_pipe.recv()
                     self.set_config(conf)
 
                 elif msg == "DUMP":
-                    tstr = datetime.now().strftime("%Y%m%dT%H%M%S")
-                    dump_pattern = f"dump_{tstr}_physio.tsv"
-                    dump_filename_fmt = str(self.dump_dir / dump_pattern)
-                    self._logger.info(f"Saving dump files to: {self.dump_dir}")
-                    self.save_physio_data(
-                        fname_fmt=dump_filename_fmt, nosignal_nosave=False
-                    )
+                    # Old dump request (the dump dialog uses _dump_pipe)
+                    self._handle_dump_request(("DUMP", None))
+
+            dump_pipe = getattr(self, "_dump_pipe", None)
+            if dump_pipe is not None and dump_pipe.poll():
+                self._handle_dump_request(dump_pipe.recv())
 
             if self._rpc_pipe is not None and self._rpc_pipe.poll():
                 msg = self._rpc_pipe.recv()
@@ -2681,20 +4390,183 @@ class RtPhysio:
                     break
 
             if self.inScan:
-                # Check pulse interval
-                ttl_onsets = self.get_ttl_onsets(10)
-                if len(ttl_onsets) >= 3:
-                    tr = np.median(np.diff(ttl_onsets))
-                    silent_time = time.time() - ttl_onsets[-1]
-                    if silent_time > max(2 * tr, 2.5):
-                        self._logger.info(
-                            "Detected scan end due to silent TTL."
-                        )
-                        self.inScan = False
-                        self._plot_proc_pipe.send("SCAN_OFF")
-                        self.save_physio_data(None, None, self.fname_fmt)
+                try:
+                    self._check_scan_end()
+                except Exception:
+                    # Do not stop the mainloop (saving and dump)
+                    self._logger.error(
+                        "Error in the scan end check:\n"
+                        + traceback.format_exc()
+                    )
+
+            if self._mri_series is not None:
+                try:
+                    self._check_no_ttl_at_all()
+                except Exception:
+                    self._logger.error(
+                        "Error in the TTL check:\n" + traceback.format_exc()
+                    )
+
+            if self._series_active:
+                try:
+                    self._check_ttl_missing()
+                except Exception:
+                    self._logger.error(
+                        "Error in the TTL check:\n" + traceback.format_exc()
+                    )
 
             time.sleep(1)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    NO_TTL_CHECK_DELAY = 3.0  # s after the series start
+
+    def _check_no_ttl_at_all(self):
+        """Warn when MRI images of a series (any type, e.g., a localizer)
+        come but no TTL has been recorded at all (none in the buffer), or
+        no TTL device is recording. This points to a connection problem,
+        which should be fixed before fMRI. Once per study."""
+        t_series, study, ser_nr, desc = self._mri_series
+        if time.time() - t_series < self.NO_TTL_CHECK_DELAY:
+            return  # Let a TTL that comes with the images arrive
+        self._mri_series = None
+        if study in self._no_ttl_warned_studies:
+            return
+
+        onsets = self.get_ttl_onsets(1)
+        if onsets is not None and len(onsets) > 0:
+            return  # TTLs are recorded
+
+        self._no_ttl_warned_studies.add(study)
+        if onsets is None:
+            reason = ("No TTL recording device is connected "
+                      f"({self._recorder_type}).")
+        else:
+            buf_min = self.buf_len_sec / 60
+            reason = (f"No TTL has been recorded in the last "
+                      f"{buf_min:g} min.")
+        msg = (
+            f"MRI images are arriving (series {ser_nr}: {desc}), but no "
+            f"TTL (scanner pulse) is recorded. {reason}\n\n"
+            "The TTL cable or the Numato board may not be connected. "
+            "Check them before starting fMRI."
+        )
+        self._logger.error(
+            f"No TTL was recorded while series {ser_nr} ({desc}) was "
+            f"being scanned. {reason}")
+        self._plot_send(("TTL_ALARM", msg))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _check_ttl_missing(self):
+        """Warn when fMRI volumes are coming but TTLs are not (e.g., the TTL
+        cable is off or the Numato board is not connected).
+
+        The last two volumes must have been acquired (acquisition time from
+        the DICOM monitor) well after the last TTL. Without the acquisition
+        time, the arrival time is used with a larger margin for the
+        reconstruction delay. A dialog with a repeating alarm sound is
+        shown once per series (see PlotTTLPhysio.show_ttl_alarm).
+        """
+        if self._ttl_alarm_done or len(self._fmri_vols) < 2:
+            return
+        vols = list(self._fmri_vols)[-2:]
+        if time.time() - vols[-1][1] > 60:
+            return  # Volumes have stopped (e.g., aborted series)
+
+        onsets = self.get_ttl_onsets(1)
+        recording = onsets is not None
+        last_ttl = float(onsets[-1]) if recording and len(onsets) else 0.0
+        for acq_t, t_arrival, TR in vols:
+            TR = float(TR) if TR else 2.0
+            margin = max(2 * TR, 3.0) + 2.0
+            if acq_t is not None:
+                t_vol = acq_t
+            else:
+                t_vol = t_arrival
+                margin += 30.0  # Unknown reconstruction delay
+            if t_vol - last_ttl <= margin:
+                return  # A TTL came around this volume
+
+        self._ttl_alarm_done = True
+        if not recording:
+            reason = ("No TTL recording device is connected "
+                      f"({self._recorder_type}).")
+        elif last_ttl > 0:
+            ago = time.time() - last_ttl
+            reason = f"The last TTL was {ago:.0f} s ago."
+        else:
+            reason = "No TTL has been recorded."
+        msg = (
+            "fMRI images are arriving, but no TTL (scanner pulse) is "
+            f"recorded. {reason}\n\n"
+            "Check the TTL cable and the Numato board. Without TTLs, the "
+            "scan onset of the physio data is estimated from the image "
+            "times."
+        )
+        self._logger.error("No TTL during the fMRI series. " + reason)
+        self._plot_send(("TTL_ALARM", msg))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _check_scan_end(self):
+        """Detect the scan end by the TTLs stopping, and save the data.
+
+        Only TTLs of this scan count: the TTLs must still be coming at
+        START_SCAN (sent when the first image of the series arrives, after
+        the first TTLs). Otherwise, the last TTLs of the previous scan would
+        end this scan at once and save the previous data under its name.
+        """
+        ttl_onsets = self.get_ttl_onsets(10)
+        if ttl_onsets is None or len(ttl_onsets) < 3:
+            return  # Not recording, or too few TTLs
+        tr = np.median(np.diff(ttl_onsets))
+        silent_limit = max(2 * tr, 2.5)
+        start_t = self._scan_start_time
+        if start_t is not None and ttl_onsets[-1] < start_t - silent_limit:
+            # No TTL of this scan (yet)
+            if not self._no_ttl_warned and \
+                    time.time() - start_t > 2 * silent_limit:
+                self._logger.warning(
+                    "No TTL during this scan, so the scan end cannot be "
+                    "detected from the TTLs."
+                )
+                self._no_ttl_warned = True
+            return
+        silent_time = time.time() - ttl_onsets[-1]
+        if silent_time > silent_limit:
+            self._logger.debug("Detected scan end due to silent TTL.")
+            self.inScan = False
+            self._plot_send("SCAN_OFF")
+            self.save_physio_data(None, None, self.fname_fmt, auto=True)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _handle_dump_request(self, msg):
+        """("DUMP", onset) from the dump dialog: save the buffer from onset
+        (None: the oldest available data) to the latest data, and send the
+        result back."""
+        if not (isinstance(msg, tuple) and msg[0] == "DUMP"):
+            return
+        onset = msg[1]
+        req_id = msg[2] if len(msg) > 2 else None
+        try:
+            tstr = datetime.now().strftime("%Y%m%dT%H%M%S")
+            fname_fmt = str(self.dump_dir / f"dump_{tstr}_physio.tsv")
+            self._logger.info(f"Saving dump files to: {self.dump_dir}")
+            info = self.save_physio_data(
+                onset=onset, fname_fmt=fname_fmt, nosignal_nosave=False,
+                whole_buffer=True,
+            )
+            if info is None:
+                result = ("DUMP_FAILED", "No data to save (see the log).")
+            else:
+                info["path"] = str(info["path"])
+                result = ("DUMP_DONE", info)
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error(errstr)
+            result = ("DUMP_FAILED", str(e))
+        try:
+            self._dump_pipe.send(result + (req_id,))
+        except Exception:
+            pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end(self):
@@ -2715,18 +4587,28 @@ class RtPhysio:
 # %% main =====================================================================
 if __name__ == "__main__":
     LOG_FILE = (
-        Path(__file__).resolve().parent
+        Path(__file__).resolve().parents[1]
         / "log"
         / f"{Path(__file__).resolve().stem}.log"
     )
     parser = argparse.ArgumentParser(description="RT physio")
     parser.add_argument(
+        "--device",
+        default=None,
+        choices=["Numato", "GE", "Dummy"],
+        help="Recording device. Numato: TTL and physio from the Numato GPIO "
+        "device. GE: physio from the GE serial port and TTL from the Numato "
+        "GPIO device. The default is automatic selection (Numato, GE).",
+    )
+    parser.add_argument(
         "--sample_freq",
+        type=float,
         default=DEFAULT_SAMPLE_FREQ,
         help="sampling frequency (Hz)",
     )
     parser.add_argument(
-        "--buf_len_sec", default=3600, help="recording buffer size (second)"
+        "--buf_len_sec", type=float, default=3600,
+        help="recording buffer size (second)"
     )
     parser.add_argument("--log_file", default=LOG_FILE, help="Log file path")
     parser.add_argument(
@@ -2744,7 +4626,8 @@ if __name__ == "__main__":
         help="RtMRIMain RPC address and socket name",
     )
     parser.add_argument(
-        "--geometry", default="610x570+1025+0", help="Plot window position"
+        "--geometry", default=None,
+        help="Plot window geometry (WxH+X+Y). Default: fit to the screen"
     )
     parser.add_argument(
         "--disable_close", action="store_true", help="Disable close button"
@@ -2757,6 +4640,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
+    device = args.device
     sample_freq = args.sample_freq
     buf_len_sec = args.buf_len_sec
     log_file = args.log_file
@@ -2793,6 +4677,7 @@ if __name__ == "__main__":
 
     # rt_physio model class
     kwarg = {
+        "device": device,
         "buf_len_sec": buf_len_sec,
         "sample_freq": sample_freq,
         "rpc_socket_name": rpc_socket_name,
@@ -2804,8 +4689,10 @@ if __name__ == "__main__":
     }
 
     if debug:
-        card_f = Path("test_data/Physio/P000000/Card_100Hz_ser-12.1D")
-        resp_f = Path("test_data/Physio/P000000/Resp_100Hz_ser-12.1D")
+        card_f = Path(__file__).resolve().parents[1] / "data" / \
+            "test_data/Physio/P000000/Card_100Hz_ser-12.1D"
+        resp_f = Path(__file__).resolve().parents[1] / "data" / \
+            "test_data/Physio/P000000/Resp_100Hz_ser-12.1D"
         card = np.loadtxt(card_f)
         resp = np.loadtxt(resp_f)
         kwarg["debug"] = debug

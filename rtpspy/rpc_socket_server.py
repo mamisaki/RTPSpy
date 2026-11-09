@@ -24,6 +24,10 @@ import time
 import re
 import json
 import subprocess
+import os
+import hmac
+import secrets
+import tempfile
 import tkinter as tk
 from tkinter import simpledialog
 
@@ -61,13 +65,122 @@ def pack_data(data, compress=False):
     return pkl_data
 
 
+# %% Authentication ==========================================================
+# Every message to an RPCSocketServer starts with AUTH_<token>_. The token is
+# a random secret in <config_path>.token, readable only by the user (0600).
+# The servers listen on localhost only, but any local user could connect;
+# without the token, a message is dropped before it is unpickled (unpickling
+# can run arbitrary code).
+_AUTH_PREFIX = b"AUTH_"
+_TOKEN_LEN = 32  # hex characters
+_AUTH_LEN = len(_AUTH_PREFIX) + _TOKEN_LEN + 1
+
+
+def get_rpc_token(config_path):
+    """Return the RPC token, creating <config_path>.token (mode 0600) if it
+    does not exist. Safe when several processes start at once: the file is
+    written to a temporary file and linked into place."""
+    path = Path(config_path).with_suffix(".token")
+    for _ in range(100):
+        try:
+            if path.stat().st_mode & 0o077:
+                os.chmod(path, 0o600)  # Keep it private
+            tok = path.read_text().strip()
+            if len(tok) == _TOKEN_LEN:
+                return tok
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".rpc_token_")
+            try:
+                with os.fdopen(fd, "w") as fid:  # mkstemp makes it 0600
+                    fid.write(secrets.token_hex(_TOKEN_LEN // 2))
+                os.link(tmp, path)
+            except FileExistsError:
+                pass  # Made by another process
+            finally:
+                os.unlink(tmp)
+            continue
+        time.sleep(0.02)
+    raise RuntimeError(f"Cannot read the RPC token in {path}")
+
+
+# %% Message receiving =======================================================
+_PKL_HEADER = re.compile(rb"Z?PKL_(\d+)_")
+
+
+def recv_message(sock, logger, idle_timeout=1.5, max_sec=60.0):
+    """Receive one message from sock.
+
+    Reading stops when the peer closes the connection, when nothing arrives
+    for idle_timeout seconds, when a pickled message (PKL_<size>_ header) is
+    complete, or after max_sec seconds in total. The loop always ends, so an
+    incomplete message (e.g., the sender timed out) cannot hang the caller.
+
+    Returns the received bytes (may be incomplete; see parse_message).
+    """
+    sock.settimeout(idle_timeout)
+    buf = bytearray()
+    need = None
+    t_end = time.time() + max_sec
+    while time.time() < t_end:
+        try:
+            chunk = sock.recv(65536)
+        except socket.timeout:
+            break
+        except OSError as e:
+            logger.error(f"Error receiving data: {e}")
+            break
+        if not chunk:  # Closed by the peer
+            break
+        buf.extend(chunk)
+        # A message to the server starts with the AUTH_<token>_ prefix
+        off = _AUTH_LEN if buf[:len(_AUTH_PREFIX)] == _AUTH_PREFIX else 0
+        if need is None and len(buf) > off and \
+                buf[off:off + 1] in (b"P", b"Z"):
+            ma = _PKL_HEADER.match(bytes(buf[off:off + 32]))
+            if ma:
+                need = off + ma.end() + int(ma.group(1))
+        if need is not None and len(buf) >= need:
+            break
+    return buf
+
+
+def parse_message(buf, logger):
+    """Return the object (pickled message) or str in buf. None if buf is
+    empty, or a pickled message is incomplete or broken."""
+    if not len(buf):
+        return None
+    if buf.startswith(b"PKL_") or buf.startswith(b"ZPKL_"):
+        ma = _PKL_HEADER.match(bytes(buf[:32]))
+        if ma is None:
+            logger.error("Invalid pickle header format")
+            return None
+        dsize = int(ma.group(1))
+        payload = bytes(buf[ma.end():ma.end() + dsize])
+        if len(payload) < dsize:
+            logger.error(
+                f"Incomplete message: {len(payload)} of {dsize} bytes "
+                "received. The message is dropped."
+            )
+            return None
+        try:
+            if buf.startswith(b"Z"):
+                payload = zlib.decompress(payload)
+            return pickle.loads(payload)
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            logger.error(f"Unpickling error: {errstr}")
+            return None
+    return buf.decode(errors="replace")
+
+
 # %% RPCSocketCom =============================================================
 class RPCSocketCom:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, address_name, config_path):
         self.address_name = address_name
-        self.config_path = config_path
+        self.config_path = Path(config_path)
         self._socket_name = address_name[2]
         self._logger = logging.getLogger(self._socket_name)
 
@@ -190,12 +303,13 @@ class RPCSocketCom:
         try:
             sock.settimeout(timeout)
             sock.connect(remote_proc_address)
-        except ConnectionRefusedError:
-            time.sleep(1)
-            if data == 'ping':
-                sock.close()
-                return False, port
+        except OSError:
+            # Refused (not running), timed out (busy or hung), etc. No
+            # wait here: callers that wait for a process sleep themselves,
+            # and a wait here would delay every call to a dead process.
             sock.close()
+            if data == 'ping':
+                return False, port
             return
 
         if data == 'ping':
@@ -209,6 +323,9 @@ class RPCSocketCom:
             return None
 
         if get_return:
+            # Tell the server that the call is complete. Without this, the
+            # server reads until its 1.5 s receive timeout.
+            sock.shutdown(socket.SHUT_WR)
             rcv_data = self.rpc_recv_data(sock)
             if rcv_data is None:
                 errmsg = f'No response for call {data}'
@@ -267,93 +384,40 @@ class RPCSocketCom:
             data = pack_data(data)
         elif type(data) is str:
             data = data.encode("utf-8")
+        try:
+            token = get_rpc_token(self.config_path)
+        except Exception as e:
+            self._logger.error(f"No RPC token: {e}")
+            return False
+        data = _AUTH_PREFIX + token.encode() + b"_" + data
 
         try:
             sock.sendall(data)
             return True
 
-        except BrokenPipeError:
-            self._logger.error("No connection")
+        except OSError as e:  # Broken pipe, timeout, etc.
+            self._logger.error(f"Failed to send data: {e}")
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def rpc_recv_data(self, sock):
+    def rpc_recv_data(self, sock, timeout=10.0):
         """
-        Receive data via a socket connected to the RPCSocketServer.
+        Receive the reply of the RPCSocketServer.
+
+        Parameters
+        ----------
+        timeout : float
+            Seconds to wait for the reply (and between its parts). The
+            server closes the connection after replying, so a complete reply
+            returns at once.
 
         Returns
         -------
-        Received data, if applicable.
+        Received data, or None if there is no (complete) reply.
         """
-        # Receive data loop: Run until data is complete.
-        sock.settimeout(None)
-        serialized_data = bytearray()
-        while True:
-            # Append data in serialized_data until socket.timeout
-            while True:  # Loop until socket.timeout to collect all data
-                try:
-                    recv_data = b""
-                    recv_data = sock.recv(4096)
-                    if not recv_data:
-                        break
-                    serialized_data.extend(recv_data)
-
-                except socket.timeout:
-                    if len(recv_data):
-                        serialized_data.extend(recv_data)
-                    break
-                except BrokenPipeError:
-                    self._logger.error("Connection closed")
-                    break
-                except BlockingIOError:
-                    # No more data available at the moment
-                    time.sleep(0.001)
-                    continue
-                except Exception as e:
-                    errstr = str(e) + "\n" + traceback.format_exc()
-                    self._logger.error(f"Data receiving error: {errstr}")
-                    break
-                time.sleep(0.001)
-
-            # Process the received data
-            data = None
-            if len(serialized_data):
-                if serialized_data.startswith(
-                    "PKL_".encode("utf-8")
-                ) or serialized_data.startswith("ZPKL_".encode("utf-8")):
-                    # Data is pickled
-                    # Get data size
-                    dstr = serialized_data.decode("utf-8", "backslashreplace")
-                    ma = re.search(r"Z*PKL_(\d+)_", dstr)
-                    dsize = int(ma.groups()[0])
-                    prefix = ma.group()
-                    # Check if data is complete
-                    pkldata = serialized_data.replace(
-                        prefix.encode("utf-8"), "".encode("utf-8")
-                    )
-                    if len(pkldata) < dsize:
-                        # Data is not complete.
-                        # Keep the current data in serialized_data and
-                        # continue receiving the remaining data.
-                        continue
-
-                    # Extract pkldata part of the byte string
-                    pkldata = pkldata[:dsize]
-                    try:
-                        # Unpickling the data
-                        if prefix.startswith("Z"):
-                            pkldata = zlib.decompress(pkldata)
-                        data = pickle.loads(pkldata)
-                    except Exception as e:
-                        errstr = str(e) + "\n" + traceback.format_exc()
-                        self._logger.error(errstr)
-                else:
-                    # Assume simple string
-                    data = serialized_data.decode()
-
-            break
-
-        return data
+        buf = recv_message(sock, self._logger, idle_timeout=timeout,
+                           max_sec=max(30.0, timeout))
+        return parse_message(buf, self._logger)
 
 
 # %% class RPCSocketServer ====================================================
@@ -376,6 +440,7 @@ class RPCSocketServer:
     ):
         self._socket_name = socket_name
         self._logger = logging.getLogger(self._socket_name)
+        self._config_path = Path(config_path)
 
         if allow_remote_access:
             host = "0.0.0.0"
@@ -398,6 +463,7 @@ class RPCSocketServer:
         self._logger.debug(f"Server started on port {self.port}")
         self._server._callback = RPC_handler
         self._server._callback_kwargs = handler_kwargs
+        self._server._token = get_rpc_token(self._config_path).encode()
         self._server._cancel = False
         self._server.socket_name = self._socket_name
 
@@ -416,7 +482,7 @@ class RPCSocketServer:
 
         # Start the server on another thread.
         self._server_thread = Thread(
-            target=self._server.serve_forever, args=(0.001,))
+            target=self._server.serve_forever, args=(0.5,))
         # Make the server thread exit when the main thread terminates
         self._server_thread.daemon = True
         self._server_thread.start()
@@ -429,88 +495,22 @@ class RPCSocketServer:
             # --- Initialize ---
             client_addr, port = self.client_address
             self._logger.debug(f"Connected from {client_addr}:{port}")
-            self.request.settimeout(1.5)
-
-            # --- Request handling loop ---
-            # Receive data loop: Run until data is complete.
-            serialized_data = bytearray()
-            while True:
-                # Append data in serialized_data until socket.timeout
-                while True:  # Loop until socket.timeout to collect all data
-                    try:
-                        recv_data = b""
-                        recv_data = self.request.recv(4096)
-                        if not recv_data:
-                            break
-                        serialized_data.extend(recv_data)
-
-                    except socket.timeout:
-                        if len(recv_data):
-                            serialized_data.extend(recv_data)
-                        break
-                    except BrokenPipeError:
-                        self._logger.error(
-                            f"Connection from {client_addr} closed")
-                        break
-                    except BlockingIOError:
-                        # No more data available at the moment
-                        break
-                    except Exception as e:
-                        errstr = str(e) + "\n" + traceback.format_exc()
-                        self._logger.error(f'Data receiving error: {errstr}')
-                        break
-                    time.sleep(0.001)
-
-                # Process the received data
-                data = None
-                if len(serialized_data):
-                    if serialized_data.startswith(
-                        "PKL_".encode("utf-8")
-                    ) or serialized_data.startswith("ZPKL_".encode("utf-8")):
-                        # Data is pickled
-                        # Get data size
-                        dstr = serialized_data.decode(
-                            "utf-8", "backslashreplace"
-                        )
-                        ma = re.search(r"Z*PKL_(\d+)_", dstr)
-                        if ma is None:
-                            self._logger.error("Invalid pickle header format")
-                            break
-                        dsize = int(ma.groups()[0])
-                        prefix = ma.group()
-                        # Check if data is complete
-                        pkldata = serialized_data.replace(
-                            prefix.encode("utf-8"), "".encode("utf-8")
-                        )
-                        if len(pkldata) < dsize:
-                            # Data is not complete.
-                            # Keep the current data in serialized_data and
-                            # continue receiving the remaining data.
-                            continue
-
-                        # Extract pkldata part of the byte string
-                        pkldata = pkldata[:dsize]
-                        try:
-                            # Unpickling the data
-                            if prefix.startswith("Z"):
-                                pkldata = zlib.decompress(pkldata)
-                            data = pickle.loads(pkldata)
-                            self._logger.debug(
-                                f"Received {dsize} byte data"
-                                + f" by {self.server.server_address}"
-                            )
-                        except Exception as e:
-                            errstr = str(e) + "\n" + traceback.format_exc()
-                            self._logger.error(f"Unpickling error: {errstr}")
-                            break
-                    else:
-                        # Assume simple string
-                        data = serialized_data.decode()
-                        self._logger.debug(
-                            f"Received string data: {data[:100]}..."
-                        )
-
-                break
+            # --- Receive one message ---
+            buf = recv_message(self.request, self._logger, idle_timeout=1.5)
+            if len(buf):
+                # Check the token before anything is unpickled
+                expected = _AUTH_PREFIX + self.server._token + b"_"
+                if not hmac.compare_digest(bytes(buf[:_AUTH_LEN]),
+                                           expected):
+                    self._logger.warning(
+                        f"Dropped a message without the RPC token from "
+                        f"{client_addr}:{port}")
+                    return
+                buf = buf[_AUTH_LEN:]
+            data = parse_message(buf, self._logger)
+            if data is not None:
+                self._logger.debug(
+                    f"Received {len(buf)} bytes from {client_addr}")
 
             # Always try to call the callback, even if data is None
             self._logger.debug(f"Calling callback with data: {type(data)}")
@@ -546,7 +546,7 @@ class RPCSocketServer:
                     self._logger.error(f"Callback execution error: {errstr}")
             else:
                 self._logger.error(
-                    "No callback function set or callback is None"
+                    "No callback function is set."
                 )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -563,8 +563,8 @@ class RPCSocketServer:
         """
         Clean up resources and remove the port number from the config file.
         """
-        config_f = Path.home() / ".RTPSpy" / "rtmri_config.json"
-        if config_f.is_file():
+        config_f = getattr(self, "_config_path", None)
+        if config_f is not None and config_f.is_file():
             try:
                 with open(config_f, "r") as fid:
                     rtpspy_config = json.load(fid)
