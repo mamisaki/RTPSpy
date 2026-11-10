@@ -52,7 +52,7 @@ if __name__ == '__main__':
     for attr, val in rtp_params['APP'].items():
         rtp_app.set_param(attr, val)
 
-    rtp_ui = RtpGUI(rtp_app.rtp_objs, {'ROI-NF': rtp_app}, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, {'ROI-NF': rtp_app})
 
     # Load the parameters saved in the previous session
     all_rtp_objs = rtp_app.rtp_objs

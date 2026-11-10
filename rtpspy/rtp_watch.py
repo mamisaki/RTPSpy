@@ -24,7 +24,6 @@ import pydicom
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
-from PyQt5 import QtWidgets
 
 try:
     from .rtp_common import RTP
@@ -56,6 +55,9 @@ class RtpWatch(RTP):
     Refer also to the python watchdog package:
     https://pypi.org/project/watchdog/
     """
+
+    # GUI panel (rtpspy.ui.watch_ui)
+    _ui_class = "watch_ui:RtpWatchUI"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
@@ -826,19 +828,13 @@ class RtpWatch(RTP):
 
         # -- Check value --
         if attr == "enabled":
-            if hasattr(self, "ui_enabled_rdb"):
-                self.ui_enabled_rdb.setChecked(val)
-
-            if hasattr(self, "ui_objs"):
-                for ui in self.ui_objs:
-                    ui.setEnabled(val)
+            self._ui_update(attr, val)
 
         elif attr == "watch_dir":
             if val is None or not Path(val).is_dir():
                 return
 
-            if hasattr(self, "ui_wdir_lnEd"):
-                self.ui_wdir_lnEd.setText(str(val))
+            self._ui_update(attr, val)
 
             val = Path(val)
             setattr(self, attr, val)
@@ -864,8 +860,8 @@ class RtpWatch(RTP):
                 self._logger.error(f"file_type = {val} is not supported")
                 return
 
-            if reset_fn is None and hasattr(self, "ui_watchFType_cmbBx"):
-                self.ui_watchFType_cmbBx.setCurrentText(val)
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
         elif attr == "watch_file_pattern":
             if len(val) == 0:
@@ -873,29 +869,14 @@ class RtpWatch(RTP):
                     reset_fn(str(self.watch_file_pattern))
                 return
             if reset_fn is None:
-                if hasattr(self, "ui_watchPat_lnEd"):
-                    self.ui_watchPat_lnEd.setText(str(val))
+                self._ui_update(attr, val)
 
-        elif attr == "read_timeout" and reset_fn is None:
-            if hasattr(self, "ui_dcmreadTimeout_dSpBx"):
-                self.ui_dcmreadTimeout_dSpBx.setValue(val)
-
-        elif attr == "polling_observer":
+        elif attr in ("read_timeout", "polling_observer", "polling_timeout"):
             if reset_fn is None:
-                if hasattr(self, "ui_pollingObserver_chb"):
-                    self.ui_pollingObserver_chb.setChecked(val)
+                self._ui_update(attr, val)
 
-        elif attr == "polling_timeout" and reset_fn is None:
-            if hasattr(self, "ui_pollingTimeout_dSpBx"):
-                self.ui_pollingTimeout_dSpBx.setValue(val)
-
-        elif attr == "save_proc":
-            if hasattr(self, "ui_saveProc_chb"):
-                self.ui_saveProc_chb.setChecked(val)
-
-        elif attr == "clean_ready":
-            if hasattr(self, "ui_cleanReady_chb"):
-                self.ui_cleanReady_chb.setChecked(val)
+        elif attr in ("save_proc", "clean_ready"):
+            self._ui_update(attr, val)
 
         elif attr == "rtp_ttl_physio_address":
             if type(val) is str:
@@ -916,133 +897,6 @@ class RtpWatch(RTP):
                 "{}.".format(self.__class__.__name__) + attr,
                 "=", getattr(self, attr)
             )
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ui_set_param(self):
-        ui_rows = []
-        self.ui_objs = []
-
-        # enabled
-        self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
-        self.ui_enabled_rdb.setChecked(self.enabled)
-        self.ui_enabled_rdb.toggled.connect(
-            lambda checked: self.set_param(
-                "enabled", checked, self.ui_enabled_rdb.setChecked
-            )
-        )
-        ui_rows.append((self.ui_enabled_rdb, None))
-
-        # watch_dir
-        var_lb = QtWidgets.QLabel("Watch directory :")
-        self.ui_wdir_lnEd = QtWidgets.QLineEdit()
-        self.ui_wdir_lnEd.setReadOnly(True)
-        self.ui_wdir_lnEd.setStyleSheet("border: 0px none;")
-        if self.watch_dir is not None and Path(self.watch_dir).is_dir():
-            self.ui_wdir_lnEd.setText(str(self.watch_dir))
-        ui_rows.append((var_lb, self.ui_wdir_lnEd))
-        self.ui_objs.extend([var_lb, self.ui_wdir_lnEd])
-
-        # file_type
-        var_lb = QtWidgets.QLabel("Watch file type :")
-        self.ui_watchFType_cmbBx = QtWidgets.QComboBox()
-        self.ui_watchFType_cmbBx.addItems(self._supported_file_types)
-        self.ui_watchFType_cmbBx.setCurrentText(self.file_type)
-        self.ui_watchFType_cmbBx.currentIndexChanged.connect(
-            lambda idx: self.set_param(
-                "file_type",
-                self.ui_watchFType_cmbBx.currentText(),
-                self.ui_watchFType_cmbBx.setCurrentIndex,
-            )
-        )
-        ui_rows.append((var_lb, self.ui_watchFType_cmbBx))
-        self.ui_objs.extend([var_lb, self.ui_watchFType_cmbBx])
-
-        # watch_file_pattern
-        var_lb = QtWidgets.QLabel("Watch pattern :")
-        self.ui_watchPat_lnEd = QtWidgets.QLineEdit()
-        self.ui_watchPat_lnEd.setText(str(self.watch_file_pattern))
-        self.ui_watchPat_lnEd.editingFinished.connect(
-            lambda: self.set_param(
-                "watch_file_pattern",
-                self.ui_watchPat_lnEd.text(),
-                self.ui_watchPat_lnEd.setText,
-            )
-        )
-        ui_rows.append((var_lb, self.ui_watchPat_lnEd))
-        self.ui_objs.extend([var_lb, self.ui_watchPat_lnEd])
-
-        # read_timeout
-        var_lb = QtWidgets.QLabel("File reading timeout :")
-        self.ui_dcmreadTimeout_dSpBx = QtWidgets.QDoubleSpinBox()
-        self.ui_dcmreadTimeout_dSpBx.setMinimum(0.0)
-        self.ui_dcmreadTimeout_dSpBx.setSingleStep(0.1)
-        self.ui_dcmreadTimeout_dSpBx.setDecimals(3)
-        self.ui_dcmreadTimeout_dSpBx.setSuffix(" seconds")
-        self.ui_dcmreadTimeout_dSpBx.setValue(self.read_timeout)
-        self.ui_dcmreadTimeout_dSpBx.valueChanged.connect(
-            lambda x: self.set_param(
-                "read_timeout", x, self.ui_dcmreadTimeout_dSpBx.setValue
-            )
-        )
-        ui_rows.append((var_lb, self.ui_dcmreadTimeout_dSpBx))
-        self.ui_objs.extend([var_lb, self.ui_dcmreadTimeout_dSpBx])
-
-        # polling_observer check
-        self.ui_pollingObserver_chb = QtWidgets.QCheckBox(
-            "Use PollingObserver")
-        self.ui_pollingObserver_chb.setChecked(self.polling_observer)
-        self.ui_pollingObserver_chb.stateChanged.connect(
-            lambda: self.set_param(
-                "polling_observer",
-                self.ui_pollingObserver_chb.isChecked(),
-                self.ui_pollingObserver_chb.setChecked,
-            )
-        )
-        ui_rows.append((None, self.ui_pollingObserver_chb))
-        self.ui_objs.extend([self.ui_pollingObserver_chb])
-
-        # polling_timeout
-        var_lb = QtWidgets.QLabel("Polling timeout :")
-        self.ui_pollingTimeout_dSpBx = QtWidgets.QDoubleSpinBox()
-        self.ui_pollingTimeout_dSpBx.setMinimum(0.0)
-        self.ui_pollingTimeout_dSpBx.setSingleStep(0.1)
-        self.ui_pollingTimeout_dSpBx.setDecimals(3)
-        self.ui_pollingTimeout_dSpBx.setSuffix(" seconds")
-        self.ui_pollingTimeout_dSpBx.setValue(self.polling_timeout)
-        self.ui_pollingTimeout_dSpBx.valueChanged.connect(
-            lambda x: self.set_param(
-                "polling_timeout", x, self.ui_pollingTimeout_dSpBx.setValue
-            )
-        )
-        ui_rows.append((var_lb, self.ui_pollingTimeout_dSpBx))
-        self.ui_objs.extend([var_lb, self.ui_pollingTimeout_dSpBx])
-
-        # clean_ready
-        # The checkbox is made but not shown in the panel.
-        self.ui_cleanReady_chb = QtWidgets.QCheckBox(
-            "Clean watch dir at ready"
-        )
-        self.ui_cleanReady_chb.setChecked(self.clean_ready)
-        self.ui_cleanReady_chb.stateChanged.connect(
-            lambda state: setattr(self, "clean_ready", state > 0)
-        )
-        self.ui_objs.append(self.ui_cleanReady_chb)
-
-        # --- Checkbox row ----------------------------------------------------
-        # Save
-        self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
-        self.ui_saveProc_chb.setChecked(self.save_proc)
-        self.ui_saveProc_chb.stateChanged.connect(
-            lambda state: setattr(self, "save_proc", state > 0)
-        )
-        self.ui_objs.append(self.ui_saveProc_chb)
-
-        chb_hLayout = QtWidgets.QHBoxLayout()
-        chb_hLayout.addStretch()
-        chb_hLayout.addWidget(self.ui_saveProc_chb)
-        ui_rows.append((None, chb_hLayout))
-
-        return ui_rows
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):

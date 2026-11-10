@@ -19,14 +19,13 @@ import inspect
 import numpy as np
 import nibabel as nib
 import psutil
-from PyQt5 import QtWidgets
 import pandas as pd
 import torch
 
 try:
-    from .rtp_common import RTP, MatplotlibWindow
+    from .rtp_common import RTP
 except Exception:
-    from rtpspy.rtp_common import RTP, MatplotlibWindow
+    from rtpspy.rtp_common import RTP
 
 gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
@@ -47,7 +46,6 @@ NORM_REGS = MOT_NAMES + DMOT_NAMES + ROI_REGS
 # UI option lists. The index of an option is its combo box index.
 MOT_REG_OPTS = ('None', 'mot6', 'mot12', 'dmot6')
 PHYS_REG_OPTS = ('None', 'RICOR8', 'RVT5', 'RVT+RICOR13')
-MASK0_TEXT = 'zero-out initial received volume'
 
 # Columns of the online QC table (see RtpRegress.get_qc_table)
 QC_COLS = ('vol_idx', 'FD', 'DVARS', 'tSNR', 'censored')
@@ -160,6 +158,9 @@ class RtpRegress(RTP):
     # Log label and output filename prefix (see RTP.do_proc)
     _proc_label = 'Regression'
     _out_prefix = 'regRes.'
+
+    # GUI panel (rtpspy.ui.regress_ui)
+    _ui_class = "regress_ui:RtpRegressUI"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, max_poly_order=np.inf, TR=2.0, mot_reg='None',
@@ -1489,17 +1490,17 @@ class RtpRegress(RTP):
             wait_num = min_wait_num
 
         if wait_num != self.wait_num:
-            if hasattr(self, 'ui_waitNum_lb'):
-                self.ui_waitNum_lb.setText(
-                    f"Wait REGRESS until receiving {wait_num} volumes")
-
+            self._ui_update('wait_num', wait_num)
             self.wait_num = wait_num
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _update_wait_num(self):
-        """Update wait_num after the number of regressors has changed."""
-        if hasattr(self, 'ui_waitNum_cmbBx'):
-            if 'regressor' in self.ui_waitNum_cmbBx.currentText():
+        """Update wait_num after the number of regressors has changed.
+        In the GUI, wait_num follows the number of regressors only when the
+        wait mode is 'number of regressors'."""
+        wait_mode = self._ui_value('wait_num_mode')
+        if wait_mode is not None:
+            if 'regressor' in wait_mode:
                 self.set_wait_num(self.get_reg_num()+1)
         else:
             self.set_wait_num()
@@ -1527,15 +1528,7 @@ class RtpRegress(RTP):
 
         # -- Check the value --
         if attr == 'enabled':
-            if hasattr(self, 'ui_enabled_rdb'):
-                self.ui_enabled_rdb.setChecked(val)
-
-            if hasattr(self, 'ui_objs'):
-                for ui in self.ui_objs:
-                    ui.setEnabled(val)
-
-            if self.desMtx_read is None and hasattr(self, 'ui_showDesMtx_btn'):
-                self.ui_showDesMtx_btn.setEnabled(False)
+            self._ui_update(attr, val)
 
         elif attr == 'work_dir':
             if val is None or not Path(val).is_dir():
@@ -1549,13 +1542,11 @@ class RtpRegress(RTP):
 
         elif attr == 'mask_file':
             if type(val) is int and val == 0:
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(MASK0_TEXT)
+                self._ui_update(attr, val)
 
             elif type(val) is str and 'initial volume' in val:
                 val = 0
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(MASK0_TEXT)
+                self._ui_update(attr, val)
 
             elif type(val) is str and 'external file' in val:
                 fname = self.select_file_dlg('REGRESS: Select mask volume',
@@ -1568,8 +1559,8 @@ class RtpRegress(RTP):
                 mask_img = nib.load(fname[0])
                 mask_fname = fname[0]
                 if len(mask_img.shape) > 3 and mask_img.shape[3] > 1:
-                    num, okflag = QtWidgets.QInputDialog.getInt(
-                        None, "Select sub-volume",
+                    num, okflag = self._notifier().get_int(
+                        "Select sub-volume",
                         "sub-volume index (0 is first)", 0, 0,
                         mask_img.shape[3])
                     if not okflag:
@@ -1582,8 +1573,7 @@ class RtpRegress(RTP):
                     num = 0
 
                 self.set_mask(fname[0], num)
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(str(mask_fname))
+                self._ui_update(attr, mask_fname)
                 val = mask_fname
 
             elif type(val) is str or isinstance(val, Path):
@@ -1600,21 +1590,20 @@ class RtpRegress(RTP):
                 if not Path(fname).is_file():
                     return
 
-                if reset_fn is None and hasattr(self, 'ui_mask_cmbBx'):
-                    self.ui_mask_cmbBx.setCurrentIndex(0)
+                if reset_fn is None:
+                    self._ui_update('mask_source', 0)  # 'external file'
 
                 self.set_mask(fname, num)
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(str(val))
+                self._ui_update(attr, val)
 
         elif attr == 'wait_num':
             if type(val) is int:
                 self.set_wait_num(val)
-                if reset_fn is None and hasattr(self, 'ui_waitNum_cmbBx'):
-                    if self.wait_num == self.get_reg_num()+1:
-                        self.ui_waitNum_cmbBx.setCurrentIndex(0)
-                    else:
-                        self.ui_waitNum_cmbBx.setCurrentIndex(1)
+                if reset_fn is None:
+                    # Wait mode: 0, number of regressors; 1, set value
+                    self._ui_update(
+                        'wait_num_mode',
+                        0 if self.wait_num == self.get_reg_num()+1 else 1)
                 return
 
             elif 'regressor' in val:
@@ -1622,8 +1611,8 @@ class RtpRegress(RTP):
 
             elif 'set' in val:
                 num0 = self.get_reg_num()+1
-                num1, okflag = QtWidgets.QInputDialog.getInt(
-                    None, "Wait REGRESS until", "volume",
+                num1, okflag = self._notifier().get_int(
+                    "Wait REGRESS until", "volume",
                     self.wait_num, num0)
                 if not okflag:
                     return
@@ -1650,33 +1639,30 @@ class RtpRegress(RTP):
                                           max_scan_length=val,
                                           col_names_read=self.col_names_read)
 
-            if reset_fn is None and hasattr(self, 'ui_maxLen_spBx'):
-                self.ui_maxLen_spBx.setValue(val)
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
         elif attr == 'max_poly_order':
+            # Polynomial order mode in the GUI: 0, auto; 1, set
             if val == 'auto':
-                if hasattr(self, 'ui_maxPoly_lb'):
-                    self.ui_maxPoly_lb.setText(self._poly_order_text(np.inf))
+                self._ui_update(attr, np.inf)
                 val = np.inf
             elif val == 'set':
-                num, okflag = QtWidgets.QInputDialog.getInt(
-                    None, "Maximum polynomial order", "enter value")
+                num, okflag = self._notifier().get_int(
+                    "Maximum polynomial order", "enter value")
                 if not okflag:
                     if np.isinf(self.max_poly_order) and reset_fn:
                         reset_fn(0)
                     return
 
-                if hasattr(self, 'ui_maxPoly_lb'):
-                    self.ui_maxPoly_lb.setText(self._poly_order_text(num))
+                self._ui_update(attr, num)
                 val = num
             elif np.isinf(val) and reset_fn is None:
-                if hasattr(self, 'ui_maxPoly_cmbBx'):
-                    self.ui_maxPoly_cmbBx.setCurrentIndex(0)
-                    self.ui_maxPoly_lb.setText(self._poly_order_text(val))
+                self._ui_update('max_poly_mode', 0)
+                self._ui_update(attr, val)
             elif type(val) is int and reset_fn is None:
-                if hasattr(self, 'ui_maxPoly_cmbBx'):
-                    self.ui_maxPoly_cmbBx.setCurrentIndex(1)
-                    self.ui_maxPoly_lb.setText(self._poly_order_text(val))
+                self._ui_update('max_poly_mode', 1)
+                self._ui_update(attr, val)
 
             setattr(self, attr, val)
             self._update_wait_num()
@@ -1692,17 +1678,15 @@ class RtpRegress(RTP):
             elif val.startswith('6 motion derivatives'):
                 val = 'dmot6'
 
-            if reset_fn is None and hasattr(self, 'ui_motReg_cmbBx') and \
-                    val in MOT_REG_OPTS:
-                self.ui_motReg_cmbBx.setCurrentIndex(MOT_REG_OPTS.index(val))
+            if reset_fn is None and val in MOT_REG_OPTS:
+                self._ui_update(attr, val)
 
             setattr(self, attr, val)
             self._update_wait_num()
 
         elif attr in ('GS_reg', 'WM_reg', 'Vent_reg'):
             setattr(self, attr, val)
-            if hasattr(self, f"ui_{attr}_chb"):
-                getattr(self, f"ui_{attr}_chb").setChecked(val)
+            self._ui_update(attr, val)
 
             self._update_wait_num()
 
@@ -1731,8 +1715,7 @@ class RtpRegress(RTP):
                 if not Path(val).is_file():
                     val = ''
 
-                if hasattr(self, f"ui_{attr}_lnEd"):
-                    getattr(self, f"ui_{attr}_lnEd").setText(str(val))
+                self._ui_update(attr, val)
 
         elif attr == 'phys_reg':
             # Convert a UI text to the option value
@@ -1754,9 +1737,8 @@ class RtpRegress(RTP):
                     reset_fn({'None': 0, 'RICOR8': 1}.get(self.phys_reg, 0))
                 return
 
-            if reset_fn is None and hasattr(self, 'ui_physReg_cmbBx'):
-                self.ui_physReg_cmbBx.setCurrentIndex(
-                    PHYS_REG_OPTS.index(val))
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
             setattr(self, attr, val)
             self._update_wait_num()
@@ -1766,9 +1748,8 @@ class RtpRegress(RTP):
             if val is None:
                 return
 
-            # 'set' from the button toggles loading and unsetting
-            btn_unset = hasattr(self, 'ui_loadDesMtx_btn') and \
-                'Unset' in self.ui_loadDesMtx_btn.text()
+            # 'set' from the GUI button toggles loading and unsetting
+            btn_unset = bool(self._ui_value('desMtx_btn_unset'))
             if (val == 'set' and not btn_unset) or Path(val).is_file():
                 # Load a design matrix
                 if val == 'set':
@@ -1799,26 +1780,18 @@ class RtpRegress(RTP):
                 if self.desMtx_read.ndim == 1:
                     self.desMtx_read = self.desMtx_read[:, np.newaxis]
 
-                if hasattr(self, 'ui_showDesMtx_btn'):
-                    self.ui_showDesMtx_btn.setEnabled(True)
-
                 if self.desMtx_read.shape[0] > self.max_scan_length:
                     self.set_param('max_scan_length',
                                    self.desMtx_read.shape[0])
 
-                if hasattr(self, 'ui_loadDesMtx_btn'):
-                    self.ui_loadDesMtx_btn.setText('Unset')
+                self._ui_update('desMtx_loaded', True)
 
             elif val == 'unset' or (val == 'set' and btn_unset):
                 # Unset the design matrix
                 self.desMtx_read = None
                 self.desMtx_f = None
                 self.col_names_read = []
-                if hasattr(self, 'ui_loadDesMtx_btn'):
-                    self.ui_loadDesMtx_btn.setText('Set')
-
-                if hasattr(self, 'ui_showDesMtx_btn'):
-                    self.ui_showDesMtx_btn.setEnabled(False)
+                self._ui_update('desMtx_loaded', False)
 
             # Update self.desMtx0
             if self.desMtx_read is not None or self.max_scan_length > 0:
@@ -1830,17 +1803,8 @@ class RtpRegress(RTP):
             return
 
         elif attr == 'showDesMtx':
-            if self.desMtx_read is not None:
-                self.plt_win = MatplotlibWindow()
-                self.plt_win.setWindowTitle('Design matrix')
-                ax = self.plt_win.canvas.figure.subplots(1, 1)
-                ax.matshow(self.desMtx_read, cmap='gray')
-                ax.set_aspect('auto')
-
-                self.plt_win.show()
-                self.plt_win.canvas.draw()
-                self.plt_win.canvas.start_event_loop(0.005)
-
+            # Show the design matrix in a window (GUI only)
+            self._ui_call('show_design_matrix')
             return
 
         elif attr == 'censor_FD':
@@ -1854,16 +1818,11 @@ class RtpRegress(RTP):
                 if reset_fn:
                     reset_fn(self.censor_FD)
                 return
-            if reset_fn is None and hasattr(self, 'ui_censorFD_spBx'):
-                self.ui_censorFD_spBx.setValue(val)
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
-        elif attr == 'reg_retro_proc':
-            if hasattr(self, 'ui_retroProc_chb'):
-                self.ui_retroProc_chb.setChecked(val)
-
-        elif attr == 'save_proc':
-            if hasattr(self, 'ui_saveProc_chb'):
-                self.ui_saveProc_chb.setChecked(val)
+        elif attr in ('reg_retro_proc', 'save_proc'):
+            self._ui_update(attr, val)
 
         elif reset_fn is None:
             # Ignore an unrecognized parameter
@@ -1876,245 +1835,6 @@ class RtpRegress(RTP):
         if echo:
             print(f"{self.__class__.__name__}." + attr, '=',
                   getattr(self, attr))
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ui_set_param(self):
-        """
-        Return the UI rows for setting the parameters. The UI widgets call
-        set_param with their setter as reset_fn.
-        """
-
-        ui_rows = []
-        self.ui_objs = []
-
-        # enabled
-        self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
-        self.ui_enabled_rdb.setChecked(self.enabled)
-        self.ui_enabled_rdb.toggled.connect(
-            lambda checked: self.set_param('enabled', checked,
-                                           self.ui_enabled_rdb.setChecked))
-        ui_rows.append((self.ui_enabled_rdb, None))
-
-        # mask_file
-        var_lb = QtWidgets.QLabel("Mask :")
-        self.ui_mask_cmbBx = QtWidgets.QComboBox()
-        self.ui_mask_cmbBx.addItems(['external file',
-                                     'initial volume of internal run'])
-        self.ui_mask_cmbBx.activated.connect(
-            lambda idx:
-            self.set_param('mask_file',
-                           self.ui_mask_cmbBx.currentText(),
-                           self.ui_mask_cmbBx.setCurrentIndex))
-
-        self.ui_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_mask_lnEd.setReadOnly(True)
-        self.ui_mask_lnEd.setStyleSheet('border: 0px none;')
-        self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
-                             self.ui_mask_lnEd])
-
-        if self.mask_file == 0:
-            self.ui_mask_cmbBx.setCurrentIndex(1)
-            self.ui_mask_lnEd.setText(MASK0_TEXT)
-        else:
-            self.ui_mask_cmbBx.setCurrentIndex(0)
-            self.ui_mask_lnEd.setText(str(self.mask_file))
-
-        mask_hLayout = QtWidgets.QHBoxLayout()
-        mask_hLayout.addWidget(self.ui_mask_cmbBx)
-        mask_hLayout.addWidget(self.ui_mask_lnEd)
-        ui_rows.append((var_lb, mask_hLayout))
-
-        # wait_num
-        var_lb = QtWidgets.QLabel("Wait REGRESS until (volumes) :")
-        self.ui_waitNum_cmbBx = QtWidgets.QComboBox()
-        self.ui_waitNum_cmbBx.addItems(['number of regressors', 'set value'])
-        self.ui_waitNum_cmbBx.activated.connect(
-            lambda idx:
-            self.set_param('wait_num',
-                           self.ui_waitNum_cmbBx.currentText(),
-                           self.ui_waitNum_cmbBx.setCurrentIndex))
-
-        self.ui_waitNum_lb = QtWidgets.QLabel()
-        self.set_wait_num()
-        self.ui_waitNum_lb.setText(
-            f'Wait REGRESS until receiving {self.wait_num} volumes')
-        self.ui_objs.extend([var_lb, self.ui_waitNum_cmbBx,
-                             self.ui_waitNum_lb])
-
-        wait_num_hLayout = QtWidgets.QHBoxLayout()
-        wait_num_hLayout.addWidget(self.ui_waitNum_cmbBx)
-        wait_num_hLayout.addWidget(self.ui_waitNum_lb)
-        ui_rows.append((var_lb, wait_num_hLayout))
-
-        # max_scan_length
-        var_lb = QtWidgets.QLabel("Maximum scan length :")
-        self.ui_maxLen_spBx = QtWidgets.QSpinBox()
-        self.ui_maxLen_spBx.setMinimum(1)
-        self.ui_maxLen_spBx.setMaximum(9999)
-        self.ui_maxLen_spBx.setValue(self.max_scan_length)
-        self.ui_maxLen_spBx.editingFinished.connect(
-            lambda: self.set_param('max_scan_length',
-                                   self.ui_maxLen_spBx.value(),
-                                   self.ui_maxLen_spBx.setValue))
-        ui_rows.append((var_lb, self.ui_maxLen_spBx))
-        self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
-
-        # max_poly_order
-        var_lb = QtWidgets.QLabel("Maximum polynomial order :\n"
-                                  "regressors for slow fluctuation")
-        self.ui_maxPoly_cmbBx = QtWidgets.QComboBox()
-        self.ui_maxPoly_cmbBx.addItems(['auto', 'set'])
-        self.ui_maxPoly_cmbBx.activated.connect(
-            lambda idx:
-            self.set_param('max_poly_order',
-                           self.ui_maxPoly_cmbBx.currentText(),
-                           self.ui_maxPoly_cmbBx.setCurrentIndex))
-
-        self.ui_maxPoly_lb = QtWidgets.QLabel()
-        self.ui_objs.extend([var_lb, self.ui_maxPoly_cmbBx,
-                             self.ui_maxPoly_lb])
-        if np.isinf(self.max_poly_order):
-            self.ui_maxPoly_cmbBx.setCurrentIndex(0)
-        else:
-            self.ui_maxPoly_cmbBx.setCurrentIndex(1)
-        self.ui_maxPoly_lb.setText(
-            self._poly_order_text(self.max_poly_order))
-
-        maxPoly_hLayout = QtWidgets.QHBoxLayout()
-        maxPoly_hLayout.addWidget(self.ui_maxPoly_cmbBx)
-        maxPoly_hLayout.addWidget(self.ui_maxPoly_lb)
-        ui_rows.append((var_lb, maxPoly_hLayout))
-
-        # mot_reg (the item order follows MOT_REG_OPTS)
-        var_lb = QtWidgets.QLabel("Motion regressor :")
-        self.ui_motReg_cmbBx = QtWidgets.QComboBox()
-        self.ui_motReg_cmbBx.addItems(
-            ['None', '6 motions (yaw, pitch, roll, dS, dL, dP)',
-             '12 motions (6 motions and their temporal derivatives)',
-             '6 motion derivatives'])
-        self.ui_motReg_cmbBx.setCurrentIndex(
-            MOT_REG_OPTS.index(self.mot_reg))
-        self.ui_motReg_cmbBx.currentIndexChanged.connect(
-            lambda idx:
-            self.set_param('mot_reg',
-                           self.ui_motReg_cmbBx.currentText(),
-                           self.ui_motReg_cmbBx.setCurrentIndex))
-        ui_rows.append((var_lb, self.ui_motReg_cmbBx))
-        self.ui_objs.extend([var_lb, self.ui_motReg_cmbBx])
-
-        # ROI mean signal regressors
-        ui_rows.append(self._ui_roi_reg_row('GS', "Regress global signal :"))
-        ui_rows.append(self._ui_roi_reg_row('WM', "Regress WM signal :"))
-        ui_rows.append(self._ui_roi_reg_row('Vent', "Regress Vent signal :"))
-
-        # phys_reg (the item order follows PHYS_REG_OPTS; RVT is not
-        # supported)
-        var_lb = QtWidgets.QLabel("RICOR regressor :")
-        self.ui_physReg_cmbBx = QtWidgets.QComboBox()
-        self.ui_physReg_cmbBx.addItems(['None', '8 RICOR (4 Resp and 4 Card)'])
-        self.ui_physReg_cmbBx.setCurrentIndex(
-            PHYS_REG_OPTS.index(self.phys_reg))
-        self.ui_physReg_cmbBx.currentIndexChanged.connect(
-            lambda idx:
-            self.set_param('phys_reg',
-                           self.ui_physReg_cmbBx.currentText(),
-                           self.ui_physReg_cmbBx.setCurrentIndex))
-        ui_rows.append((var_lb, self.ui_physReg_cmbBx))
-        self.ui_objs.extend([var_lb, self.ui_physReg_cmbBx])
-
-        # desMtx
-        var_lb = QtWidgets.QLabel("Design matrix :")
-
-        desMtx_hBLayout = QtWidgets.QHBoxLayout()
-        self.ui_loadDesMtx_btn = QtWidgets.QPushButton(
-            'Set' if self.desMtx_read is None else 'Unset')
-        self.ui_loadDesMtx_btn.clicked.connect(
-            lambda: self.set_param('desMtx_f', 'set'))
-        desMtx_hBLayout.addWidget(self.ui_loadDesMtx_btn)
-
-        self.ui_showDesMtx_btn = QtWidgets.QPushButton()
-        self.ui_showDesMtx_btn.clicked.connect(
-            lambda: self.set_param('showDesMtx'))
-        desMtx_hBLayout.addWidget(self.ui_showDesMtx_btn)
-
-        self.ui_objs.extend([var_lb, self.ui_loadDesMtx_btn,
-                             self.ui_showDesMtx_btn])
-        ui_rows.append((var_lb, desMtx_hBLayout))
-        self.ui_showDesMtx_btn.setText('Show design matrix')
-        self.ui_showDesMtx_btn.setEnabled(self.desMtx_read is not None)
-
-        # censor_FD
-        var_lb = QtWidgets.QLabel("Censor FD > (mm, 0: off) :")
-        self.ui_censorFD_spBx = QtWidgets.QDoubleSpinBox()
-        self.ui_censorFD_spBx.setMinimum(0.0)
-        self.ui_censorFD_spBx.setMaximum(10.0)
-        self.ui_censorFD_spBx.setDecimals(2)
-        self.ui_censorFD_spBx.setSingleStep(0.1)
-        self.ui_censorFD_spBx.setValue(self.censor_FD)
-        self.ui_censorFD_spBx.setToolTip(
-            "Exclude volumes with framewise displacement (Power et al., 2012)"
-            " larger than this value from the GLM fits.")
-        self.ui_censorFD_spBx.editingFinished.connect(
-            lambda: self.set_param('censor_FD',
-                                   self.ui_censorFD_spBx.value(),
-                                   self.ui_censorFD_spBx.setValue))
-        ui_rows.append((var_lb, self.ui_censorFD_spBx))
-        self.ui_objs.extend([var_lb, self.ui_censorFD_spBx])
-
-        # --- Checkbox row ----------------------------------------------------
-        # Retrospective process
-        self.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
-        self.ui_retroProc_chb.setChecked(self.reg_retro_proc)
-        self.ui_retroProc_chb.stateChanged.connect(
-            lambda state: setattr(self, 'reg_retro_proc', state > 0))
-        self.ui_objs.append(self.ui_retroProc_chb)
-
-        # Save
-        self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
-        self.ui_saveProc_chb.setChecked(self.save_proc)
-        self.ui_saveProc_chb.stateChanged.connect(
-            lambda state: setattr(self, 'save_proc', state > 0))
-        self.ui_objs.append(self.ui_saveProc_chb)
-
-        chb_hLayout = QtWidgets.QHBoxLayout()
-        chb_hLayout.addStretch()
-        chb_hLayout.addWidget(self.ui_saveProc_chb)
-        ui_rows.append((self.ui_retroProc_chb, chb_hLayout))
-
-        return ui_rows
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _ui_roi_reg_row(self, reg, label):
-        """
-        Make the UI row for the ROI mean signal regressor reg ('GS', 'WM', or
-        'Vent'): a check box for <reg>_reg, and the <reg>_mask file with a
-        button to select it. The widgets are set to self.ui_<reg>_reg_chb,
-        self.ui_<reg>_mask_lnEd, and self.ui_<reg>mask_btn.
-        """
-        reg_chb = QtWidgets.QCheckBox(label)
-        reg_chb.setChecked(getattr(self, f"{reg}_reg"))
-        reg_chb.stateChanged.connect(
-            lambda state: self.set_param(f"{reg}_reg", state > 0))
-        setattr(self, f"ui_{reg}_reg_chb", reg_chb)
-
-        mask_hBLayout = QtWidgets.QHBoxLayout()
-        mask_lnEd = QtWidgets.QLineEdit()
-        mask_lnEd.setText(str(getattr(self, f"{reg}_mask")))
-        mask_lnEd.setReadOnly(True)
-        mask_lnEd.setStyleSheet('border: 0px none;')
-        mask_hBLayout.addWidget(mask_lnEd)
-        setattr(self, f"ui_{reg}_mask_lnEd", mask_lnEd)
-
-        mask_btn = QtWidgets.QPushButton('Set')
-        mask_btn.clicked.connect(
-            lambda: self.set_param(f"{reg}_mask",
-                                   Path(mask_lnEd.text()).parent,
-                                   mask_lnEd.setText))
-        mask_hBLayout.addWidget(mask_btn)
-        setattr(self, f"ui_{reg}mask_btn", mask_btn)
-
-        self.ui_objs.extend([reg_chb, mask_lnEd, mask_btn])
-        return (reg_chb, mask_hBLayout)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):

@@ -23,7 +23,6 @@ import nibabel as nib
 import ants
 from ants.registration import build_template
 
-from PyQt5 import QtWidgets
 from .rtp_common import RTP
 from .fast_seg import FastSeg
 
@@ -113,7 +112,8 @@ class RtpImgProc(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _edit_command(self, labelTxt="Command line:", cmdTxt=""):
         """
-        Show a dialog to edit a command line.
+        Show a dialog to edit a command line (the notifier's text input;
+        canceled without a GUI).
 
         Parameters
         ----------
@@ -130,15 +130,8 @@ class RtpImgProc(RTP):
             True if OK was pressed, False if canceled.
         """
 
-        dlg = QtWidgets.QInputDialog(self.main_win)
-        dlg.setInputMode(QtWidgets.QInputDialog.TextInput)
-        dlg.setLabelText(labelTxt)
-        dlg.setTextValue(cmdTxt)
-        dlg.resize(640, 100)
-        okflag = dlg.exec_()
-        cmd = dlg.textValue()
-
-        return cmd, okflag
+        return self._notifier().get_text(labelTxt, cmdTxt,
+                                         parent=self.main_win)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _show_cmd_progress(self, cmd, progress_bar=None, msgTxt="", desc=""):
@@ -153,7 +146,7 @@ class RtpImgProc(RTP):
         ----------
         cmd : str
             Command line.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         msgTxt : str, optional
             Message text shown in the progress_bar (under the bar).
@@ -189,9 +182,6 @@ class RtpImgProc(RTP):
             errmsg = f"Failed to run:\n{cmd}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
-
-            if hasattr(self, "ui_procAnat_btn"):
-                self.ui_procAnat_btn.setEnabled(True)
             return 1
 
         return 0
@@ -254,7 +244,7 @@ class RtpImgProc(RTP):
         ----------
         proc : subprocess.Popen object
             Child process opened by subprocess.Popen.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         msgTxt : str, optional
             Message text shown in the progress_bar (under the bar).
@@ -308,9 +298,6 @@ class RtpImgProc(RTP):
                 errmsg = f"Failed: {msgTxt}"
                 self._logger.error(errmsg)
                 self.err_popup(errmsg)
-
-            if hasattr(self, "ui_procAnat_btn"):
-                self.ui_procAnat_btn.setEnabled(True)
 
         return ret
 
@@ -406,7 +393,7 @@ class RtpImgProc(RTP):
         total_ETA : float
             Expected time (seconds) of all the processing steps, for the
             progress bar.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         overwrite : bool, optional
             Overwrite existing files. When this is False and the results
@@ -516,7 +503,7 @@ class RtpImgProc(RTP):
         total_ETA : float
             Expected time (seconds) of all the processing steps, for the
             progress bar.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         ask_cmd : bool, optional
             Allow editing the command line. The default is False.
@@ -618,7 +605,7 @@ class RtpImgProc(RTP):
         total_ETA : float
             Expected time (seconds) of all the processing steps, for the
             progress bar.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         overwrite : bool, optional
             Overwrite existing files. When this is False and the results
@@ -724,7 +711,7 @@ class RtpImgProc(RTP):
         total_ETA : float
             Expected time (seconds) of all the processing steps, for the
             progress bar.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         ask_cmd : bool, optional
             Allow editing the command line. The default is False.
@@ -893,7 +880,7 @@ class RtpImgProc(RTP):
         aff1D_f : str or Path, optional
             Affine matrix file (e.g., *_mat.aff12.1D) to align seg_anat_f to
             func_orig. If None, seg_anat_f is only resampled.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         ask_cmd : bool, optional
             Allow editing the erosion command line. The default is False.
@@ -1013,7 +1000,7 @@ class RtpImgProc(RTP):
             The default is 0.
         alAnat : str or Path, optional
             Anatomy image file aligned to func_orig.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         ask_cmd : bool, optional
             Allow editing the command line. The default is False.
@@ -1127,7 +1114,7 @@ class RtpImgProc(RTP):
         total_ETA : float
             Expected time (seconds) of all the processing steps, for the
             progress bar.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         ask_cmd : bool, optional
             Allow editing the command line. The default is False.
@@ -1234,7 +1221,7 @@ class RtpImgProc(RTP):
         imagetype : int, optional
             ANTs image type code: 0/1/2/3 for scalar/vector/tensor/
             time-series. The default is 0.
-        progress_bar : rtp_common.DlgProgressBar, optional
+        progress_bar : rtpspy.ui.DlgProgressBar, optional
             Progress bar dialog. The default is None.
         overwrite : bool, optional
             Overwrite existing files. When this is False and the results

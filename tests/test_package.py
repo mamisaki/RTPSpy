@@ -34,9 +34,9 @@ def test_pyproject_config():
     proj = cfg["project"]
     assert proj["name"] == "RTPSpy"
     st = cfg["tool"]["setuptools"]
-    assert st["packages"] == ["rtpspy"]  # rtpspy/FastSurfer is not packaged
+    # rtpspy/FastSurfer is not packaged
+    assert st["packages"] == ["rtpspy", "rtpspy.ui"]
     for f in st["script-files"]:
         assert (REPO / f).is_file()
     markers = cfg["tool"]["pytest"]["ini_options"]["markers"]
     assert {m.split(":")[0] for m in markers} == {"gpu", "afni", "slow"}
-

@@ -15,7 +15,6 @@ import shlex
 import time
 import re
 from datetime import datetime, timedelta
-from functools import partial
 import socket
 import traceback
 import signal
@@ -29,15 +28,10 @@ import nibabel as nib
 import pandas as pd
 import torch
 
-from PyQt5 import QtWidgets, QtCore
-import matplotlib.pyplot as plt
-
 try:
     from .rtp_common import (
         RTP,
         boot_afni,
-        MatplotlibWindow,
-        DlgProgressBar,
         excepthook,
         load_parameters,
         save_parameters,
@@ -56,8 +50,6 @@ except ImportError:
     from rtpspy.rtp_common import (
         RTP,
         boot_afni,
-        MatplotlibWindow,
-        DlgProgressBar,
         excepthook,
         load_parameters,
         save_parameters,
@@ -95,9 +87,6 @@ _FILE_PARAM_LABELS = {
     "fieldmap_posi": "fieldmap with same phase encoding",
     "fieldmap_nega": "fieldmap with opposite phase encoding",
 }
-
-# Set button color in the UI
-_SET_BTN_STYLE = "background-color: rgb(151,217,235);"
 
 
 def _strip_subbrick_selector(fpath):
@@ -171,6 +160,10 @@ class RtpApp(RTP):
 
     # Log label (see RTP.do_proc). The image filename is not changed.
     _proc_label = "ROI signal extraction"
+
+    # GUI panel (rtpspy.ui.app_ui). In the GUI, the panel also runs the
+    # session monitor and the ROI signal plot.
+    _ui_class = "app_ui:RtpAppUI"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
@@ -270,11 +263,9 @@ class RtpApp(RTP):
         self._scanning = False
         self.scan_onset = 0.0
 
-        # Timer to check the running status
-        self.chk_run_timer = QtCore.QTimer()
-        self.chk_run_timer.setSingleShot(True)
-        self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
-        self.max_watch_wait = 5  # seconds
+        # Time (seconds) without a new image after which the GUI ends the
+        # session (see RtpAppUI.check_run_status)
+        self.max_watch_wait = 5
 
         # endregion
 
@@ -381,8 +372,7 @@ class RtpApp(RTP):
         for ii in range(self.num_ROIs):
             self._roi_sig[ii][:] = []
 
-        if hasattr(self, "pltROISig"):
-            self.pltROISig.reset_plot()
+        self._ui_call("reset_ROISig_plot")
 
         return self._proc_ready
 
@@ -479,60 +469,9 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_dcm2nii(self):
-        """Convert DICOM to NIfTI using dcm2niix."""
-        # Select DICOM directory
-        watch_dir = self.rtp_objs["WATCH"].watch_dir
-        dcm_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_win, "Select DICOM file directory", str(watch_dir)
-        )
-
-        if dcm_dir == "":
-            return
-
-        out_dir = Path(self.work_dir).absolute()
-        cmd = "dcm2niix -f sub-%n_ses-%t_ser-%s_desc-%d"
-        cmd += f" -i n -z o -w 0 -o {out_dir} {dcm_dir}"
-        try:
-            # Progress dialog without buttons
-            msgBox = QtWidgets.QMessageBox(self.main_win)
-            msgBox.setWindowTitle("dcm2niix")
-            msgBox.setText("Converting DICOM to NIfTI ...")
-            msgBox.setStandardButtons(QtWidgets.QMessageBox.NoButton)
-            msgBox.show()
-            time.sleep(0.1)
-            msgBox.repaint()
-            QtWidgets.QApplication.processEvents()
-
-            proc = subprocess.Popen(
-                shlex.split(cmd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            while proc.poll() is None:
-                QtWidgets.QApplication.processEvents()
-                time.sleep(0.5)
-
-            stdout, stderr = proc.communicate()
-            ostr = "\n".join([stdout.decode(), stderr.decode()])
-
-            # Copy DICOMs to the working directory
-            dst_dir = out_dir / "dicom"
-            cmd = f"rsync -auvz {dcm_dir}/ {dst_dir}/"
-            subprocess.check_call(shlex.split(cmd), stdout=subprocess.DEVNULL)
-
-            msgBox.accept()
-            QtWidgets.QMessageBox.information(
-                self.main_win, "dcm2niix", ostr, QtWidgets.QMessageBox.Ok
-            )
-
-        except Exception as e:
-            try:
-                msgBox.accept()
-            except Exception:
-                pass
-            errmsg = f"Error during dcm2niix: {e}"
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
+        """Convert DICOM to NIfTI using dcm2niix (GUI only: the DICOM
+        directory is selected in a dialog; see RtpAppUI.run_dcm2nii)."""
+        self._ui_call("run_dcm2nii")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_masks(
@@ -572,12 +511,12 @@ class RtpApp(RTP):
             Ventricle mask on template. Used only with no_FastSeg.
             The default is None.
         ask_cmd : bool, optional
-            Ask the user to edit the processing command lines.
+            Ask the user to edit the processing command lines (GUI only).
             The default is False.
         overwrite : bool, optional
             Overwrite existing files. The default is False.
         progress_dlg : bool, optional
-            Show a progress dialog. The default is False.
+            Show a progress dialog (GUI only). The default is False.
 
         Returns
         -------
@@ -640,35 +579,24 @@ class RtpApp(RTP):
 
             self.set_param(attr, Path(getattr(self, attr)))
 
-        if hasattr(self, "ui_CreateMasks_btn"):
-            self.ui_CreateMasks_btn.setEnabled(False)
+        self._ui_call("set_create_masks_enabled", False)
 
-        if self.main_win is not None:
-            # Shift-click: overwrite. Ctrl-click: ask_cmd.
-            shift = QtCore.Qt.ShiftModifier
-            ctrl = QtCore.Qt.ControlModifier
-            modifiers = QtWidgets.QApplication.keyboardModifiers()
-            if modifiers in (shift, ctrl | shift):
-                overwrite = True
-            if modifiers in (ctrl, ctrl | shift):
-                ask_cmd = True
-
-        # Progress bar. The processing output to stdout is shown in the
-        # dialog.
+        # Progress bar (None without a GUI). The processing output to stdout
+        # is shown in the dialog.
+        progress_bar = None
         if progress_dlg:
-            sys.stdout.flush()
-            original_stdout = sys.stdout
-            progress_bar = DlgProgressBar(
+            progress_bar = self._notifier().progress_dialog(
                 title="Mask image creation",
                 modal=False,
                 parent=self.main_win,
                 st_time=time.time(),
                 win_size=(750, 320),
             )
+        if progress_bar is not None:
+            sys.stdout.flush()
+            original_stdout = sys.stdout
             sys.stdout = progress_bar.ostream
             progress_bar.set_value(0)
-        else:
-            progress_bar = None
 
         # Processing times for the progress report. Only the steps to run are
         # counted.
@@ -1076,14 +1004,13 @@ class RtpApp(RTP):
         if OK:
             self.proc_times = improc.proc_times
             if self.main_win is not None:
-                QtWidgets.QMessageBox.information(
-                    self.main_win,
+                self._notifier().info(
                     "Mask creation is complete.",
                     "Mask creation is complete.",
+                    parent=self.main_win,
                 )
 
-        if hasattr(self, "ui_CreateMasks_btn"):
-            self.ui_CreateMasks_btn.setEnabled(True)
+        self._ui_call("set_create_masks_enabled", True)
         # endregion
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1111,11 +1038,13 @@ class RtpApp(RTP):
         else:
             self.set_param("enable_RTP", 2)
 
-        show_progress = (self.main_win is not None) and (self.enable_RTP > 0)
-        if show_progress:
-            progress_bar = DlgProgressBar(
+        progress_bar = None
+        if (self.main_win is not None) and (self.enable_RTP > 0):
+            progress_bar = self._notifier().progress_dialog(
                 title="Session setup ...", parent=self.main_win
             )
+        show_progress = progress_bar is not None
+        if show_progress:
             progress = 0
             time.sleep(0.01)  # Give the UI time to update the dialog
 
@@ -1209,19 +1138,12 @@ class RtpApp(RTP):
             progress_bar.add_desc("Done")
             time.sleep(0.1)  # Give the UI time to update the dialog
 
+        if show_progress:
+            progress_bar.close()
+
         if self.main_win is not None:
-            self.ui_ready_btn.setEnabled(True)
-            self.ui_ready_btn.setText("Ready")
-            self.ui_quit_btn.setEnabled(True)
-
-            if show_progress:
-                progress_bar.close()
-
-            # Show the parameter list tab
-            self.main_win.show_options_list()
-            self.main_win.options_tab.setCurrentIndex(2)
-            QtWidgets.QApplication.processEvents()
-            time.sleep(0.1)
+            # Enable the Ready button and show the parameter list
+            self._ui_call("on_RTP_setup_done")
 
         return 0
 
@@ -1236,10 +1158,11 @@ class RtpApp(RTP):
         pobj.set_param("mask_file", self.RTP_mask)
         if pobj.mot_reg != "None":
             if not self.rtp_objs["VOLREG"].enabled:
-                pobj.ui_motReg_cmbBx.setCurrentText("None")
+                pobj.set_param("mot_reg", "None")
                 errmsg = "VOLREG is not enabled. "
                 errmsg += "Motion regressor is set to None."
-                self.rtp_objs["VOLREG"].errmsg(errmsg)
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
             else:
                 pobj.set_param("volreg", self.rtp_objs["VOLREG"])
 
@@ -1257,13 +1180,9 @@ class RtpApp(RTP):
 
             if Path(mask_f).is_file():
                 pobj.set_param(mask_param, mask_f)
-            elif not ignore_error and hasattr(pobj, f"ui_{mask_param}_lnEd"):
-                # Ask the user to select a mask file
-                ret = pobj.set_param(
-                    mask_param,
-                    self.work_dir,
-                    getattr(pobj, f"ui_{mask_param}_lnEd").setText,
-                )
+            elif not ignore_error:
+                # Ask the user to select a mask file (GUI only)
+                ret = pobj._ui_call("select_mask", mask_param, self.work_dir)
                 if ret == -1:
                     return -1
 
@@ -1368,14 +1287,7 @@ class RtpApp(RTP):
 
             # Show plot windows
             if self.main_win is not None:
-                if self.rtp_objs["VOLREG"].enabled:
-                    self.main_win.chbShowMotion.setCheckState(2)
-
-                if (
-                    self.rtp_objs["REGRESS"].enabled
-                    and self.rtp_objs["REGRESS"].phys_reg != "None"
-                ):
-                    self.main_win.chbShowPhysio.setCheckState(2)
+                self._ui_call("show_run_plots")
 
             # Reset process chain status
             proc_chain.end_reset()
@@ -1418,9 +1330,11 @@ class RtpApp(RTP):
                 fd.write("Time,Index,Value\n")
 
         if self.main_win is not None:
-            # Start the running-status check timer. Timers and QThread work
-            # only with a QApplication.
-            self.chk_run_timer.start(1000)
+            # In the GUI, the running status is checked every second (the
+            # session ends when no new image arrives) and the scan onset is
+            # waited for in a thread (see RtpAppUI). Without the GUI, the
+            # scan is started with manual_start() and ended with end_run().
+            self._ui_call("start_run_check")
 
             # Wait for the scan onset signal
             if (
@@ -1432,19 +1346,7 @@ class RtpApp(RTP):
             self._scanning = False
             self._wait_start = True
 
-            self.th_wait_onset = QtCore.QThread()
-            self.wait_onset = RtpApp.WAIT_ONSET(
-                self, self.rtp_objs["TTLPHYSIO"], self.extApp_sock
-            )
-            self.wait_onset.moveToThread(self.th_wait_onset)
-            self.th_wait_onset.started.connect(self.wait_onset.run)
-            self.wait_onset.finished.connect(self.th_wait_onset.quit)
-            self.th_wait_onset.start()
-
-            self.ui_ready_btn.setText("Waiting for scan start ...")
-            self.ui_ready_btn.setEnabled(False)
-            self.ui_manStart_btn.setEnabled(True)
-            self.ui_quit_btn.setEnabled(True)
+            self._ui_call("start_wait_onset")
 
         self._isReadyRun = True
         return proc_chain
@@ -1482,33 +1384,21 @@ class RtpApp(RTP):
 
         self._isRunning_end_run_proc = True
 
-        self.chk_run_timer.stop()
+        self._ui_call("stop_run_check")
 
         if quit_btn:
             self._logger.info("Quit button is pressed.")
 
         if self.main_win is not None:
-            self.ui_ready_btn.setText("Ready")
-            self.ui_ready_btn.setEnabled(False)
-            self.ui_quit_btn.setEnabled(False)
-            self.ui_manStart_btn.setEnabled(False)
-            self.main_win.repaint()
-            QtWidgets.QApplication.instance().processEvents()
+            self._ui_call("on_end_run_start")
 
         try:
             save_fnames = {}
 
             self.end_proc()
 
-            # Abort the WAIT_ONSET thread if it is running
-            if (
-                hasattr(self, "th_wait_onset")
-                and self.th_wait_onset.isRunning()
-            ):
-                self.wait_onset.abort = True
-                if not self.th_wait_onset.wait(1):
-                    self.wait_onset.finished.emit()
-                    self.th_wait_onset.wait()
+            # Abort waiting for the scan onset (GUI)
+            self._ui_call("abort_wait_onset")
 
             # Send 'END' message to the external application
             if self.isAlive_extApp():
@@ -1571,8 +1461,7 @@ class RtpApp(RTP):
             self._logger.error(str(e) + "\n" + traceback.format_exc())
 
         if self.main_win is not None:
-            self.ui_setEnabled(True)
-            self.main_win.options_tab.setCurrentIndex(0)
+            self._ui_call("on_end_run_done")
 
         if self.rtp_objs["TTLPHYSIO"].available:
             self.rtp_objs["TTLPHYSIO"].release_standby_scan()
@@ -1754,24 +1643,17 @@ class RtpApp(RTP):
                 return
 
         if not keepfile:
-            # Confirmation dialog
-            msgBox = QtWidgets.QMessageBox()
-            msgBox.setIcon(QtWidgets.QMessageBox.Question)
+            # Confirmation dialog (without a GUI, the answer is No)
             if attr != "AllProc":
-                msgBox.setText(f"Are you sure you want to delete {ff}?")
-                msgBox.setWindowTitle(f"Delete {attr} file")
+                text = f"Are you sure you want to delete {ff}?"
+                title = f"Delete {attr} file"
             else:
-                msgBox.setText(
-                    "Are you sure you want to delete ALL processed files?"
-                )
-                msgBox.setWindowTitle("Delete all processed files")
+                text = "Are you sure you want to delete ALL processed files?"
+                title = "Delete all processed files"
 
-            msgBox.setStandardButtons(
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-            msgBox.setDefaultButton(QtWidgets.QMessageBox.No)
-            ret = msgBox.exec()
-            if ret != QtWidgets.QMessageBox.Yes:
+            ret = self._notifier().question(
+                text, title, buttons=("Yes", "No"), default="No")
+            if ret != "Yes":
                 return
 
         if attr != "AllProc":
@@ -1878,179 +1760,17 @@ class RtpApp(RTP):
                 self.set_param(attr, "")
 
     # --- Signal plot ---------------------------------------------------------
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    class PlotROISignal(QtCore.QObject):
-        """Window to plot the ROI signal in real time."""
-
-        finished = QtCore.pyqtSignal()
-
-        def __init__(self, root, num_ROIs=1, roi_labels=[], main_win=None):
-            super().__init__()
-
-            self.root = root
-            self.main_win = main_win
-            self.abort = False
-
-            self.plt_win = MatplotlibWindow()
-            self.plt_win.setWindowTitle("ROI signal")
-
-            # Place the window to the right of the main window
-            if main_win is not None:
-                main_geom = main_win.geometry()
-                x = main_geom.x() + main_geom.width() + 10
-                y = main_geom.y() + 735
-            else:
-                x, y = (0, 0)
-            win_height = 80 + 70 * num_ROIs
-            self.plt_win.setGeometry(x, y, 500, win_height)
-
-            self.roi_labels = roi_labels
-            self._axes = self.plt_win.canvas.figure.subplots(num_ROIs, 1)
-            if num_ROIs == 1:
-                self._axes = [self._axes]
-
-            self.plt_win.canvas.figure.subplots_adjust(
-                left=0.15, bottom=0.18, right=0.95, top=0.96, hspace=0.35
-            )
-            self._color_cycle = plt.get_cmap("tab10")
-
-            self.reset_plot()
-
-            self.plt_win.show()
-            self.plt_win.canvas.draw()
-
-            # Qt widgets must be updated in the GUI thread. A timer in the
-            # GUI thread polls the ROI signal and updates the plot.
-            self._plt_xi = []
-            self._running = False
-            self._timer = QtCore.QTimer(self)
-            self._timer.setInterval(100)
-            self._timer.timeout.connect(self._update_plot)
-
-        # ---------------------------------------------------------------------
-        def reset_plot(self):
-            self._ln = []
-            for ii, ax in enumerate(self._axes):
-                ax.cla()
-                if len(self.roi_labels) > ii:
-                    ax.set_ylabel(self.roi_labels[ii])
-                ax.set_xlim(0, 10)
-                self._ln.append(ax.plot(0, 0, color=self._color_cycle(ii + 1)))
-            self._axes[-1].set_xlabel("TR")
-
-        # ---------------------------------------------------------------------
-        def run(self):
-            """Start updating the plot."""
-            self._plt_xi = self.root._plt_xi.copy()
-            self._running = True
-            self._timer.start()
-
-        # ---------------------------------------------------------------------
-        def isRunning(self):
-            return self._running
-
-        # ---------------------------------------------------------------------
-        def _update_plot(self):
-            main_closed = (
-                self.main_win is not None and not self.main_win.isVisible()
-            )
-            if not self.plt_win.isVisible() or self.abort or main_closed:
-                self.end_thread()
-                return
-
-            if len(self.root._plt_xi) == len(self._plt_xi):
-                return
-
-            try:
-                # Plot signal
-                plt_xi = self.root._plt_xi.copy()
-                self._plt_xi = plt_xi
-                plt_roi_sig = self.root._roi_sig
-                for ii, ax in enumerate(self._axes):
-                    ll = min(len(plt_xi), len(plt_roi_sig[ii]))
-                    if ll == 0:
-                        continue
-
-                    y = plt_roi_sig[ii][:ll]
-                    self._ln[ii][0].set_data(plt_xi[:ll], y)
-
-                    # Adjust the y range, ignoring outliers beyond 4 SD
-                    ax.relim()
-                    if np.sum(~np.isnan(y)) > 10:
-                        yl_orig = np.array(ax.get_ylim())
-                        yl = yl_orig.copy()
-                        sd = np.nanstd(y)
-                        mu = np.nanmean(y)
-                        if np.nanmin(y) < yl[0]:
-                            yl[0] = max(np.nanmin(y), mu - 4 * sd)
-
-                        if np.nanmax(y) > yl[1]:
-                            yl[1] = min(np.nanmax(y), mu + 4 * sd)
-
-                        if np.any(yl != yl_orig):
-                            ax.set_ylim(yl)
-
-                    ax.autoscale_view()
-
-                    # Extend the x range in steps of 10
-                    xl = ax.get_xlim()
-                    if (plt_xi[-1] // 10 + 1) * 10 > xl[1]:
-                        ax.set_xlim([0, (plt_xi[-1] // 10 + 1) * 10])
-                self.plt_win.canvas.draw()
-
-            except IndexError:
-                pass
-
-            except Exception as e:
-                self.root.errmsg(str(e), no_pop=True)
-                sys.stdout.flush()
-
-        # ---------------------------------------------------------------------
-        def end_thread(self):
-            if not self._running:
-                return
-            self._running = False
-            self._timer.stop()
-
-            if self.plt_win.isVisible():
-                self.plt_win.close()
-
-            self.finished.emit()
-
-            if hasattr(self.root, "ui_showROISig_cbx"):
-                self.root.ui_showROISig_cbx.setCheckState(0)
-
+    # The ROI signal plot window is in the GUI (rtpspy.ui.app_ui).
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_ROISig_plot(self, num_ROIs=1, roi_labels=[]):
-        """Open the ROI signal plot."""
-        if hasattr(self, "pltROISig") and self.pltROISig.isRunning():
-            return
-
-        self.pltROISig = RtpApp.PlotROISignal(
-            self,
-            num_ROIs=num_ROIs,
-            roi_labels=roi_labels,
-            main_win=self.main_win,
-        )
-        self.pltROISig.run()
+        """Open the ROI signal plot (GUI only)."""
+        self._ui_call("open_ROISig_plot", num_ROIs=num_ROIs,
+                      roi_labels=roi_labels)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_ROISig_plot(self):
-        """Close the ROI signal plot."""
-        if hasattr(self, "pltROISig"):
-            pltROISig = self.pltROISig
-            del self.pltROISig
-            pltROISig.end_thread()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def show_ROIsig_chk(self, state):
-        """Checkbox to show or hide the ROI signal plot."""
-        if state == 2:
-            self.open_ROISig_plot(
-                num_ROIs=self.num_ROIs, roi_labels=self.roi_labels
-            )
-        else:
-            self.close_ROISig_plot()
+        """Close the ROI signal plot (GUI only)."""
+        self._ui_call("close_ROISig_plot")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_ROI_sig(self, save_f, ti, roi_sig, roi_label=[]):
@@ -2086,118 +1806,19 @@ class RtpApp(RTP):
 
         savedf.to_csv(save_f, index=False)
 
-    # --- Session control -----------------------------------------------------
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    class WAIT_ONSET(QtCore.QObject):
-        """Wait for the scan onset and notify the external application.
-
-        Run in a QThread. The onset time is read from onsetObj
-        (RtpTTLPhysio).
-        """
-
-        finished = QtCore.pyqtSignal()
-
-        def __init__(self, parent, onsetObj=None, extApp_sock=None):
-            super().__init__()
-            self.parent = parent
-            self.onsetObj = onsetObj
-            self.extApp_sock = extApp_sock
-            self.abort = False
-
-        def run(self):
-            onset_time = 0
-            while not self.abort:
-                if self.onsetObj is not None and self.onsetObj.available:
-                    onset_time = self.onsetObj.scan_onset
-                    if onset_time != 0:
-                        break
-                time.sleep(1 / 60)
-
-            if self.abort:
-                self.finished.emit()
-                return
-
-            self.parent._scanning = True
-            self.parent._wait_start = False
-            self.parent.scan_onset = onset_time
-            if self.onsetObj is not None and self.onsetObj.available:
-                self.onsetObj.start_scan()
-
-            if self.extApp_sock is not None:
-                _send_scan_start(self.extApp_sock, onset_time)
-
-            self.finished.emit()
-
+    # --- Session control in the GUI ------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_setEnabled(self, enabled):
-        """Enable or disable the UI elements."""
+        """Enable or disable the widgets of all the modules in the GUI."""
         if self.main_win is not None:
-            objs = list(self.main_win.rtp_objs.values())
-            objs += list(self.main_win.rtp_apps.values())
-            for pobj in objs:
-                if not hasattr(pobj, "ui_objs"):
-                    continue
-
-                for ui in pobj.ui_objs:
-                    ui.setEnabled(enabled)
-
-                if hasattr(pobj, "ui_enabled_rdb"):
-                    pobj.ui_enabled_rdb.setEnabled(enabled)
-
-            if hasattr(self.main_win, "chbRecSignal"):
-                self.main_win.chbRecSignal.setEnabled(enabled)
-            if hasattr(self.main_win, "chbUseGPU"):
-                self.main_win.chbUseGPU.setEnabled(enabled)
-            self.main_win.btnSetWorkDir.setEnabled(enabled)
-            self.main_win.btnSetWatchDir.setEnabled(enabled)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def chkRunTimerEvent(self):
-        """Check the running status every second and end the session if
-        requested by the external application or no new image arrives."""
-        if self.extApp_sock is not None:
-            # Check a message from the external application
-            msg = self.recv_extApp(timeout=0.001)
-            if msg is not None and "END_SESSION" in msg.decode():
-                if self.ui_quit_btn.isEnabled():
-                    self._logger.info("Recv END_SESSION. End session.")
-                    if not self._isRunning_end_run_proc:
-                        self.end_run()
-                else:
-                    self.ui_ready_btn.setEnabled(False)
-                return
-
-        # Check the time since the last image in WATCH
-        if (
-            self.enable_RTP
-            and not np.isnan(self.max_watch_wait)
-            and len(self.rtp_objs["WATCH"]._proc_time)
-        ):
-            delay = time.time() - self.rtp_objs["WATCH"]._proc_time[-1]
-            if delay > self.max_watch_wait:
-                self._logger.info(
-                    f"No new file was seen for {delay:.3f} s. End session."
-                )
-                if not self._isRunning_end_run_proc:
-                    self.end_run()
-                return
-
-        # Update the button text when the scan has started
-        if (
-            hasattr(self, "ui_ready_btn")
-            and "waiting" in self.ui_ready_btn.text().lower()
-        ):
-            if self._scanning:
-                self.ui_ready_btn.setText("Session is running")
-                self.ui_manStart_btn.setEnabled(False)
-
-        # Schedule the next check
-        self.chk_run_timer.start(1000)
+            self._ui_call("set_enabled_all", enabled)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def keyPressEvent(self, event):
-        # The 'T' key starts the scan while waiting for the scan onset.
-        if self._wait_start and event.key() == QtCore.Qt.Key_T:
+        """Key press in the GUI window (passed by RtpGUI). The 'T' key
+        starts the scan while waiting for the scan onset."""
+        # Qt key code of a letter is its uppercase ASCII code (Qt.Key_T).
+        if self._wait_start and event.key() == ord("T"):
             self.manual_start()
 
     # --- Communication with an external application via RTP_SERVE ----------
@@ -2230,16 +1851,16 @@ class RtpApp(RTP):
             self.err_popup(errmsg)
             return -1
 
+        progress_bar = None
         if self.main_win is not None:
             cmdstr = Path(cmd.split()[0]).name
-            progress_bar = DlgProgressBar(
+            progress_bar = self._notifier().progress_dialog(
                 title=f"Run {cmdstr} ...", parent=self.main_win
             )
+        if progress_bar is not None:
             progress_bar.btnCancel.setVisible(False)
             progress_bar.set_msgTxt(f"Run {cmdstr} ...")
             time.sleep(0.1)  # Give the UI time to update the dialog
-        else:
-            progress_bar = None
 
         # --- Kill a running process ---
         if self.extApp_sock is not None:
@@ -2488,11 +2109,8 @@ class RtpApp(RTP):
             attr = "aseg_orig"
 
         if attr == "enable_RTP":
-            if reset_fn is None and hasattr(self, "ui_enableRTP_chb"):
-                if val == 0:
-                    self.ui_enableRTP_chb.setCheckState(0)
-                else:
-                    self.ui_enableRTP_chb.setCheckState(2)
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
         elif attr == "work_dir":
             if val is None or not Path(val).is_dir():
@@ -2505,10 +2123,8 @@ class RtpApp(RTP):
                 self.main_win.set_workDir(val)
 
         elif attr == "extApp_cmd":
-            if self.main_win is not None and hasattr(
-                self, "ui_extApp_cmd_lnEd"
-            ):
-                self.ui_extApp_cmd_lnEd.setText(val)
+            if self.main_win is not None:
+                self._ui_update(attr, val)
 
         elif attr == "extApp_addr":
             if val is None:
@@ -2520,9 +2136,7 @@ class RtpApp(RTP):
                     if not self.isAlive_extApp():
                         self.extApp_addr = None
                         return
-                    self.ui_extApp_addr_lnEd.blockSignals(True)
-                    self.ui_extApp_addr_lnEd.setText("{}:{}".format(*val))
-                    self.ui_extApp_addr_lnEd.blockSignals(False)
+                    self._ui_update(attr, val)
 
             elif type(val) is str:
                 try:
@@ -2536,10 +2150,8 @@ class RtpApp(RTP):
                         self._logger.error(errmsg)
                         self.err_popup(errmsg)
                         if reset_fn is not None:
-                            self.ui_extApp_addr_lnEd.blockSignals(True)
-                            addr_str = "{}:{}".format(*self.extApp_addr)
-                            reset_fn(addr_str)
-                            self.ui_extApp_addr_lnEd.blockSignals(False)
+                            # Restore the address in the GUI
+                            self._ui_update(attr, self.extApp_addr)
                     return
 
                 if self.extApp_sock is not None and (
@@ -2551,10 +2163,10 @@ class RtpApp(RTP):
                     self.extApp_sock = None
 
         elif attr == "extApp_isAlive":
-            # Check the connection and show the result with reset_fn
+            # Check the connection and show the result with reset_fn. val is
+            # the address ('host:port') to use if extApp_addr is not set.
             if self.extApp_addr is None:
-                extApp_addr = self.ui_extApp_addr_lnEd.text()
-                self.set_param("extApp_addr", extApp_addr)
+                self.set_param("extApp_addr", val)
                 if self.extApp_addr is None:
                     msgStr = f"!No valid address is set. ({time.ctime()})"
                     reset_fn(msgStr)
@@ -2571,10 +2183,9 @@ class RtpApp(RTP):
 
         elif attr == "sig_save_file":
             if val == "":
-                fname = QtWidgets.QFileDialog.getSaveFileName(
-                    None,
+                fname = self._notifier().get_save_file(
                     "File name to save the real-time signal",
-                    str(self.work_dir),
+                    self.work_dir,
                     "*.csv",
                 )
                 if fname[0] == "":
@@ -2627,20 +2238,17 @@ class RtpApp(RTP):
                 else:
                     val = ""
 
-                if hasattr(self, f"ui_{attr}_lnEd"):
-                    obj = getattr(self, f"ui_{attr}_lnEd")
-                    obj.setText(str(val))
+                self._ui_update(attr, val)
 
         elif attr == "ROI_resample":
             if val not in self.ROI_resample_opts:
                 return
 
-            if reset_fn is None and hasattr(self, "ui_ROI_resample_cmbBx"):
-                self.ui_ROI_resample_cmbBx.setCurrentText(val)
+            if reset_fn is None:
+                self._ui_update(attr, val)
 
         elif attr == "no_FastSeg":
-            if hasattr(self, "ui_no_FastSeg_chb"):
-                self.ui_no_FastSeg_chb.setChecked(val)
+            self._ui_update(attr, val)
 
         elif not hasattr(self, attr):
             # Other existing attributes (e.g., max_watch_wait) are just set
@@ -2653,554 +2261,6 @@ class RtpApp(RTP):
             print(f"{self.__class__.__name__}.{attr} = {getattr(self, attr)}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _add_file_row(
-        self, layout, row, label, attr, set_dir, show_value=True,
-        highlight=False,
-    ):
-        """Add a row of [label, file path, Set, Unset] widgets for a file
-        parameter to a grid layout.
-
-        Parameters
-        ----------
-        layout : QGridLayout
-            Layout to add the widgets.
-        row : int
-            Row index in the layout.
-        label : str
-            Label text.
-        attr : str
-            File parameter name.
-        set_dir : function
-            Returns the value given to set_param when Set is clicked (the
-            start directory of the file dialog).
-        show_value : bool, optional
-            Show the current value in the path field.
-        highlight : bool, optional
-            Color the Set button.
-
-        Returns
-        -------
-        (label, path field, Set button, Unset button) widgets
-        """
-        lb = QtWidgets.QLabel(label)
-        layout.addWidget(lb, row, 0)
-
-        lnEd = QtWidgets.QLineEdit()
-        if show_value:
-            lnEd.setText(str(getattr(self, attr)))
-        lnEd.setReadOnly(True)
-        lnEd.setStyleSheet("border: 0px none;")
-        layout.addWidget(lnEd, row, 1)
-
-        set_btn = QtWidgets.QPushButton("Set")
-        set_btn.clicked.connect(
-            lambda: self.set_param(attr, set_dir(), lnEd.setText)
-        )
-        if highlight:
-            set_btn.setStyleSheet(_SET_BTN_STYLE)
-        layout.addWidget(set_btn, row, 2)
-
-        del_btn = QtWidgets.QPushButton("Unset")
-        del_btn.clicked.connect(
-            lambda: self.delete_file(attr, keepfile=True)
-        )
-        layout.addWidget(del_btn, row, 3)
-
-        return lb, lnEd, set_btn, del_btn
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ui_set_param(self):
-        """Make the UI widgets.
-
-        Returns
-        -------
-        ui_rows : list of tuples
-            Widget rows to be placed by RtpGUI.
-        """
-        ui_rows = []
-        self.ui_objs = []  # Widgets disabled while running
-
-        # enabled
-        self.ui_enableRTP_chb = QtWidgets.QCheckBox("Enable RTP")
-        self.ui_enableRTP_chb.setChecked(self.enable_RTP)
-        self.ui_enableRTP_chb.stateChanged.connect(
-            lambda x: self.set_param(
-                "enable_RTP", x, self.ui_enableRTP_chb.setCheckState
-            )
-        )
-        ui_rows.append((self.ui_enableRTP_chb, None))
-        self.ui_objs.append(self.ui_enableRTP_chb)
-
-        # tab
-        self.ui_top_tabs = QtWidgets.QTabWidget()
-        ui_rows.append((self.ui_top_tabs,))
-
-        # Values given to set_param by the Set buttons of the file rows
-        # (the start directory of the file dialog)
-        def default_dir():
-            return ""
-
-        def work_dir():
-            return self.work_dir
-
-        # region: Preprocessing tab -------------------------------------------
-        self.ui_preprocessingTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_preprocessingTab, "Preprocessing")
-        self.ui_preprocessing_fLayout = QtWidgets.QFormLayout(
-            self.ui_preprocessingTab
-        )
-
-        # region: dcm2nii --
-        self.ui_dcm2nii_btn = QtWidgets.QPushButton("dcm2niix")
-        self.ui_dcm2nii_btn.clicked.connect(self.run_dcm2nii)
-        self.ui_preprocessing_fLayout.addRow(self.ui_dcm2nii_btn)
-        self.ui_objs.append(self.ui_dcm2nii_btn)
-        # endregion
-
-        # region: Reference images group ---
-        self.ui_RefImg_grpBx = QtWidgets.QGroupBox("Reference images")
-        RefImg_gLayout = QtWidgets.QGridLayout(self.ui_RefImg_grpBx)
-        self.ui_preprocessing_fLayout.addRow(self.ui_RefImg_grpBx)
-        self.ui_objs.append(self.ui_RefImg_grpBx)
-
-        # -- Anatomy orig image --
-        (
-            _, self.ui_anat_orig_lnEd, self.ui_anat_orig_btn,
-            self.ui_anat_orig_del_btn
-        ) = self._add_file_row(
-            RefImg_gLayout, 0, "Anatomy image :", "anat_orig", default_dir,
-            show_value=False, highlight=True,
-        )
-        if self.anat_orig and Path(self.anat_orig).exists():
-            self.ui_anat_orig_lnEd.setText(str(self.anat_orig))
-
-        # -- function orig image --
-        (
-            _, self.ui_func_orig_lnEd, self.ui_func_orig_btn,
-            self.ui_func_orig_del_btn
-        ) = self._add_file_row(
-            RefImg_gLayout, 1, "Base function image : ", "func_orig",
-            default_dir, show_value=False, highlight=True,
-        )
-
-        # -- parameter reference image --
-        (
-            _, self.ui_func_param_ref_lnEd, self.ui_param_ref_btn,
-            self.ui_param_ref_del_btn
-        ) = self._add_file_row(
-            RefImg_gLayout, 2, "fMRI parameter reference : ",
-            "func_param_ref", default_dir, show_value=False, highlight=True,
-        )
-        # endregion
-
-        # region: Fieldmap PEPOLAR images group --
-        self.ui_Fmap_grpBx = QtWidgets.QGroupBox("Fieldmap PEPOLAR images")
-        Fmap_gLayout = QtWidgets.QGridLayout(self.ui_Fmap_grpBx)
-        self.ui_preprocessing_fLayout.addRow(self.ui_Fmap_grpBx)
-        self.ui_objs.append(self.ui_Fmap_grpBx)
-
-        # -- Fieldmap with the same phase encoding --
-        (
-            _, self.ui_fieldmap_posi_lnEd, self.ui_fieldmap_posi_btn,
-            self.ui_fieldmap_posi_del_btn
-        ) = self._add_file_row(
-            Fmap_gLayout, 0, "Same PE direction :", "fieldmap_posi",
-            default_dir, show_value=False, highlight=True,
-        )
-
-        # -- Fieldmap with the opposite phase encoding --
-        (
-            _, self.ui_fieldmap_nega_lnEd, self.ui_fieldmap_nega_btn,
-            self.ui_fieldmap_nega_del_btn
-        ) = self._add_file_row(
-            Fmap_gLayout, 1, "Opposite PE direction :", "fieldmap_nega",
-            default_dir, show_value=False, highlight=True,
-        )
-        # endregion
-
-        # region: CreateMasks button --
-        ui_CreateMasks_hLayout = QtWidgets.QHBoxLayout()
-        self.ui_preprocessing_fLayout.addRow(ui_CreateMasks_hLayout)
-
-        self.ui_CreateMasks_btn = QtWidgets.QPushButton(
-            "Create masks (+shift=overwrite)"
-        )
-        self.ui_CreateMasks_btn.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.ui_CreateMasks_btn.clicked.connect(
-            lambda x: self.make_masks(
-                progress_dlg=True, no_FastSeg=self.no_FastSeg
-            )
-        )
-        self.ui_CreateMasks_btn.setStyleSheet(_SET_BTN_STYLE)
-        ui_CreateMasks_hLayout.addWidget(self.ui_CreateMasks_btn)
-        self.ui_objs.append(self.ui_CreateMasks_btn)
-
-        # no_FastSeg checkbox
-        self.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
-        self.ui_no_FastSeg_chb.setChecked(self.no_FastSeg)
-        self.ui_no_FastSeg_chb.stateChanged.connect(
-            lambda x: self.set_param(
-                "no_FastSeg", x, self.ui_no_FastSeg_chb.setCheckState
-            )
-        )
-        ui_CreateMasks_hLayout.addWidget(self.ui_no_FastSeg_chb)
-        self.ui_objs.append(self.ui_no_FastSeg_chb)
-        # endregion
-
-        # region: Check masks group ---
-        self.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
-            "Display the masks in AFNI"
-        )
-        ChkMask_gLayout = QtWidgets.QGridLayout(self.ui_ChkMask_grpBx)
-        self.ui_preprocessing_fLayout.addRow(self.ui_ChkMask_grpBx)
-        self.ui_objs.append(self.ui_ChkMask_grpBx)
-
-        self.ui_openAFNI_btn = QtWidgets.QPushButton("Open AFNI")
-        self.ui_openAFNI_btn.clicked.connect(lambda: self.check_onAFNI())
-        ChkMask_gLayout.addWidget(self.ui_openAFNI_btn, 0, 0)
-
-        self.ui_chkFuncAnat_btn = QtWidgets.QPushButton("func-anat align")
-        self.ui_chkFuncAnat_btn.clicked.connect(
-            lambda: self.check_onAFNI("anat", "func")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkFuncAnat_btn, 0, 1)
-
-        self.ui_chkROIFunc_btn = QtWidgets.QPushButton("ROI on function")
-        self.ui_chkROIFunc_btn.clicked.connect(
-            lambda: self.check_onAFNI("func", "roi")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkROIFunc_btn, 0, 2)
-
-        self.ui_chkROIAnat_btn = QtWidgets.QPushButton("ROI on anatomy")
-        self.ui_chkROIAnat_btn.clicked.connect(
-            lambda: self.check_onAFNI("anat", "roi")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkROIAnat_btn, 0, 3)
-
-        self.ui_chkWMFunc_btn = QtWidgets.QPushButton("WM on anatomy")
-        self.ui_chkWMFunc_btn.clicked.connect(
-            lambda: self.check_onAFNI("anat", "wm")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkWMFunc_btn, 1, 0)
-
-        self.ui_chkVentFunc_btn = QtWidgets.QPushButton("Vent on anatomy")
-        self.ui_chkVentFunc_btn.clicked.connect(
-            lambda: self.check_onAFNI("anat", "vent")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkVentFunc_btn, 1, 1)
-
-        self.ui_chkGSRmask_btn = QtWidgets.QPushButton("GSR mask")
-        self.ui_chkGSRmask_btn.clicked.connect(
-            lambda: self.check_onAFNI("func", "GSRmask")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkGSRmask_btn, 1, 2)
-
-        self.ui_chkRTPmask_btn = QtWidgets.QPushButton("RTP mask")
-        self.ui_chkRTPmask_btn.clicked.connect(
-            lambda: self.check_onAFNI("func", "RTPmask")
-        )
-        ChkMask_gLayout.addWidget(self.ui_chkRTPmask_btn, 1, 3)
-        # endregion
-
-        # endregion: Preprocessing tab ----------------------------------------
-
-        # --- Template tab ----------------------------------------------------
-        self.ui_templateTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_templateTab, "Template")
-        template_fLayout = QtWidgets.QFormLayout(self.ui_templateTab)
-
-        self.ui_Template_grpBx = QtWidgets.QGroupBox("Template images")
-        Template_gLayout = QtWidgets.QGridLayout(self.ui_Template_grpBx)
-        template_fLayout.addWidget(self.ui_Template_grpBx)
-        self.ui_objs.append(self.ui_Template_grpBx)
-
-        # The file dialog for a template file starts from the directory of
-        # the current file.
-        # -- Template image --
-        (
-            _, self.ui_template_lnEd, self.ui_template_btn,
-            self.ui_template_del_btn
-        ) = self._add_file_row(
-            Template_gLayout, 0, "Template brain :", "template",
-            lambda: os.path.dirname(self.ui_template_lnEd.text()),
-        )
-
-        # -- ROI on template --
-        (
-            self.ui_ROI_template_lb, self.ui_ROI_template_lnEd,
-            self.ui_ROI_template_btn, self.ui_ROI_template_del_btn
-        ) = self._add_file_row(
-            Template_gLayout, 1, "ROI on template :", "ROI_template",
-            lambda: os.path.dirname(self.ui_ROI_template_lnEd.text()),
-        )
-
-        # ROI resampling mode
-        var_ROI_resample_lb = QtWidgets.QLabel("ROI resampling :")
-        Template_gLayout.addWidget(var_ROI_resample_lb, 2, 0)
-
-        self.ui_ROI_resample_cmbBx = QtWidgets.QComboBox()
-        self.ui_ROI_resample_cmbBx.addItems(self.ROI_resample_opts)
-        self.ui_ROI_resample_cmbBx.setCurrentText(self.ROI_resample)
-        self.ui_ROI_resample_cmbBx.currentIndexChanged.connect(
-            lambda idx: self.set_param(
-                "ROI_resample",
-                self.ui_ROI_resample_cmbBx.currentText(),
-                self.ui_ROI_resample_cmbBx.setCurrentIndex,
-            )
-        )
-        Template_gLayout.addWidget(self.ui_ROI_resample_cmbBx, 2, 1)
-
-        # -- WM on template --
-        (
-            self.ui_WM_template_lb, self.ui_WM_template_lnEd,
-            self.ui_WM_template_btn, self.ui_WM_template_del_btn
-        ) = self._add_file_row(
-            Template_gLayout, 3, "White matter on template :", "WM_template",
-            lambda: os.path.dirname(self.ui_WM_template_lnEd.text()),
-        )
-
-        # -- Ventricle on template --
-        (
-            self.ui_Vent_template_lb, self.ui_Vent_template_lnEd,
-            self.ui_Vent_template_btn, self.ui_Vent_template_del_btn
-        ) = self._add_file_row(
-            Template_gLayout, 4, "Ventricle on template :", "Vent_template",
-            lambda: os.path.dirname(self.ui_Vent_template_lnEd.text()),
-        )
-
-        # --- Processed image tab ---------------------------------------------
-        self.ui_procImgTab = QtWidgets.QWidget()
-        self.ui_top_tabs.addTab(self.ui_procImgTab, "Processed images")
-        procImg_gLayout = QtWidgets.QGridLayout(self.ui_procImgTab)
-
-        # -- Distortion correction warp --
-        (
-            _, self.ui_sdc_invwarp_lnEd, self.ui_sdc_invwarp_btn,
-            self.ui_sdc_invwarp_del_btn
-        ) = self._add_file_row(
-            procImg_gLayout, 0, "Distortion warp :", "sdc_invwarp", work_dir
-        )
-
-        # -- Distortion-corrected functional image --
-        (
-            _, self.ui_func_orig_sdc_lnEd, self.ui_func_orig_sdc_btn,
-            self.ui_func_orig_sdc_del_btn
-        ) = self._add_file_row(
-            procImg_gLayout, 1, "Corrected function :", "func_orig_sdc",
-            work_dir,
-        )
-
-        # -- Aligned anatomy --
-        alAnat_row = self._add_file_row(
-            procImg_gLayout, 2, "Aligned anatomy :", "alAnat", work_dir
-        )
-        (
-            _, self.ui_alAnat_lnEd, self.ui_alAnat_btn, self.ui_alAnat_del_btn
-        ) = alAnat_row
-        self.ui_objs.extend(alAnat_row)
-
-        # -- Warped images --
-        self.ui_wrpImg_grpBx = QtWidgets.QGroupBox("Warped images")
-        wrpImg_gLayout = QtWidgets.QGridLayout(self.ui_wrpImg_grpBx)
-        procImg_gLayout.addWidget(self.ui_wrpImg_grpBx, 3, 0, 1, 4)
-        self.ui_objs.append(self.ui_wrpImg_grpBx)
-
-        # -- WM in the original space --
-        (
-            _, self.ui_WM_orig_lnEd, self.ui_WM_orig_btn,
-            self.ui_WM_orig_del_btn
-        ) = self._add_file_row(
-            wrpImg_gLayout, 0, "WM mask in original :", "WM_orig", work_dir
-        )
-
-        # -- Vent in the original space --
-        (
-            _, self.ui_Vent_orig_lnEd, self.ui_Vent_orig_btn,
-            self.ui_Vent_orig_del_btn
-        ) = self._add_file_row(
-            wrpImg_gLayout, 1, "Vent mask in original :", "Vent_orig",
-            work_dir,
-        )
-
-        # -- ROI in the original space --
-        (
-            self.ui_ROI_orig_lb, self.ui_ROI_orig_lnEd, self.ui_ROI_orig_btn,
-            self.ui_ROI_orig_del_btn
-        ) = self._add_file_row(
-            wrpImg_gLayout, 2, "ROI mask in original :", "ROI_orig", work_dir
-        )
-
-        # -- RTP mask --
-        RTP_mask_row = self._add_file_row(
-            procImg_gLayout, 4, "RTP mask :", "RTP_mask", work_dir
-        )
-        (
-            _, self.ui_RTP_mask_lnEd, self.ui_RTP_mask_btn,
-            self.ui_RTP_mask_del_btn
-        ) = RTP_mask_row
-        self.ui_objs.extend(RTP_mask_row)
-
-        # -- GSR mask --
-        GSR_mask_row = self._add_file_row(
-            procImg_gLayout, 5, "GSR mask :", "GSR_mask", work_dir
-        )
-        (
-            _, self.ui_GSR_mask_lnEd, self.ui_GSR_mask_btn,
-            self.ui_GSR_mask_del_btn
-        ) = GSR_mask_row
-        self.ui_objs.extend(GSR_mask_row)
-
-        # -- Delete all processed images --
-        self.ui_delAllProcImgs_btn = QtWidgets.QPushButton("Delete All")
-        self.ui_delAllProcImgs_btn.setStyleSheet(
-            "background-color: rgb(255,0,0);"
-        )
-        self.ui_delAllProcImgs_btn.clicked.connect(
-            lambda: self.delete_file("AllProc")
-        )
-        procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, 6, 3)
-        self.ui_objs.append(self.ui_delAllProcImgs_btn)
-
-        if self.run_extApp:
-            # --- External App tab ------------------------------------------
-            self.ui_extAppTab = QtWidgets.QWidget()
-            self.ui_top_tabs.addTab(self.ui_extAppTab, "Ext App")
-            self.ui_extApp_fLayout = QtWidgets.QFormLayout(self.ui_extAppTab)
-
-            # Command line
-            var_lb = QtWidgets.QLabel("App command:")
-            self.ui_extApp_cmd_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_cmd_lnEd.setText(str(self.extApp_cmd))
-            self.ui_extApp_cmd_lnEd.editingFinished.connect(
-                lambda: self.set_param(
-                    "extApp_cmd", self.ui_extApp_cmd_lnEd.text()
-                )
-            )
-            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_cmd_lnEd)
-            self.ui_objs.append(self.ui_extApp_cmd_lnEd)
-
-            # Boot App
-            self.ui_extApp_run_btn = QtWidgets.QPushButton("Run App")
-            self.ui_extApp_run_btn.clicked.connect(
-                lambda x: self.boot_extApp()
-            )
-            self.ui_extApp_fLayout.addRow(self.ui_extApp_run_btn, None)
-            self.ui_objs.append(self.ui_extApp_run_btn)
-
-            # Address
-            var_lb = QtWidgets.QLabel("App server address\n(host:port):")
-            self.ui_extApp_addr_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_addr_lnEd.editingFinished.connect(
-                lambda: self.set_param(
-                    "extApp_addr",
-                    self.ui_extApp_addr_lnEd.text(),
-                    self.ui_extApp_addr_lnEd.setText,
-                )
-            )
-            if self.extApp_addr is not None:
-                addr_str = "{}:{}".format(*self.extApp_addr)
-                self.ui_extApp_addr_lnEd.setText(addr_str)
-            self.ui_extApp_fLayout.addRow(var_lb, self.ui_extApp_addr_lnEd)
-            self.ui_objs.append(self.ui_extApp_addr_lnEd)
-
-            # Check alive
-            self.ui_extApp_isAlive_btn = QtWidgets.QPushButton(
-                "Check connection"
-            )
-            self.ui_extApp_isAlive_btn.clicked.connect(
-                lambda x: self.set_param(
-                    "extApp_isAlive", "", self.ui_extApp_isAlive_lb.setText
-                )
-            )
-            self.ui_extApp_isAlive_lb = QtWidgets.QLabel("")
-            self.ui_extApp_fLayout.addRow(
-                self.ui_extApp_isAlive_btn, self.ui_extApp_isAlive_lb
-            )
-            self.ui_objs.append(self.ui_extApp_isAlive_btn)
-
-        else:
-            # --- Output tab ------------------------------------------------
-            self.ui_extAppTab = QtWidgets.QWidget()
-            self.ui_top_tabs.addTab(self.ui_extAppTab, "Output")
-            self.ui_extApp_gLayout = QtWidgets.QGridLayout(self.ui_extAppTab)
-
-            # Real-time signal output file
-            var_lb = QtWidgets.QLabel("Real-time output file :")
-            self.ui_extApp_gLayout.addWidget(var_lb, 0, 0)
-
-            self.ui_sigSaveFile_lnEd = QtWidgets.QLineEdit()
-            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_lnEd, 0, 1)
-            self.ui_sigSaveFile_lnEd.setText(str(self.sig_save_file))
-            self.ui_sigSaveFile_lnEd.editingFinished.connect(
-                lambda: self.set_param(
-                    "sig_save_file",
-                    self.ui_sigSaveFile_lnEd.text(),
-                    self.ui_sigSaveFile_lnEd.setText,
-                )
-            )
-
-            self.ui_sigSaveFile_btn = QtWidgets.QPushButton("Set")
-            self.ui_sigSaveFile_btn.clicked.connect(
-                lambda: self.set_param(
-                    "sig_save_file", "", self.ui_sigSaveFile_lnEd.setText
-                )
-            )
-            self.ui_sigSaveFile_btn.setStyleSheet(_SET_BTN_STYLE)
-            self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
-
-        # --- RTP setup button ------------------------------------------------
-        self.ui_setRTP_btn = QtWidgets.QPushButton("RTP setup")
-        self.ui_setRTP_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);height: 20px;"
-        )
-
-        self.ui_setRTP_btn.clicked.connect(self.RTP_setup)
-        ui_rows.append((self.ui_setRTP_btn,))
-        self.ui_objs.append(self.ui_setRTP_btn)
-
-        # --- Show Extracted Signal checkbox ----------------------------------
-        self.ui_showROISig_cbx = QtWidgets.QCheckBox("Show Extracted Signal")
-        self.ui_showROISig_cbx.setCheckState(0)
-        self.ui_showROISig_cbx.stateChanged.connect(
-            lambda x: self.show_ROIsig_chk(x)
-        )
-        # RtpGUI.layout_ui places this checkbox.
-
-        # --- Ready and Quit buttons ------------------------------------------
-        readyQuitWdt = QtWidgets.QWidget()
-        self.main_win.hBoxExpCtrls.addWidget(readyQuitWdt)
-        readyQuit_gLayout = QtWidgets.QGridLayout(readyQuitWdt)
-
-        # -- Ready button --
-        self.ui_ready_btn = QtWidgets.QPushButton("Ready")
-        self.ui_ready_btn.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
-        )
-        self.ui_ready_btn.clicked.connect(self.ready_to_run)
-        self.ui_ready_btn.setEnabled(False)
-        self.ui_ready_btn.setStyleSheet(
-            "background-color: rgb(255,201,32);height: 20px;"
-        )
-        readyQuit_gLayout.addWidget(self.ui_ready_btn, 0, 0, 1, 4)
-
-        # -- Manual start button --
-        self.ui_manStart_btn = QtWidgets.QPushButton("Manual start")
-        self.ui_manStart_btn.setStyleSheet("background-color: rgb(94,63,153);")
-        self.ui_manStart_btn.clicked.connect(self.manual_start)
-        self.ui_manStart_btn.setEnabled(False)
-        readyQuit_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
-
-        # -- Quit button --
-        self.ui_quit_btn = QtWidgets.QPushButton("Cancel")
-        self.ui_quit_btn.setStyleSheet("background-color: rgb(255,0,0);")
-        self.ui_quit_btn.clicked.connect(partial(self.end_run, True))
-        self.ui_quit_btn.setEnabled(False)
-        readyQuit_gLayout.addWidget(self.ui_quit_btn, 0, 5, 1, 1)
-
-        return ui_rows
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         """Return the parameters to save, excluding run-time states."""
         opts = super().get_params()
@@ -3208,7 +2268,6 @@ class RtpApp(RTP):
         excld_opts = (
             "ROI_mask",
             "isReadyRun",
-            "chk_run_timer",
             "brain_anat_orig",
             "roi_sig",
             "plt_xi",
@@ -3252,6 +2311,7 @@ class RtpApp(RTP):
 
 # %% __main__ =================================================================
 if __name__ == "__main__":
+    from PyQt5 import QtWidgets
     from rtpspy import RtpGUI
 
     DEBUG = False

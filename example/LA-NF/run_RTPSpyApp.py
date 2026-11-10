@@ -72,7 +72,7 @@ if __name__ == '__main__':
 
     # Make RtpGUI instance
     app_obj = {'LA-NF': rtp_app}
-    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_dir='./log')
+    rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj)
 
     # Keep RTP objects for loading and saving the parameters
     all_rtp_objs = rtp_app.rtp_objs

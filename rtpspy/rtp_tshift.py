@@ -14,7 +14,6 @@ import json
 
 import numpy as np
 import nibabel as nib
-from PyQt5 import QtWidgets
 
 try:
     from .rtp_common import RTP
@@ -29,6 +28,9 @@ class RtpTshift(RTP):
     # Log label and output filename prefix (see RTP.do_proc)
     _proc_label = 'Slice-timing correction'
     _out_prefix = 'ts.'
+
+    # GUI panel (rtpspy.ui.tshift_ui)
+    _ui_class = "tshift_ui:RtpTshiftUI"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, method='cubic', ref_time=0, TR=2.0,
@@ -413,11 +415,9 @@ class RtpTshift(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_slice_timing_uis(self):
-        if hasattr(self, 'ui_TR_dSpBx'):
-            self.ui_TR_dSpBx.setValue(self.TR)
-
-        if hasattr(self, 'ui_SlTiming_lnEd'):
-            self.ui_SlTiming_lnEd.setText("{}".format(self.slice_timing))
+        """Show TR and slice_timing in the GUI panel, if any."""
+        self._ui_update('TR', self.TR)
+        self._ui_update('slice_timing', self.slice_timing)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
@@ -429,12 +429,7 @@ class RtpTshift(RTP):
 
         # -- Check value --
         if attr == 'enabled':
-            if hasattr(self, 'ui_enabled_rdb'):
-                self.ui_enabled_rdb.setChecked(val)
-
-            if hasattr(self, 'ui_objs'):
-                for ui in self.ui_objs:
-                    ui.setEnabled(val)
+            self._ui_update(attr, val)
 
         elif attr == 'work_dir':
             if val is None or not Path(val).is_dir():
@@ -446,13 +441,8 @@ class RtpTshift(RTP):
             if self.main_win is not None:
                 self.main_win.set_workDir(val)
 
-        elif attr == 'method' and reset_fn is None:
-            if hasattr(self, 'ui_method_cmbBx'):
-                self.ui_method_cmbBx.setCurrentText(val)
-
-        elif attr == 'ref_time' and reset_fn is None:
-            if hasattr(self, 'ui_refTime_dSpBx'):
-                self.ui_refTime_dSpBx.setValue(val)
+        elif attr in ('method', 'ref_time') and reset_fn is None:
+            self._ui_update(attr, val)
 
         elif attr == 'set_from_sample':
             if val is None:
@@ -469,8 +459,7 @@ class RtpTshift(RTP):
             return 0
 
         elif attr == 'TR' and reset_fn is None:
-            if hasattr(self, 'ui_TR_dSpBx'):
-                self.ui_TR_dSpBx.setValue(val)
+            self._ui_update(attr, val)
 
         elif attr == 'slice_timing':
             if type(val) is str:
@@ -481,16 +470,13 @@ class RtpTshift(RTP):
                         reset_fn(str(getattr(self, attr)))
                     return
             else:
-                if hasattr(self, 'ui_SlTiming_lnEd'):
-                    self.ui_SlTiming_lnEd.setText(str(val))
+                self._ui_update(attr, val)
 
         elif attr == 'slice_dim' and reset_fn is None:
-            if hasattr(self, 'ui_sliceDim_cmbBx'):
-                self.ui_sliceDim_cmbBx.setCurrentIndex(val)
+            self._ui_update(attr, val)
 
         elif attr == 'save_proc':
-            if hasattr(self, 'ui_saveProc_chb'):
-                self.ui_saveProc_chb.setChecked(val)
+            self._ui_update(attr, val)
 
         elif reset_fn is None:
             # Ignore an unrecognized parameter
@@ -507,109 +493,6 @@ class RtpTshift(RTP):
         if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ui_set_param(self):
-
-        ui_rows = []
-        self.ui_objs = []
-
-        # enabled
-        self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
-        self.ui_enabled_rdb.setChecked(self.enabled)
-        self.ui_enabled_rdb.toggled.connect(
-                lambda checked:
-                self.set_param('enabled', checked,
-                               self.ui_enabled_rdb.setChecked))
-        ui_rows.append((self.ui_enabled_rdb, None))
-
-        # method
-        var_lb = QtWidgets.QLabel("Temporal interpolation method :")
-        self.ui_method_cmbBx = QtWidgets.QComboBox()
-        self.ui_method_cmbBx.addItems(['linear', 'cubic'])
-        self.ui_method_cmbBx.setCurrentText(self.method)
-        self.ui_method_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('method',
-                               self.ui_method_cmbBx.currentText(),
-                               self.ui_method_cmbBx.setCurrentText))
-        ui_rows.append((var_lb, self.ui_method_cmbBx))
-        self.ui_objs.extend([var_lb, self.ui_method_cmbBx])
-
-        # ref_time
-        var_lb = QtWidgets.QLabel("Reference time :")
-        self.ui_refTime_dSpBx = QtWidgets.QDoubleSpinBox()
-        self.ui_refTime_dSpBx.setMinimum(0.000)
-        self.ui_refTime_dSpBx.setSingleStep(0.001)
-        self.ui_refTime_dSpBx.setDecimals(3)
-        self.ui_refTime_dSpBx.setSuffix(" seconds")
-        self.ui_refTime_dSpBx.setValue(self.ref_time)
-        self.ui_refTime_dSpBx.valueChanged.connect(
-                lambda x: self.set_param('ref_time', x,
-                                         self.ui_refTime_dSpBx.setValue))
-        ui_rows.append((var_lb, self.ui_refTime_dSpBx))
-        self.ui_objs.extend([var_lb, self.ui_refTime_dSpBx])
-
-        # Load from sample button
-        self.ui_setfrmSample_btn = QtWidgets.QPushButton(
-                'Get parameters from a sample file')
-        self.ui_setfrmSample_btn.clicked.connect(
-                lambda: self.set_param('set_from_sample'))
-        ui_rows.append((self.ui_setfrmSample_btn,))
-        self.ui_objs.append(self.ui_setfrmSample_btn)
-
-        # TR
-        var_lb = QtWidgets.QLabel("TR :")
-        self.ui_TR_dSpBx = QtWidgets.QDoubleSpinBox()
-        self.ui_TR_dSpBx.setMinimum(0.000)
-        self.ui_TR_dSpBx.setSingleStep(0.001)
-        self.ui_TR_dSpBx.setDecimals(3)
-        self.ui_TR_dSpBx.setSuffix(" seconds")
-        self.ui_TR_dSpBx.setValue(self.TR)
-        self.ui_TR_dSpBx.valueChanged.connect(
-                lambda x: self.set_param('TR', x, self.ui_TR_dSpBx.setValue))
-        ui_rows.append((var_lb, self.ui_TR_dSpBx))
-        self.ui_objs.extend([var_lb, self.ui_TR_dSpBx])
-
-        # slice_timing
-        var_lb = QtWidgets.QLabel("Slice timings (sec.) :\n[1st, 2nd, ...]")
-        self.ui_SlTiming_lnEd = QtWidgets.QLineEdit()
-        self.ui_SlTiming_lnEd.setText("{}".format(self.slice_timing))
-        self.ui_SlTiming_lnEd.editingFinished.connect(
-                lambda: self.set_param('slice_timing',
-                                       self.ui_SlTiming_lnEd.text(),
-                                       self.ui_SlTiming_lnEd.setText))
-        ui_rows.append((var_lb, self.ui_SlTiming_lnEd))
-        self.ui_objs.extend([var_lb, self.ui_SlTiming_lnEd])
-
-        # slice_dim
-        var_lb = QtWidgets.QLabel("Slice orientation :")
-        self.ui_sliceDim_cmbBx = QtWidgets.QComboBox()
-        self.ui_sliceDim_cmbBx.addItems(['x (Sagittal)', 'y (Coronal)',
-                                         'z (Axial)'])
-        self.ui_sliceDim_cmbBx.setCurrentIndex(self.slice_dim)
-        self.ui_sliceDim_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('slice_dim',
-                               self.ui_sliceDim_cmbBx.currentIndex(),
-                               self.ui_sliceDim_cmbBx.setCurrentIndex))
-        ui_rows.append((var_lb, self.ui_sliceDim_cmbBx))
-        self.ui_objs.extend([var_lb, self.ui_sliceDim_cmbBx])
-
-        # --- Checkbox row ----------------------------------------------------
-        # Save
-        self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
-        self.ui_saveProc_chb.setChecked(self.save_proc)
-        self.ui_saveProc_chb.stateChanged.connect(
-                lambda state: setattr(self, 'save_proc', state > 0))
-        self.ui_objs.append(self.ui_saveProc_chb)
-
-        chb_hLayout = QtWidgets.QHBoxLayout()
-        chb_hLayout.addStretch()
-        chb_hLayout.addWidget(self.ui_saveProc_chb)
-        ui_rows.append((None, chb_hLayout))
-
-        return ui_rows
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):

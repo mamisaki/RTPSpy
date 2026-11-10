@@ -17,8 +17,6 @@ import sys
 import numpy as np
 import nibabel as nib
 
-from PyQt5 import QtWidgets
-
 try:
     from .rtp_common import RTP
 except Exception:
@@ -42,12 +40,12 @@ class RtpSmooth(RTP):
     function in librtp.so is called via ctypes.
     """
 
-    # Text shown when the mask is made from the first received volume
-    _ZERO_OUT_MASK_TEXT = 'zero-out initial received volume'
-
     # Log label and output filename prefix (see RTP.do_proc)
     _proc_label = 'Smoothing'
     _out_prefix = 'sm.'
+
+    # GUI panel (rtpspy.ui.smooth_ui)
+    _ui_class = "smooth_ui:RtpSmoothUI"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, blur_fwhm=6.0, mask_file=0, **kwargs):
@@ -242,12 +240,7 @@ class RtpSmooth(RTP):
 
         # -- Check the value --
         if attr == 'enabled':
-            if hasattr(self, 'ui_enabled_rdb'):
-                self.ui_enabled_rdb.setChecked(val)
-
-            if hasattr(self, 'ui_objs'):
-                for ui in self.ui_objs:
-                    ui.setEnabled(val)
+            self._ui_update(attr, val)
 
         elif attr == 'work_dir':
             if val is None or not Path(val).is_dir():
@@ -260,8 +253,7 @@ class RtpSmooth(RTP):
                 self.main_win.set_workDir(val)
 
         elif attr == 'blur_fwhm' and reset_fn is None:
-            if hasattr(self, 'ui_FWHM_dSpBx'):
-                self.ui_FWHM_dSpBx.setValue(val)
+            self._ui_update(attr, val)
 
         elif attr == 'mask_file':
             if isinstance(val, Path):
@@ -270,20 +262,17 @@ class RtpSmooth(RTP):
                 if self.mask_file == 0:
                     # set_mask failed and has reset mask_file to 0
                     return
-                if hasattr(self, 'ui_mask_cmbBx'):
-                    self.ui_mask_cmbBx.setCurrentText('external file')
-                    self.ui_mask_lnEd.setText(str(val))
+                self._ui_update('mask_source', 0)  # 'external file'
+                self._ui_update(attr, val)
 
             elif type(val) is int and val == 0:
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(self._ZERO_OUT_MASK_TEXT)
+                self._ui_update(attr, val)
                 self.mask_byte = None
 
             elif val in ('initial volume of internal run', 'internal') \
                     or val.startswith('zero-out'):
                 val = 0
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(self._ZERO_OUT_MASK_TEXT)
+                self._ui_update(attr, val)
                 self.mask_byte = None
 
             elif val == 'external file':
@@ -297,8 +286,8 @@ class RtpSmooth(RTP):
                 mask_img = nib.load(fname[0])
                 mask_fname = fname[0]
                 if len(mask_img.shape) > 3 and mask_img.shape[3] > 1:
-                    num, okflag = QtWidgets.QInputDialog.getInt(
-                            None, "SMOOTH: Select sub volume",
+                    num, okflag = self._notifier().get_int(
+                            "SMOOTH: Select sub volume",
                             "sub-volume index (0 is first)", 0, 0,
                             mask_img.shape[3] - 1)
                     if not okflag:
@@ -311,8 +300,7 @@ class RtpSmooth(RTP):
                     num = 0
 
                 self.set_mask(fname[0], num)
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(str(mask_fname))
+                self._ui_update(attr, mask_fname)
                 val = mask_fname
 
             elif type(val) is str:
@@ -327,17 +315,14 @@ class RtpSmooth(RTP):
                 if not Path(fname).is_file():
                     return
 
-                if reset_fn is None and hasattr(self, 'ui_mask_cmbBx'):
-                    # 'external file'
-                    self.ui_mask_cmbBx.setCurrentIndex(0)
+                if reset_fn is None:
+                    self._ui_update('mask_source', 0)  # 'external file'
 
                 self.set_mask(fname, num)
-                if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(str(val))
+                self._ui_update(attr, val)
 
         elif attr == 'save_proc':
-            if hasattr(self, 'ui_saveProc_chb'):
-                self.ui_saveProc_chb.setChecked(val)
+            self._ui_update(attr, val)
 
         elif reset_fn is None:
             # Ignore an unrecognized parameter
@@ -354,75 +339,6 @@ class RtpSmooth(RTP):
                   getattr(self, attr))
 
         return 0
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def ui_set_param(self):
-
-        ui_rows = []
-        self.ui_objs = []
-
-        # Enabled
-        self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
-        self.ui_enabled_rdb.setChecked(self.enabled)
-        self.ui_enabled_rdb.toggled.connect(
-                lambda checked: self.set_param('enabled', checked,
-                                               self.ui_enabled_rdb.setChecked))
-        ui_rows.append((self.ui_enabled_rdb, None))
-
-        # blur_fwhm
-        var_lb = QtWidgets.QLabel("Gaussian FWHM :")
-        self.ui_FWHM_dSpBx = QtWidgets.QDoubleSpinBox()
-        self.ui_FWHM_dSpBx.setMinimum(0.0)
-        self.ui_FWHM_dSpBx.setSingleStep(1.0)
-        self.ui_FWHM_dSpBx.setDecimals(2)
-        self.ui_FWHM_dSpBx.setSuffix(" mm")
-        self.ui_FWHM_dSpBx.setValue(self.blur_fwhm)
-        self.ui_FWHM_dSpBx.valueChanged.connect(
-                lambda x: self.set_param('blur_fwhm', x,
-                                         self.ui_FWHM_dSpBx.setValue))
-        ui_rows.append((var_lb, self.ui_FWHM_dSpBx))
-        self.ui_objs.extend([var_lb, self.ui_FWHM_dSpBx])
-
-        # mask_file
-        var_lb = QtWidgets.QLabel("Mask :")
-        self.ui_mask_cmbBx = QtWidgets.QComboBox()
-        self.ui_mask_cmbBx.addItems(['external file',
-                                     'initial volume of internal run'])
-        self.ui_mask_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('mask_file',
-                               self.ui_mask_cmbBx.currentText(),
-                               self.ui_mask_cmbBx.setCurrentIndex))
-        ui_rows.append((var_lb, self.ui_mask_cmbBx))
-
-        self.ui_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_mask_lnEd.setReadOnly(True)
-        self.ui_mask_lnEd.setStyleSheet(
-            'border: 0px none;')
-        ui_rows.append((None, self.ui_mask_lnEd))
-
-        self.ui_objs.extend([var_lb, self.ui_mask_cmbBx, self.ui_mask_lnEd])
-
-        if type(self.mask_file) is int and self.mask_file == 0:
-            self.ui_mask_cmbBx.setCurrentIndex(1)
-            self.ui_mask_lnEd.setText(self._ZERO_OUT_MASK_TEXT)
-        else:
-            self.ui_mask_cmbBx.setCurrentIndex(0)
-            self.ui_mask_lnEd.setText(str(self.mask_file))
-
-        # --- Checkbox row ----------------------------------------------------
-        self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
-        self.ui_saveProc_chb.setChecked(self.save_proc)
-        self.ui_saveProc_chb.stateChanged.connect(
-                lambda state: setattr(self, 'save_proc', state > 0))
-        self.ui_objs.append(self.ui_saveProc_chb)
-
-        chb_hLayout = QtWidgets.QHBoxLayout()
-        chb_hLayout.addStretch()
-        chb_hLayout.addWidget(self.ui_saveProc_chb)
-        ui_rows.append((None, chb_hLayout))
-
-        return ui_rows
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):

@@ -11,7 +11,6 @@ from pathlib import Path
 import os
 import sys
 import re
-from datetime import timedelta
 import subprocess
 import shlex
 from multiprocessing import Value, Array, Lock
@@ -27,17 +26,13 @@ import numpy as np
 import pandas as pd
 
 import serial
-from PyQt5 import QtWidgets, QtCore, QtGui
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.backends.qt_compat as qt_compat
-from matplotlib.backends.backend_qt5agg import FigureCanvas
-from matplotlib.figure import Figure
 
 try:
     from .rtp_volume import RtpVolume
+    from .notifier import get_notifier, default_notifier
 except Exception:
     from rtpspy.rtp_volume import RtpVolume
+    from rtpspy.notifier import get_notifier, default_notifier
 
 
 # %% RTP base class ===========================================================
@@ -49,6 +44,10 @@ DEFAULT_MAX_SCAN_LENGTH = 800
 
 class RTP(object):
     """Base class for the real-time processing modules"""
+
+    # GUI panel of the module: 'module:class' in rtpspy.ui (see
+    # rtpspy.ui.module_ui). None if the module has no panel.
+    _ui_class = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ignore_init=0, next_proc=None, save_proc=False,
@@ -86,6 +85,9 @@ class RTP(object):
 
         self._std_out = sys.stdout
         self._err_out = sys.stderr
+
+        # GUI panel bound by ui_set_param (None without a GUI)
+        self._ui = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     @property
@@ -458,33 +460,60 @@ class RTP(object):
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
 
+    # --- GUI interface -------------------------------------------------------
+    # The GUI code is in rtpspy.ui. A module calls its GUI panel only
+    # through the methods below, which do nothing without a GUI.
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
         """
-        Return the list of user interface rows for setting the parameters.
-        Each element is placed in a QFormLayout.
+        Make the GUI panel of the module (rtpspy.ui; Qt is imported here)
+        and return the list of its rows, each placed in a QFormLayout by
+        RtpGUI. None if the module has no panel.
         """
+        if self._ui_class is None:
+            return None
 
-        pass
+        from .ui.module_ui import bind_ui
+        return bind_ui(self).make_ui()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ui_update(self, attr, val, **kwargs):
+        """Show the value of parameter attr in the GUI panel, if any."""
+        ui = getattr(self, '_ui', None)
+        if ui is not None:
+            ui.update_widget(attr, val, **kwargs)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ui_value(self, key):
+        """Return a state held only in the GUI panel (None without it)."""
+        ui = getattr(self, '_ui', None)
+        if ui is not None:
+            return ui.widget_value(key)
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ui_call(self, method, *args, **kwargs):
+        """Run a method of the GUI panel, if any."""
+        ui = getattr(self, '_ui', None)
+        if ui is not None:
+            return getattr(ui, method)(*args, **kwargs)
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _notifier(self):
+        """Notifier to show messages and dialogs (rtpspy.notifier)."""
+        return get_notifier()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def select_file_dlg(self, caption, directory, filt, parent=None):
         """
-        Open a file selection dialog. Returns the (filename, filter) tuple of
-        QFileDialog.getOpenFileName; filename is '' if the user cancels.
+        Ask the user to select a file (a file dialog in the GUI). Returns the
+        (filename, filter) tuple; filename is '' if canceled or without a
+        GUI.
         """
-        if sys.platform == 'darwin':
-            fname = QtWidgets.QFileDialog.getOpenFileName(
-                parent, caption, str(directory), filt)
-        else:
-            options = QtWidgets.QFileDialog.Options()
-            options |= QtWidgets.QFileDialog.DontUseNativeDialog
-            fname = QtWidgets.QFileDialog.getOpenFileName(
-                parent, caption, str(directory), filt,
-                options=options
-            )
-
-        return fname
+        return self._notifier().get_open_file(
+            caption, directory, filt, parent=parent)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def keep_processed_image(self, fmri_img, vol_num=None, save_temp=False):
@@ -613,7 +642,7 @@ class RTP(object):
         if self.main_win is not None:
             self._logger.info(
                 "<B>Saving the processed data. Please wait ...")
-            QtWidgets.QApplication.instance().processEvents()
+            self._notifier().process_events()
         else:
             self._logger.info("Saving the processed data. Please wait ...")
 
@@ -657,26 +686,31 @@ class RTP(object):
         self.saved_filename = savefname
         self._logger.info(f"Done. Processed data is saved as {savefname}")
         if self.main_win is not None:
-            QtWidgets.QApplication.instance().processEvents()
+            self._notifier().process_events()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_popup(self, errmsg):
-        """Show an error message box (only when the GUI is used)."""
+        """
+        Report an error to the user through the notifier: a message box when
+        the module is in the GUI (main_win is set), otherwise a log message
+        (the default notifier).
+        """
         if self.main_win is not None:
-            # The parent is not set to self.main_win since this can be called
-            # from another thread.
-            msgBox = QtWidgets.QMessageBox()
-            msgBox.setIcon(QtWidgets.QMessageBox.Critical)
-            msgBox.setText(str(errmsg))
-            msgBox.setWindowTitle(self.__class__.__name__)
-            msgBox.exec()
+            notifier = self._notifier()
+        else:
+            notifier = default_notifier()
+        notifier.error(str(errmsg), title=self.__class__.__name__)
 
 
 # %% Helpers for get_params and save_parameters ==============================
 def _is_unsaved_type(val):
     """True if val is an object that is never saved as a parameter."""
-    return isinstance(val, (RTP, serial.Serial, QtCore.QThread,
-                            threading.Thread))
+    if isinstance(val, (RTP, serial.Serial, threading.Thread)):
+        return True
+
+    # A QThread (only if Qt is used; Qt is not imported here)
+    qtc = sys.modules.get('PyQt5.QtCore')
+    return qtc is not None and isinstance(val, qtc.QThread)
 
 
 def _is_picklable(val):
@@ -766,172 +800,6 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
         print(traceback.format_exc())
 
 
-# %% DlgProgressBar ===========================================================
-class DlgProgressBar(QtWidgets.QDialog):
-    """
-    Progress bar dialog
-    """
-
-    class EmittingStream(QtCore.QObject):
-        textWritten = QtCore.pyqtSignal(str)
-
-        def write(self, text):
-            self.textWritten.emit(str(text))
-
-        def flush(self):
-            pass
-
-    def __init__(self, title='Progress', modal=True, parent=None,
-                 win_size=(640, 320), show_button=True, st_time=None):
-        super().__init__(parent)
-
-        self.resize(*win_size)
-        self.setWindowTitle(title)
-        self.setModal(modal)
-        vBoxLayout = QtWidgets.QVBoxLayout(self)
-
-        # progress bar
-        self.progBar = QtWidgets.QProgressBar(self)
-        vBoxLayout.addWidget(self.progBar)
-
-        # message text
-        self.msgTxt = QtWidgets.QLabel()
-        vBoxLayout.addWidget(self.msgTxt)
-
-        # console output
-        self.desc_pTxtEd = QtWidgets.QPlainTextEdit(self)
-        self.desc_pTxtEd.setReadOnly(True)
-        self.desc_pTxtEd.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
-        vBoxLayout.addWidget(self.desc_pTxtEd)
-
-        # Cancel button
-        bottomhLayout = QtWidgets.QHBoxLayout()
-        bottomhLayout.addStretch()
-        self.btnCancel = QtWidgets.QPushButton('Cancel')
-        self.btnCancel.clicked.connect(self.close)
-        self.btnCancel.setVisible(show_button)
-        bottomhLayout.addWidget(self.btnCancel)
-        vBoxLayout.addLayout(bottomhLayout)
-
-        self.st_time = st_time
-        self.title = title
-        # Stream object that writes to the console text box (e.g., to
-        # redirect sys.stdout)
-        self.ostream = DlgProgressBar.EmittingStream(
-            textWritten=self.update_console)
-
-        self.show()
-
-    def update_console(self, text):
-        self.add_desc(text)
-
-    def set_value(self, val):
-        """
-        Set the progress bar value (%). If st_time is set, the estimated
-        remaining time is shown in the window title.
-        """
-        self.progBar.setValue(int(val))
-        if self.st_time is not None:
-            progress = self.progBar.value()
-            if progress > 0:
-                elapsed = time.time() - self.st_time
-                remain = (elapsed/progress) * (100-progress)
-                remain_str = str(timedelta(seconds=remain)).split('.')[0]
-                self.setWindowTitle(f"{self.title} (ETA {remain_str})")
-
-        self.repaint()
-        QtWidgets.QApplication.instance().processEvents()
-
-    def set_msgTxt(self, msg):
-        self.msgTxt.setText(msg)
-        self.repaint()
-        QtWidgets.QApplication.instance().processEvents()
-
-    def add_msgTxt(self, msg):
-        self.msgTxt.setText(self.msgTxt.text()+msg)
-        self.repaint()
-        QtWidgets.QApplication.instance().processEvents()
-
-    def add_desc(self, txt):
-        self.desc_pTxtEd.moveCursor(QtGui.QTextCursor.End)
-        self.desc_pTxtEd.insertPlainText(txt)
-
-        sb = self.desc_pTxtEd.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-        self.repaint()
-        QtWidgets.QApplication.instance().processEvents()
-
-    def proc_print_progress(self, proc, bar_inc=None, ETA=None):
-        """
-        Show the output of a subprocess (proc, with stdout=PIPE) in the
-        console text box until it ends. If bar_inc is set, the progress bar
-        is advanced by up to bar_inc over the expected time ETA (seconds).
-        Closing the dialog terminates proc (see closeEvent).
-
-        Returns
-        -------
-        int or None
-            Return code of proc.
-        """
-        if bar_inc is not None:
-            bar_val0 = self.progBar.value()
-
-        self.running_proc = proc
-        st = time.time()
-        while proc.poll() is None:
-            try:
-                out0 = proc.stdout.read(4)
-                try:
-                    out0 = out0.decode()
-                except UnicodeDecodeError:
-                    out0 = '\n'
-                out = '\n'.join(out0.splitlines())
-                if len(out0) and out0[-1] == '\n':
-                    out += '\n'
-                self.add_desc(out)
-
-                if bar_inc is not None:
-                    bar_inc0 = min((time.time() - st) / ETA * bar_inc,
-                                   bar_inc)
-                    if np.floor(bar_inc0+bar_val0) != self.progBar.value():
-                        self.set_value(int(bar_inc0+bar_val0))
-
-                QtWidgets.QApplication.instance().processEvents()
-                time.sleep(0.001)
-
-            except subprocess.TimeoutExpired:
-                pass
-
-            if not self.isVisible():
-                break
-
-        try:
-            out = proc.stdout.read()
-            try:
-                out = out.decode()
-                out = '\n'.join(out.splitlines()) + '\n\n'
-                self.add_desc(out)
-            except UnicodeDecodeError:
-                pass
-
-        except subprocess.TimeoutExpired:
-            pass
-
-        if bar_inc is not None:
-            self.set_value(bar_inc+bar_val0)
-            QtWidgets.QApplication.instance().processEvents()
-            time.sleep(0.001)
-
-        self.running_proc = None
-        return proc.returncode
-
-    def closeEvent(self, event):
-        if hasattr(self, 'running_proc') and self.running_proc is not None:
-            if self.running_proc.poll() is None:
-                self.running_proc.terminate()
-
-
 # %% plot_pause ===============================================================
 def plot_pause(interval):
     """
@@ -939,6 +807,9 @@ def plot_pause(interval):
     without raising the window
     https://stackoverflow.com/questions/45729092/make-interactive-matplotlib-window-not-pop-to-front-on-each-update-windows-7/45734500#45734500
     """
+
+    import matplotlib
+    import matplotlib.pyplot as plt
 
     backend = plt.rcParams['backend']
     if backend in matplotlib.rcsetup.interactive_bk:
@@ -971,15 +842,6 @@ class RingBuffer:
         """Return the elements in order from the oldest."""
         return np.concatenate([self.data[self.cur.value:],
                                self.data[:self.cur.value]])
-
-
-# %% MatplotlibWindow =========================================================
-class MatplotlibWindow(qt_compat.QtWidgets.QMainWindow):
-    def __init__(self, figsize=[5, 3]):
-        super().__init__()
-
-        self.canvas = FigureCanvas(Figure(figsize=figsize))
-        self.setCentralWidget(self.canvas)
 
 
 # %% make_design_matrix =======================================================
@@ -1064,23 +926,23 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
         AFNI_TRUSTHOST for the real-time mode. 'ask' shows an input dialog
         (only with main_win). If None, or 'ask' without main_win, the subnet
         of this host is used.
+
+    The dialogs are shown by the notifier (rtpspy.notifier). Without a GUI,
+    the input dialog is canceled and an existing AFNI process is kept
+    without booting a new one.
     """
+    notifier = get_notifier()
     if rt:
         # Set TRUSTHOST
         ip = socket.gethostbyname(socket.gethostname())
         if TRUSTHOST is None or (TRUSTHOST == 'ask' and main_win is None):
             TRUSTHOST = '.'.join(ip.split('.')[:-1])
         elif TRUSTHOST == 'ask':
-            dlg = QtWidgets.QInputDialog(main_win)
-            dlg.setInputMode(QtWidgets.QInputDialog.TextInput)
-            dlg.setLabelText('AFNI_TRUSTHOST')
-            dlg.setTextValue('.'.join(ip.split('.')[:-1]))
-            dlg.resize(640, 100)
-            okflag = dlg.exec_()
+            TRUSTHOST, okflag = notifier.get_text(
+                'AFNI_TRUSTHOST', '.'.join(ip.split('.')[:-1]),
+                parent=main_win)
             if not okflag:
                 return
-
-            TRUSTHOST = dlg.textValue()
 
     # Check for a running AFNI process for boot_dir, identified by its
     # argument vector (the program is afni and the last argument is
@@ -1091,19 +953,14 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
         cmdl = shlex.join(argv)
 
         # Warning dialog
-        msgBox = QtWidgets.QMessageBox()
-        msgBox.setIcon(QtWidgets.QMessageBox.Warning)
-        msgBox.setText("Kill the existing AFNI process?")
-        msgBox.setInformativeText(f"pid={pid}: {cmdl}")
-        msgBox.setWindowTitle("Existing AFNI process")
-        msgBox.setStandardButtons(QtWidgets.QMessageBox.Yes |
-                                  QtWidgets.QMessageBox.Ignore |
-                                  QtWidgets.QMessageBox.Cancel)
-        msgBox.setDefaultButton(QtWidgets.QMessageBox.Cancel)
-        ret = msgBox.exec()
-        if ret == QtWidgets.QMessageBox.Yes:
+        ret = notifier.question(
+            "Kill the existing AFNI process?", "Existing AFNI process",
+            informative=f"pid={pid}: {cmdl}",
+            buttons=("Yes", "Ignore", "Cancel"), default="Cancel",
+            icon="warning")
+        if ret == "Yes":
             os.kill(pid, 9)
-        elif ret == QtWidgets.QMessageBox.Cancel:
+        elif ret == "Cancel":
             return
 
     # Start AFNI in boot_dir, below main_win
@@ -1129,3 +986,16 @@ def excepthook(exc_type, exc_value, exc_tb):
         traceback.print_exception(exc_type, exc_value, exc_tb, file=fd)
 
     traceback.print_exception(exc_type, exc_value, exc_tb)
+
+
+# %% Names moved to rtpspy.ui =================================================
+# The Qt dialogs and widgets are in rtpspy.ui.widgets. They are still
+# importable from here (Qt is imported on first access).
+_MOVED_TO_UI = ('DlgProgressBar', 'MatplotlibWindow')
+
+
+def __getattr__(name):
+    if name in _MOVED_TO_UI:
+        from .ui import widgets
+        return getattr(widgets, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -63,9 +63,9 @@ Homepage = "https://github.com/mamisaki/RTPSpy"
 Repository = "https://github.com/mamisaki/RTPSpy"
 
 [tool.setuptools]
-# Only the rtpspy package. rtpspy/FastSurfer (a separate clone) and
-# rtpspy/lib_RetroTS are not packaged.
-packages = ["rtpspy"]
+# The rtpspy package and its GUI subpackage (rtpspy.ui). rtpspy/FastSurfer
+# (a separate clone) and rtpspy/lib_RetroTS are not packaged.
+packages = ["rtpspy", "rtpspy.ui"]
 include-package-data = false
 # Installed as a command (rtp_imgproc looks for ants_run.py on PATH)
 script-files = ["rtpspy/ants_run.py"]
