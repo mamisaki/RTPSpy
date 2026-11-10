@@ -113,6 +113,18 @@ Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnin
 RTPSpy is not a complete application by itself but is intended to be used as part of a user's custom rtfMRI application.
 Example applications using the RTPSpy library are shown below.
 
+### Compare real-time and offline processing
+`rtpspy/rtp_offline_compare.py` quantifies how close the real-time (online, causal) processing is to standard offline processing of the same run, as evaluated in Misaki and Bodurka (2022), using your own data and parameters.
+It runs the RTPSpy modules volume by volume (VOLREG → TSHIFT → SMOOTH → REGRESS, as in `RtpApp`; the RETROICOR regressors of each volume use only the physio samples recorded up to that volume), and processes the whole run offline with matched settings: `3dvolreg` (same reference volume and interpolation), `3dTshift` (same method, reference time, slice timing, and ignored initial volumes), `3dBlurInMask -preserve` (same FWHM and mask; the same algorithm as RtpSmooth), and a whole-run least-squares GLM (numpy) with the same regressors (Legendre polynomials, motion, GS/WM/Vent mean signals, and RICOR8 from the whole physio signals).
+The AFNI programs must be on PATH.
+```
+python -m rtpspy.rtp_offline_compare --input func.nii.gz --masks_dir work/RTP \
+    --roi work/RTP/ROI_alFunc.nii.gz --card ECG.1D --resp Resp.1D --physio_freq 40 \
+    [--param rtp_params.json] --out compare_out
+```
+`--masks_dir` is the directory of the masks made by `RtpApp.make_masks` (`RTP_mask`, `GSR_mask`, `*_WM_alFunc`, `*_Vent_alFunc`); each mask can also be given with `--rtp_mask`, `--gs_mask`, `--wm_mask`, `--vent_mask`. `--param` is a JSON file of module parameters (`{"VOLREG": {"regmode": "cubic"}, "REGRESS": {...}, ...}`, the format of `rtp_sim.py`); the default is the setting of `rtpspy_system_check.py`.
+The output directory has the online module outputs and QC (`online/RTP/`), the offline outputs and the AFNI commands (`offline/`), `metrics.csv`, `roi_series.csv`, and `report.html` (with `report.png`). The metrics are computed over the volumes output by the online pipeline, within the RTP mask: the correlation and maximum difference of each motion parameter, the voxelwise correlation and RMSE of each stage (median and 5th percentile), the ROI mean signal correlation, the noise variance removed by the regression (% of the input variance), and `REGRESS_causal`, the difference between the cumulative (online) GLM and the whole-run GLM applied to the same online input. The `*_realtime_vols` metrics exclude the volumes that REGRESS processes retrospectively at its first fit.
+
 ### Example GUI Applications
 We provide a boilerplate graphical user interface (GUI) application that integrates operations with RTPSpy.  
 We also present a sample external application for neurofeedback. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how RTPSpy communicates with an external application using the library module (RTP_SERV).
