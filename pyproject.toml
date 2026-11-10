@@ -7,7 +7,7 @@ name = "RTPSpy"
 version = "2.0.0.dev0"
 description = "fMRI Real-Time Processing System in python"
 readme = "README.md"
-license = "GPL-3.0-only"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Masaya Misaki", email = "mamisaki@gmail.com" }]
 requires-python = ">=3.10"
