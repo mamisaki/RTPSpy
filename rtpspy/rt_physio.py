@@ -30,6 +30,8 @@ import json
 import gc
 import struct
 import threading
+import sys
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -2846,6 +2848,21 @@ class PlotTTLPhysio:
             self._cmd_pipe.send("QUIT")
 
 
+# %% _display_available =======================================================
+def _display_available(timeout=5.0):
+    """Check that a Tk window can be opened, in a subprocess with a timeout:
+    tk.Tk() blocks indefinitely when the X display (e.g., a stalled X11
+    forwarding) does not respond."""
+    try:
+        ret = subprocess.run(
+            [sys.executable, "-c", "import tkinter; tkinter.Tk().destroy()"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=timeout)
+        return ret.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 # %% RtPhysio =================================================================
 class RtPhysio:
     """
@@ -4266,12 +4283,18 @@ class RtPhysio:
         """Main thread loop: handle the messages from the recording, plot
         and RPC threads, and check the TTLs (scan end, missing TTL) every
         second."""
-        try:
-            self.open_plot()
-        except tk.TclError as e:
-            # No display (e.g., a closed X forwarding): keep recording and
-            # serving RPC without the plot window.
-            self._logger.warning(f"Run without the plot window: {e}")
+        if _display_available():
+            try:
+                self.open_plot()
+            except tk.TclError as e:
+                self._logger.warning(f"Run without the plot window: {e}")
+                self._plot = None
+                self._plot_proc_pipe = None
+        else:
+            # No display (e.g., a closed or stalled X forwarding): keep
+            # recording and serving RPC without the plot window.
+            self._logger.warning(
+                "Run without the plot window: the display is not available.")
             self._plot = None
             self._plot_proc_pipe = None
 
