@@ -1,438 +1,244 @@
 # -*- coding: utf-8 -*-
 """
-RTP retrots for making online RETROICOR regressors
+RtpRetroTS: online RETROICOR regressors
+
+At each volume, the phases are estimated from the data available so far.
+The cardiac phase is linear between the cardiac peaks, and the respiration
+phase is the histogram-equalized amplitude signed by its slope (Glover et
+al., 2000). The processing is designed for real-time use:
+- The cardiac peaks are detected in a band-pass filtered signal around the
+  dominant cardiac frequency. The end of the data is mirrored before
+  filtering so that a peak near the end can be detected, and the phase after
+  the last peak is extended with the recent period.
+- The respiration signal is not high-pass filtered, as a zero-phase
+  high-pass filter distorts the end of the data.
+- The signals are downsampled to <= 50 Hz, and all steps are vectorized.
 
 @author: mmisaki@laureateinstitute.org
 """
 
 
 # %% import ===================================================================
-import warnings
 import numpy as np
-from scipy.signal import lfilter, firwin, hilbert, convolve
-from scipy.interpolate import interp1d
+from scipy.signal import butter, find_peaks, sosfiltfilt
 
 
 # %% RtpRetroTS class ========================================================
 class RtpRetroTS():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, zero_phase_offset=0,
-                 respiration_cutoff_frequency=3,
-                 cardiac_cutoff_frequency=[0.1, 3],
-                 cardiac_detend_window=5,
-                 fir_order=40):
+    def __init__(self, max_proc_freq=50.0,
+                 card_freq_range=(0.67, 2.5), card_freq_win=60.0,
+                 card_band=(0.5, 2.5), card_min_interval=0.6,
+                 card_prominence=0.3, card_edge_pad=1.0, card_period_n=8,
+                 resp_lowpass=1.0, resp_slope_lowpass=1.0, resp_clip=1.0,
+                 resp_nbin=100):
         """
         Parameters
+        ----------
+        max_proc_freq : float
+            The signals are downsampled to this frequency (Hz) or lower.
+        card_freq_range : (float, float)
+            Search range (Hz) of the dominant cardiac frequency, f0.
+        card_freq_win : float
+            Length (s) of the latest data used to estimate f0.
+        card_band : (float, float)
+            Cardiac band-pass range, relative to f0.
+        card_min_interval : float
+            Minimum interval between cardiac peaks, relative to 1/f0.
+        card_prominence : float
+            Minimum peak prominence, relative to the SD of the filtered
+            signal.
+        card_edge_pad : float
+            Length of the mirrored data at the end, relative to 1/f0.
+        card_period_n : int
+            Number of periods whose median extends the phase before the
+            first peak and after the last peak.
+        resp_lowpass : float
+            Low-pass frequency (Hz) of the respiration signal.
+        resp_slope_lowpass : float
+            Low-pass frequency (Hz) of the signal for the slope (phase sign).
+        resp_clip : float
+            Percentile clipped at both ends of the amplitude histogram.
+        resp_nbin : int
+            Number of histogram bins.
         """
-        self.zero_phase_offset = zero_phase_offset
-        self.respiration_cutoff_frequency = respiration_cutoff_frequency
-        self.cardiac_cutoff_frequency = cardiac_cutoff_frequency
-        self.cardiac_detend_window = cardiac_detend_window
-        self.fir_order = fir_order
+        self.max_proc_freq = max_proc_freq
+        self.card_freq_range = card_freq_range
+        self.card_freq_win = card_freq_win
+        self.card_band = card_band
+        self.card_min_interval = card_min_interval
+        self.card_prominence = card_prominence
+        self.card_edge_pad = card_edge_pad
+        self.card_period_n = card_period_n
+        self.resp_lowpass = resp_lowpass
+        self.resp_slope_lowpass = resp_slope_lowpass
+        self.resp_clip = resp_clip
+        self.resp_nbin = resp_nbin
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RetroTs(self, resp, card, TR, physFS, tshift=0, Nvol=None):
         """
-        RetroTS process function
+        Make RETROICOR regressors.
+
+        Parameters
+        ----------
+        resp, card : array
+            Respiration and cardiac signals from the scan onset. NaNs are
+            interpolated.
+        TR : float
+            Repetition time (s).
+        physFS : float
+            Sampling frequency (Hz) of the signals.
+        tshift : float
+            Time (s) in a volume at which the phases are taken (e.g., the
+            reference time of slice-timing correction).
+        Nvol : int, optional
+            Number of volumes. Default: all volumes covered by the data.
+
+        Returns
+        -------
+        reg : array (Nvol x 8)
+            sin(p), cos(p), sin(2p), cos(2p) of the respiration phase, and
+            the same of the cardiac phase.
         """
-
-        # Set parameters
-        self._phys_fs = physFS
-        self._TR = TR
-        self._slice_offset = tshift
-        resp = self._clean_resamp(resp)
-        card = self._clean_resamp(card)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-
-            # Find peaks
-            respiration_peak = self.peak_finder(
-                resp, self.respiration_cutoff_frequency)
-
-            cardiac_peak = self.peak_finder(
-                card, self.cardiac_cutoff_frequency,
-                detend_window=self.cardiac_detend_window)
-
-        # Phase estimate and create regressors
-        resp_reg = self.phase_estimator(1, respiration_peak)
-        card_reg = self.phase_estimator(0, cardiac_peak)
-
+        card_ph, resp_ph = self.phases(card, resp, physFS)
         if Nvol is None:
-            Nvol = min(resp_reg.shape[0], card_reg.shape[0])
+            Nvol = int(np.floor(len(card_ph) / physFS / TR))
 
-        resp_reg = resp_reg[:Nvol, :]
-        card_reg = card_reg[:Nvol, :]
-        reg = np.concatenate([resp_reg, card_reg], axis=1)
+        idx = np.round((np.arange(Nvol) * TR + tshift) * physFS).astype(int)
+        idx = np.clip(idx, 0, len(card_ph) - 1)
+        reg = []
+        for ph in (resp_ph[idx], card_ph[idx]):
+            reg.extend([np.sin(ph), np.cos(ph), np.sin(2 * ph),
+                        np.cos(2 * ph)])
 
-        return reg
+        return np.stack(reg, axis=1)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def peak_finder(self, v, frequency_cutoff, detend_window=None):
+    def phases(self, card, resp, fs):
+        """Sample-wise cardiac and respiration phases (rad)."""
+        n = len(card)
+        k = max(1, int(np.ceil(fs / self.max_proc_freq)))
+        fsd = fs / k
+        c = self._downsample(self._fill_nan(card), k)
+        r = self._downsample(self._fill_nan(resp), k)
+        if len(c) < 3 * fsd:  # Too short to estimate the phases
+            return np.zeros(n), np.zeros(n)
 
-        ret = {}  # return dict
+        card_ph = self.card_phase(c, fsd)
+        resp_ph = self.resp_phase(r, fsd)
+        idx = np.minimum(np.arange(n) // k, len(c) - 1)
+        return card_ph[idx], resp_ph[idx]
 
-        # De-mean
-        v = v - np.mean(v)
-        ret['v'] = v
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def card_phase(self, x, fs):
+        """Cardiac phase (0 to 2pi), linear between the detected peaks."""
+        n = len(x)
+        f0 = self._dominant_freq(x, fs, *self.card_freq_range,
+                                 self.card_freq_win)
 
-        # Filtering with frequency_cutoff
-        # FIR filter
-        if type(frequency_cutoff) in (list, np.array):
-            pass_zero = 'bandpass'
+        # Mirror the end so that a peak near the end can be detected
+        npad = min(n - 2, int(self.card_edge_pad / f0 * fs))
+        if npad > 0:
+            x = np.concatenate([x, x[-2:-npad - 2:-1]])
+
+        xf = self._filter(x, fs, self.card_band[0] * f0,
+                          self.card_band[1] * f0)
+        dist = max(1, int(self.card_min_interval / f0 * fs))
+        prom = self.card_prominence * np.std(xf[:n])
+        peaks, _ = find_peaks(xf, distance=dist, prominence=prom)
+        peaks = peaks[peaks < n].astype(float)
+        if len(peaks) < 2:
+            return np.zeros(n)
+
+        # Phase is linear between the peaks. Before the first and after the
+        # last peak, pseudo peaks are placed with the median period.
+        prd = np.diff(peaks)
+        p0 = np.median(prd[:self.card_period_n])
+        p1 = np.median(prd[-self.card_period_n:])
+        pre = peaks[0] - p0 * np.arange(int(np.ceil(peaks[0] / p0)) + 1,
+                                        0, -1)
+        post = peaks[-1] + p1 * np.arange(
+            1, int(np.ceil((n - peaks[-1]) / p1)) + 2)
+        pk = np.concatenate([pre, peaks, post])
+        cyc = np.interp(np.arange(n), pk, np.arange(len(pk)))
+        return 2 * np.pi * (cyc - np.floor(cyc))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def resp_phase(self, x, fs):
+        """Respiration phase (-pi to pi) from the equalized amplitude."""
+        xf = self._filter(x, fs, None, self.resp_lowpass)
+
+        # Histogram-equalized amplitude (0 to 1)
+        lo, hi = np.percentile(xf, [self.resp_clip, 100 - self.resp_clip])
+        if hi <= lo:
+            return np.zeros(len(x))
+        edges = np.linspace(lo, hi, self.resp_nbin + 1)
+        cnt, _ = np.histogram(np.clip(xf, lo, hi), edges)
+        cum = np.concatenate([[0], np.cumsum(cnt)]) / max(cnt.sum(), 1)
+        amp = np.interp(np.clip(xf, lo, hi), edges, cum)
+
+        # Sign: positive while inhaling (rising), negative while exhaling
+        slope = np.gradient(self._filter(x, fs, None,
+                                         self.resp_slope_lowpass))
+        return np.pi * amp * np.where(slope >= 0, 1.0, -1.0)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _fill_nan(x):
+        """Linearly interpolate non-finite values."""
+        x = np.array(x, dtype=float)
+        bad = ~np.isfinite(x)
+        if bad.all():
+            return np.zeros_like(x)
+        if bad.any():
+            i = np.arange(len(x))
+            x[bad] = np.interp(i[bad], i[~bad], x[~bad])
+        return x
+
+    @staticmethod
+    def _downsample(x, k):
+        """Mean of every k samples."""
+        if k <= 1:
+            return x
+        m = len(x) // k * k
+        y = x[:m].reshape(-1, k).mean(axis=1)
+        if m < len(x):
+            y = np.append(y, x[m:].mean())
+        return y
+
+    @staticmethod
+    def _dominant_freq(x, fs, fmin, fmax, win_sec=None):
+        """Frequency of the spectral peak in [fmin, fmax] of the last
+        win_sec seconds."""
+        if win_sec is not None:
+            x = x[-int(win_sec * fs):]
+        x = x - x.mean()
+        nfft = max(len(x), int(fs * 64))  # zero-pad for finer resolution
+        X = np.abs(np.fft.rfft(x * np.hanning(len(x)), nfft))
+        f = np.fft.rfftfreq(nfft, 1 / fs)
+        m = (f >= fmin) & (f <= fmax)
+        return f[m][np.argmax(X[m])]
+
+    @staticmethod
+    def _filter(x, fs, lo, hi, order=2):
+        """Zero-phase Butterworth low-pass (lo=None) or band-pass filter."""
+        hi = min(hi, 0.45 * fs)
+        if lo is None or lo <= 0:
+            sos = butter(order, hi, btype="lowpass", fs=fs, output="sos")
         else:
-            pass_zero = 'lowpass'
-        b = firwin(numtaps=(self.fir_order + 1), cutoff=frequency_cutoff,
-                   window="hamming", pass_zero=pass_zero, fs=self._phys_fs)
-
-        # Filter both ways to cancel phase shift
-        v = lfilter(b, 1, v, axis=0)
-        v = np.flipud(v)
-        v = lfilter(b, 1, v)
-        v = np.flipud(v)
-
-        if detend_window is not None:
-            # Detrend with moving average of this second
-            ww = int(detend_window * self._phys_fs)
-            # Divide by the number of samples in the window at each point,
-            # which also corrects the edges. This works for any data length,
-            # including data shorter than the window.
-            trend = convolve(v, np.ones(ww), mode='same') / \
-                convolve(np.ones(len(v)), np.ones(ww), mode='same')
-            v = v - trend
-
-        # analytic_signal
-        x = hilbert(v)
-
-        # Find peaks
-        fsi = 1.0 / self._phys_fs
-        t = np.arange(0, (len(x)+1)*fsi, fsi)
-        t = t[:len(x)]
-        img_chg = (x[:-1].imag * x[1:].imag)
-        iz = np.nonzero(img_chg <= 0)[0]
-        polall = -np.sign(x[:-1].imag - x[1:].imag)
-        pk = (x[iz]).real
-        pol = polall[iz]
-
-        # Polishing: Find a peak around the identified points
-        window_width = 0.2  # Window for adjusting peak location in seconds
-        nww = int(np.ceil((window_width / 2) * self._phys_fs))
-        pkp_ = pk
-        for ii in range(len(iz)):
-            n0 = int(max(2, iz[ii]-nww))
-            n1 = int(min(len(x), iz[ii]+nww))
-            wval = (x[n0:n1+1]).real
-            if pol[ii] > 0:
-                xx, ixx = np.max(wval), np.argmax(wval)
-            else:
-                xx, ixx = np.min(wval), np.argmin(wval)
-            iz[ii] = n0 + ixx - 1
-            pkp_[ii] = xx
-        tizp_ = t[iz]
-
-        ppp = np.nonzero(pol > 0)[0]
-        p_trace = pkp_[ppp]
-        tp_trace = tizp_[ppp]
-
-        npp = np.nonzero(pol < 0)[0]
-        n_trace = pkp_[npp]
-        tn_trace = tizp_[npp]
-
-        ntrace = min(len(p_trace), len(n_trace))
-        p_trace = p_trace[:ntrace]
-        tp_trace = tp_trace[:ntrace]
-        n_trace = n_trace[:ntrace]
-        tn_trace = tn_trace[:ntrace]
-
-        # remove duplicates
-        okflag = (np.diff(tp_trace) > 0.3) & (np.diff(tn_trace) != 0)
-        okflag = [True, *okflag]
-        p_trace = p_trace[okflag]
-        tp_trace = tp_trace[okflag]
-        n_trace = n_trace[okflag]
-        tn_trace = tn_trace[okflag]
-
-        # Remove peak points in the opposite side
-        irr_ppidx = []
-        for ppidx, pv in enumerate(p_trace):
-            mean_pp = np.mean(p_trace[max(ppidx-5, 0):ppidx+5])
-            mean_np = np.mean(n_trace[max(ppidx-5, 0):ppidx+5])
-            if np.abs(pv - mean_pp) > np.abs(pv - mean_np):
-                irr_ppidx.append(ppidx)
-
-        irr_npidx = []
-        for npidx, pv in enumerate(n_trace):
-            mean_pp = np.mean(p_trace[max(npidx-5, 0):npidx+5])
-            mean_np = np.mean(n_trace[max(npidx-5, 0):npidx+5])
-            if np.abs(pv - mean_pp) < np.abs(pv - mean_np):
-                irr_npidx.append(npidx)
-
-        p_trace = np.delete(p_trace, irr_ppidx)
-        tp_trace = np.delete(tp_trace, irr_ppidx)
-
-        n_trace = np.delete(n_trace, irr_npidx)
-        tn_trace = np.delete(tn_trace, irr_npidx)
-
-        # Positive and negative peaks must appear alternately.
-        tpn = np.concatenate([tp_trace, tn_trace])
-        pol = np.concatenate([np.ones_like(tp_trace),
-                              np.ones_like(tn_trace)*-1])
-        tpn_sidx = np.argsort(tpn).ravel()
-        tpn = tpn[tpn_sidx]
-        pol = pol[tpn_sidx]
-        not_alt_idx = np.argwhere(np.diff(pol) == 0).ravel()
-        rm_tp = []
-        rm_tn = []
-        for nli in not_alt_idx:
-            t0 = tpn[nli]
-            t1 = tpn[nli+1]
-            if t1 - t0 < window_width:
-                if pol[nli] > 0:
-                    v0 = p_trace[tp_trace == t0][0]
-                    v1 = p_trace[tp_trace == t1][0]
-                    if v0 > v1:
-                        rm_tp.append(t1)
-                    else:
-                        rm_tp.append(t0)
-                else:
-                    v0 = n_trace[tn_trace == t0][0]
-                    v1 = n_trace[tn_trace == t1][0]
-                    if v0 < v1:
-                        rm_tn.append(t1)
-                    else:
-                        rm_tn.append(t0)
-                continue
-
-            tmask = (t > t0) & (t < t1)
-            trange = t[tmask]
-            vals = x[tmask].real
-            if pol[nli] > 0:
-                peak_v = np.min(vals)
-                # If the negative peak is on the positive side, two positive
-                # peaks are merged into the higher one.
-                tr_idx = np.argwhere(tp_trace == t0).ravel()[0]
-                p_mean = np.mean(p_trace[max(0, tr_idx-5): tr_idx+5])
-                n_mean = np.mean(n_trace[max(0, tr_idx-5): tr_idx+5])
-                if np.abs(peak_v - p_mean) < np.abs(peak_v - n_mean):
-                    # Remove the lower peak points
-                    p0 = p_trace[tp_trace == t0][0]
-                    p1 = p_trace[tp_trace == t1][0]
-                    if p0 < p1:
-                        rm_tp.append(t0)
-                    else:
-                        rm_tp.append(t1)
-                else:
-                    # Add negative peak points
-                    n_trace = np.append(n_trace, peak_v)
-                    tn_trace = np.append(tn_trace, trange[np.argmin(vals)])
-            else:
-                peak_v = np.max(vals)
-                # If the positive peak is on the negative side, two negative
-                # peaks are merged into the lower one.
-                tr_idx = np.argwhere(tn_trace == t0).ravel()[0]
-                p_mean = np.mean(p_trace[max(0, tr_idx-5): tr_idx+5])
-                n_mean = np.mean(n_trace[max(0, tr_idx-5): tr_idx+5])
-                if np.abs(peak_v - p_mean) > np.abs(peak_v - n_mean):
-                    # Remove the lower peak points
-                    p0 = n_trace[tn_trace == t0][0]
-                    p1 = n_trace[tn_trace == t1][0]
-                    if p0 > p1:
-                        rm_tn.append(t0)
-                    else:
-                        rm_tn.append(t1)
-                else:
-                    # Add positive peak points
-                    p_trace = np.append(p_trace, peak_v)
-                    tp_trace = np.append(tp_trace, trange[np.argmin(vals)])
-
-        if len(rm_tp):
-            rmidx = np.argwhere([tt in rm_tp for tt in tp_trace]).ravel()
-            p_trace = np.delete(p_trace, rmidx)
-            tp_trace = np.delete(tp_trace, rmidx)
-
-        if len(rm_tn):
-            rmidx = np.argwhere([tt in rm_tn for tt in tn_trace]).ravel()
-            n_trace = np.delete(n_trace, rmidx)
-            tn_trace = np.delete(tn_trace, rmidx)
-
-        sidx = np.argsort(tp_trace).ravel()
-        p_trace = p_trace[sidx]
-        tp_trace = tp_trace[sidx]
-
-        sidx = np.argsort(tn_trace).ravel()
-        n_trace = n_trace[sidx]
-        tn_trace = tn_trace[sidx]
-
-        # Calculate the period
-        prd = np.diff(tp_trace)
-
-        '''
-        from pylab import plot, subplot, show, text, figure
-        figure(1)
-        plot(t, np.real(x), "g")
-        plot(tp_trace, p_trace, "r-")
-        plot(tp_trace, p_trace, "r.")
-        plot(tn_trace, n_trace, "b-")
-        plot(tn_trace, n_trace, "b.")
-        show()
-        '''
-        ret.update(
-            {'t': t, 'p_trace': p_trace, 'tp_trace': tp_trace,
-             'tn_trace': tn_trace, 'prd': prd})
-
-        return ret
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def phase_estimator(self, amp_type, peak_vars):
-        '''
-        '''
-
-        v = peak_vars['v']
-        t = peak_vars['t']
-        p_trace = peak_vars['p_trace']
-        tp_trace = peak_vars['tp_trace']
-        tn_trace = peak_vars['tn_trace']
-        prd = peak_vars['prd']
-
-        if amp_type == 0:
-            # Calculate the phase of the trace, with the peak to be the start
-            # of the phase
-            phase = -2 * np.ones_like(t)
-            for ii, tp0 in enumerate(tp_trace[:-1]):
-                tp1 = tp_trace[ii+1]
-                for jj in np.argwhere((t >= tp0) & (t < tp1)).ravel():
-                    phase[jj] = (t[jj] - tp0) / prd[ii] + \
-                        self.zero_phase_offset
-                    if phase[jj] < 0:
-                        phase[jj] = -phase[jj]
-                    if phase[jj] > 1:
-                        phase[jj] -= 1
-
-            # Remove the points flagged as unset
-            phase[np.nonzero(phase < -1)[0]] = 0.0
-            # Change phase to radians
-            phase = phase * 2 * np.pi
-        else:
-            '''
-            import numpy as np
-            p_trace = phasee["p_trace"]
-            tp_trace = phasee["tp_trace"][:-1]
-            tn_trace = phasee["tn_trace"][:-1]
-            v = phasee["v"]
-            t = phasee["t"]
-            prd = phasee["prd"]
-            '''
-            # phase based on amplitude
-            # scale to the max
-            mxamp = np.max(p_trace)
-            vmin = np.min(v)
-            vmax = np.max(v)
-            # Scale, per Glover 2000's paper
-            gR = ((v - vmin) / (vmax - vmin)) * vmax
-            bins = np.arange(0.01, 1.01, 0.01) * mxamp
-            hb_value = self._my_hist(gR, bins)
-
-            # Set the phase polarity of each time point in v:
-            # rising = 1, falling = -1
-            phase_pol = np.zeros_like(v)
-            tp_tr = tp_trace.copy()
-            tn_tr = tn_trace.copy()
-
-            if tp_tr[0] < tn_tr[0]:
-                pp = tp_tr[0]
-                cpol = -1
-                tp_tr = tp_tr[1:]
-            else:
-                pp = tn_tr[0]
-                cpol = 1
-                tn_tr = tn_tr[1:]
-            phase_pol[t == pp] = cpol
-
-            while len(tp_tr) and len(tn_tr):
-                pp0 = pp
-                if tp_tr[0] < tn_tr[0]:
-                    pp = tp_tr[0]
-                    cpol = 1
-                    tp_tr = tp_tr[1:]
-                else:
-                    pp = tn_tr[0]
-                    cpol = -1
-                    tn_tr = tn_tr[1:]
-                phase_pol[(t > pp0) & (t <= pp)] = cpol
-
-            pp0 = pp
-            if len(tp_tr):
-                pp = tp_tr[0]
-                cpol = 1
-                tp_tr = tp_tr[1:]
-            elif len(tn_tr):
-                pp = tn_tr[0]
-                cpol = -1
-                tn_tr = tn_tr[1:]
-            phase_pol[(t > pp0) & (t <= pp)] = cpol
-            phase_pol[t > pp] = cpol * -1
-
-            gR = np.clip(np.floor(gR / mxamp * 100).astype(int), 0, 99)
-            hbsum = np.cumsum(hb_value/np.sum(hb_value))
-            phase = np.pi * hbsum[gR] * phase_pol
-
-        # Time series time vector
-        time_series_time = np.arange(
-            0, t.max()-self._TR/2 + np.finfo(float).eps, self._TR)
-        phase_slice_reg = np.zeros([len(time_series_time), 4])
-        tslc = time_series_time + self._slice_offset
-        ph_idx = [min(max(0, int(np.round(ts*self._phys_fs))), len(phase))
-                  for ts in tslc]
-        phase_slice = phase[ph_idx]
-
-        # Make regressors for each slice
-        phase_slice_reg[:, 0] = np.sin(phase_slice)
-        phase_slice_reg[:, 1] = np.cos(phase_slice)
-        phase_slice_reg[:, 2] = np.sin(2*phase_slice)
-        phase_slice_reg[:, 3] = np.cos(2*phase_slice)
-
-        return phase_slice_reg
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _my_hist(self, x, bin_centers):
-        """
-        http://stackoverflow.com/questions/18065951/why-does-numpy-histogram-python-leave-off-one-element-as-compared-to-hist-in-m
-        :param x:dataset
-        :param bin_centers:bin values in a list to be moved from edges to
-        centers
-        :return: counts = the data in bin centers ready for pyplot.bar
-        """
-        bin_edges = np.r_[-np.inf, 0.5*(bin_centers[:-1]+bin_centers[1:]),
-                          np.inf]
-        counts, edges = np.histogram(x, bin_edges)
-        return counts
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _clean_resamp(self, v):
-        idx_good = np.argwhere(~np.isnan(v)).ravel()
-        if idx_good[0] > 0:
-            v[:idx_good[0]] = v[idx_good[0]]
-        if idx_good[-1] < len(v)-1:
-            v[idx_good[-1]:] = v[idx_good[-1]]
-
-        idx_bad = np.argwhere(np.isnan(v)).ravel()
-        if len(idx_bad):
-            x = np.arange(0, len(v))
-            xg = np.setdiff1d(x, idx_bad)
-            v[idx_bad] = interp1d(xg, v[xg], bounds_error=None)(idx_bad)
-
-        return v
+            sos = butter(order, [lo, hi], btype="bandpass", fs=fs,
+                         output="sos")
+        return sosfiltfilt(sos, x)
 
 
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
-    rtp_retrots = RtpRetroTS()
-    rtp_retrots.TR = 1.5
-
     from pathlib import Path
-    card_f = Path('/path/to/data')
-    resp_f = Path('/path/to/data')
-    resp = np.loadtxt(resp_f)
-    card = np.loadtxt(card_f)
-    rtp_retrots._phys_fs = 100
-    reg = rtp_retrots.RetroTs(resp, card)
+
+    test_dir = Path(__file__).resolve().parent.parent / 'tests'
+    card = np.loadtxt(test_dir / 'ECG.1D')
+    resp = np.loadtxt(test_dir / 'Resp.1D')
+    rtp_retrots = RtpRetroTS()
+    reg = rtp_retrots.RetroTs(resp, card, TR=2.0, physFS=40)
+    print(reg.shape)

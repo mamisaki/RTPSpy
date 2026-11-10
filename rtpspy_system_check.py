@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+RTPSpy system check: run the full RTP pipeline on the test data in tests/,
+simulating real-time fMRI by writing the volumes one by one at the TR.
+
 @author: mmisaki@laureateinstitute.org
 """
 
@@ -39,10 +42,7 @@ if __name__ == "__main__":
     overwrite = not args.keep_masks
     debug = args.debug
 
-    if debug:
-        log_level = logging.DEBUG
-    else:
-        log_level = logging.INFO
+    log_level = logging.DEBUG if debug else logging.INFO
     # endregion: Parse arguments ----------------------------------------------
 
     # -------------------------------------------------------------------------
@@ -66,49 +66,38 @@ if __name__ == "__main__":
 
     try:
         # region: Set paths ---------------------------------------------------
-        # Test data directory  # Fixed: capitalized "test"
         test_dir = Path(__file__).absolute().parent / "tests"
 
-        # Set test data files
+        # Test data files
         testdata_f = test_dir / "func_epi.nii.gz"
-        assert testdata_f.is_file(), (
-            f"Functional test data file not found: {testdata_f}"
-        )
         anat_f = test_dir / "anat_mprage.nii.gz"
-        assert anat_f.is_file(), (
-            f"Anatomical test data file not found: {anat_f}"
-        )
         template_f = test_dir / "MNI152_2009_template.nii.gz"
-        assert template_f.is_file(), (
-            f"Template file not found: {template_f}"
-        )
         ROI_template_f = test_dir / "MNI152_2009_template_LAmy.nii.gz"
-        assert ROI_template_f.is_file(), (
-            f"ROI template file not found: {ROI_template_f}"
-        )
         WM_template_f = test_dir / "MNI152_2009_template_WM.nii.gz"
-        assert WM_template_f.is_file(), (
-            f"WM template file not found: {WM_template_f}"
-        )
         Vent_template_f = test_dir / "MNI152_2009_template_Vent.nii.gz"
-        assert Vent_template_f.is_file(), (
-            f"Vent template file not found: {Vent_template_f}"
-        )
         ecg_f = test_dir / "ECG.1D"
-        assert ecg_f.is_file(), f"ECG file not found: {ecg_f}"
         resp_f = test_dir / "Resp.1D"
-        assert resp_f.is_file(), f"Resp file not found: {resp_f}"
+        for label, ff in (
+            ("Functional test data file", testdata_f),
+            ("Anatomical test data file", anat_f),
+            ("Template file", template_f),
+            ("ROI template file", ROI_template_f),
+            ("WM template file", WM_template_f),
+            ("Vent template file", Vent_template_f),
+            ("ECG file", ecg_f),
+            ("Resp file", resp_f),
+        ):
+            assert ff.is_file(), f"{label} not found: {ff}"
 
         work_dir = test_dir / "work"
         if not work_dir.is_dir():
             work_dir.mkdir()
 
-        # Prepare watch directory  # Fixed: "dir" -> "directory"
+        # Prepare an empty watch directory
         watch_dir = test_dir / "watch"
         if not watch_dir.is_dir():
             watch_dir.mkdir()
         else:
-            # Clean up watch directory
             for ff in watch_dir.glob("*"):
                 if ff.is_dir():
                     for fff in ff.glob("*"):
@@ -118,7 +107,6 @@ if __name__ == "__main__":
                     ff.unlink()
         # endregion: Set paths ------------------------------------------------
 
-        # Create RtpApp instance
         rtp_app = RtpApp(work_dir=work_dir)
 
         # region: Make mask images --------------------------------------------
@@ -126,7 +114,8 @@ if __name__ == "__main__":
         if torch.cuda.is_available() or torch.backends.mps.is_available():
             logger.info("GPU is utilized.")
             no_FastSeg = False
-            rtp_app.fastSeg_batch_size = 1  # Adjust the size according to GPU
+            # Increase the batch size if the GPU memory allows
+            rtp_app.fastSeg_batch_size = 1
         else:
             logger.info("GPU is not available.")
             no_FastSeg = True
@@ -147,7 +136,6 @@ if __name__ == "__main__":
 
         # region: Set up RTP --------------------------------------------------
         logger.debug("### Start preparing the dummy physio recorder ###")
-        # Set RtpTTLPhysio
         ttl_physio = rtp_app.rtp_objs["TTLPHYSIO"]
         assert ttl_physio.available, "rt_physio process is not available."
         # Feed the dummy recorder of the rt_physio process with the test files
@@ -180,9 +168,8 @@ if __name__ == "__main__":
             },
         }
 
-        # RTP setup
+        # The mask files made by make_masks() are set in RTP_setup().
         rtp_app.RTP_setup(rtp_params=rtp_params)
-        # Mask files made by make_masks() are automatically set in RTP_setup()
 
         # Ready to run the pipeline
         proc_chain = rtp_app.ready_to_run()
@@ -190,28 +177,27 @@ if __name__ == "__main__":
         logger.debug("### End RTP setup ###")
         # endregion: Set up RTP -----------------------------------------------
 
-        # region: Simulate scan (Copy data volume-by-volume) ------------------
+        # region: Simulate scan (write the data volume by volume) -------------
         logger.debug("### Start simulating real-time fMRI imaging ###")
-        # Load data
         img = nib.load(testdata_f)
         TR = img.header.get_zooms()[3]
         fmri_data = np.asanyarray(img.dataobj)
         N_vols = img.shape[-1]
 
+        # In debug mode, the volumes are processed directly in this thread
+        # (not by the watchdog) so that errors can be traced.
         if debug:
             rtp_app.rtp_objs["WATCH"].stop_watching()
 
-        # Start
         rtp_app.manual_start()
         scan_onset_time = rtp_app.scan_onset
 
         for ii in range(N_vols):
             next_tr = (ii + 1) * TR
             while time.time() - scan_onset_time < next_tr:
-                # Wait for next TR
-                time.sleep(0.001)
+                time.sleep(0.001)  # Wait for the next TR
 
-            # Copy volume file to watch directory
+            # Write a volume file to the watch directory
             save_filename = watch_dir / f"system_test_nr_{ii + 1:04d}.nii.gz"
             nib.save(
                 nib.Nifti1Image(fmri_data[:, :, :, ii], affine=img.affine),
@@ -222,14 +208,13 @@ if __name__ == "__main__":
                 proc_chain.do_proc(save_filename)
 
         logger.debug("### End simulating real-time fMRI imaging ###")
-        # endregion: Simulate scan (Copy data volume-by-volume) ---------------
+        # endregion: Simulate scan --------------------------------------------
 
         logger.debug("### Close RTP ###")
         rtp_app.end_run()
         logger.debug("### Close dummy physio recorder ###")
         rtp_app.rtp_objs["TTLPHYSIO"].quit()
 
-        # End
         logger.info("-" * 80)
         logger.info("End process")
         logger.info("RTPSpy system check finished.")
@@ -238,8 +223,7 @@ if __name__ == "__main__":
     except Exception:
         logger.error("x" * 80)
         logger.error("RTPSpy system check failed.")
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        traceback.print_exception(exc_type, exc_obj, exc_tb)
+        traceback.print_exc()
         # Stop the rt_physio process so that it does not remain orphaned
         if "rtp_app" in locals() and "TTLPHYSIO" in rtp_app.rtp_objs:
             rtp_app.rtp_objs["TTLPHYSIO"].quit()

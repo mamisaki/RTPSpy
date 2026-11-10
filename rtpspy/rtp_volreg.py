@@ -18,7 +18,6 @@ import logging
 
 import numpy as np
 import nibabel as nib
-from six import string_types
 
 from PyQt5 import QtWidgets, QtCore
 import matplotlib as mpl
@@ -45,71 +44,81 @@ except Exception:
 class RtpVolreg(RTP):
     """
     Real-time online volume registration for motion correction.
-    AFNI functions in librtp.so (compiled from libmri.so) is called.
+    The AFNI functions in librtp.so (built from the AFNI libmri source) are
+    called via ctypes.
     """
 
+    # Resampling method IDs of the C library
     regmode_dict = {'nn': 0, 'linear': 1, 'cubic': 2, 'fourier': 3,
                     'quintic': 4, 'heptic': 5, 'tsshift': 6}
+    # Resampling methods usable for registration. 'nn' cannot be used: the
+    # gradient images are all zero and the least-squares fit fails in the C
+    # library (the process aborts).
+    reg_regmodes = ['linear', 'cubic', 'fourier', 'quintic', 'heptic']
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, ref_vol=0, regmode='heptic', max_scan_length=1000,
+    def __init__(self, ref_vol=0, regmode='heptic', max_scan_length=None,
                  **kwargs):
         """
         Parameters
         ----------
-        ref_vol : int or str, optional
-            Reference volume filename or index the current scan.
-            int: Index of volume in the current scan.
-            str (or Path): reference volume filename.
+        ref_vol : int, str, or Path, optional
+            Reference volume.
+            int: Index of the volume in the current scan.
+            str or Path: Reference volume filename. A sub-volume can be
+            selected with an AFNI-style index, e.g., 'func.nii.gz[3]'.
             The default is 0.
         regmode : str, optional
             Image resampling method.
-            ['nn'|'linear'|'cubic'| 'fourier'|'quintic'|heptic'|'tsshift']
+            ['linear'|'cubic'|'fourier'|'quintic'|'heptic']
             The default is 'heptic'. See
             https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dvolreg.html
             for details.
         max_scan_length : int, optional
-            Maximum scan length. This is used for pre-allocating memory space
-            for motion matrix. The default is 1000.
+            Maximum scan length, used to pre-allocate the motion parameter
+            array. The default is DEFAULT_MAX_SCAN_LENGTH.
         """
-        super(RtpVolreg, self).__init__(**kwargs)
+        super(RtpVolreg, self).__init__(max_scan_length=max_scan_length,
+                                        **kwargs)
 
         # Set instance parameters
-        self.regmode = regmode
-        self.max_scan_length = max_scan_length
+        self.regmode = self._check_regmode(regmode)
+        self.ref_fname = ''  # External reference file ('' for internal)
 
-        # Initialize parameters and C library function call
-        # motion parameter
+        # Motion parameters of all volumes (AFNI 3dvolreg output order)
         self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
-        self.set_ref_vol(ref_vol)
+        # Motion parameters of the last aligned volume in the order of the C
+        # function (roll, pitch, yaw, dx, dy, dz), used as the initial values
+        # for the next volume.
+        self._last_motpar = None
         self.setup_libfuncs()
+        self.set_ref_vol(ref_vol)
 
-        # alignment parameters (Set from AFNI plug_realtime default values)
+        # Alignment parameters (AFNI plug_realtime default values)
         self.max_iter = 9
         self.dxy_thresh = 0.05  # pixels
         self.phi_thresh = 0.07  # degree
 
-        # --- initialize for motion plot ---
+        # Data for the motion plot
         self._plt_xi = []
-        self._plt_motion = []
-        for ii in range(6):
-            self._plt_motion.append(list([]))
+        self._plt_motion = [[] for _ in range(6)]
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         self._proc_ready = self.ref_vol is not None
         if not self._proc_ready:
-            errmsg = "Refence volume or volume index has not been set."
+            errmsg = "Reference volume or volume index has not been set."
             self._logger.error(errmsg)
             self.err_popup(errmsg)
 
         # Reset running variables
         self._motion = np.zeros([self.max_scan_length, 6], dtype=np.float32)
+        self._last_motpar = None
 
         # Reset plot values
         self._plt_xi[:] = []
-        for ii in range(6):
-            self._plt_motion[ii][:] = []
+        for plt_mot in self._plt_motion:
+            plt_mot[:] = []
 
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
@@ -119,92 +128,100 @@ class RtpVolreg(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
-            # Increment the number of received volume: vol_num is 0-based
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            self._vol_num += 1  # 1-based number of received volumes
             if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-base index
+                vol_idx = self._vol_num - 1  # 0-based index
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
                 return
 
             if self._proc_start_idx < 0:
                 self._proc_start_idx = vol_idx
 
             # --- Initialize --------------------------------------------------
-            # if self.ref_vol is int (index of reference volume in the current
-            # scan), wait for the reference index and set the reference.
+            # If self.ref_vol is an int (index of the reference volume in the
+            # current scan), wait for that volume and set it as the
+            # reference.
             if type(self.ref_vol) is int:
                 if vol_idx < self.ref_vol:
+                    # No reference yet. The volume cannot be aligned.
+                    self._logger.warning(
+                        f"Volume {vol_idx} is before the reference volume "
+                        f"{self.ref_vol} and is not processed.")
                     return
 
-                elif vol_idx >= self.ref_vol:
-                    ref_vi = self.ref_vol
-                    self.ref_vol = fmri_img
-                    self.align_setup()
-                    msg = f"Alignment reference is set to volume {ref_vi}"
-                    msg += " of current sequence."
-                    self._logger.info(msg)
-                    return
+                ref_vi = self.ref_vol
+                self.ref_vol = nib.Nifti1Image(
+                    np.asarray(fmri_img.dataobj, dtype=np.float32).reshape(
+                        fmri_img.shape[:3]), fmri_img.affine)
+                self.align_setup()
+                self._logger.info(
+                    f"Alignment reference is set to volume {ref_vi}"
+                    " of the current scan.")
+                # The reference volume itself is aligned (motion ~ 0) and
+                # passed to the next process below.
 
-            # --- Run the procress --------------------------------------------
-            # Perform volume alignment
-            reg_dataV, mot = self.align_one(fmri_img, vol_idx)
+            if vol_idx >= self._motion.shape[0]:
+                self._logger.warning(
+                    "The scan is longer than max_scan_length "
+                    f"({self.max_scan_length}). The motion array is extended.")
+                self._motion = np.concatenate(
+                    [self._motion,
+                     np.zeros([max(100, vol_idx + 1 - self._motion.shape[0]),
+                               6], dtype=np.float32)])
 
-            # Set aligned data in fmri_img and motions in self._motion.
+            # --- Run the process ---------------------------------------------
+            aligned_data, motpar = self.align_one(fmri_img, vol_idx)
+
             fmri_img.uncache()
-            fmri_img._dataobj = reg_dataV
-            fmri_img.set_data_dtype = reg_dataV.dtype
+            fmri_img._dataobj = aligned_data
+            fmri_img.set_data_dtype(aligned_data.dtype)
 
-            self._motion[vol_idx, :] = mot[[0, 1, 2, 5, 3, 4]]
+            # (roll, pitch, yaw, dx, dy, dz) -> AFNI 3dvolreg output order
+            self._motion[vol_idx, :] = motpar[[0, 1, 2, 5, 3, 4]]
 
-            # --- Post procress -----------------------------------------------
-            # Record process time
+            # --- Post-process ------------------------------------------------
+            # Record the processing time and log
             tstamp = time.time()
             self._proc_time.append(tstamp)
-            if pre_proc_time is not None:
-                proc_delay = self._proc_time[-1] - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
 
-            # log message
             if fmri_img.get_filename():
                 fname = Path(fmri_img.get_filename()).name
             else:
                 fname = "unknown.nii.gz"
-            msg = f"#{vol_idx+1};Volume registration;{fname}"
-            msg += f";tstamp={tstamp}"
+            msg = f"#{vol_idx+1};Volume registration;{fname};tstamp={tstamp}"
             if pre_proc_time is not None:
+                proc_delay = tstamp - pre_proc_time
+                if self.save_delay:
+                    self.proc_delay.append(proc_delay)
                 msg += f";took {proc_delay:.4f}s"
             self._logger.info(msg)
 
-            # Set save_name
             fmri_img.set_filename('vr.' + fname)
 
-            if self.next_proc:
-                # Keep the current processed data
+            if self.next_proc is not None:
+                # Keep this module's output, as the next process replaces
+                # the data in fmri_img.
                 self.proc_data = np.asanyarray(fmri_img.dataobj)
                 save_name = fmri_img.get_filename()
 
-                # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self._proc_time[-1])
+                                       pre_proc_time=tstamp)
 
-            # Update motion plot
+            # Update the motion plot
             self._plt_xi.append(vol_idx+1)
             for ii in range(6):
                 self._plt_motion[ii].append(self._motion[vol_idx, ii])
 
-            # Save processed image
             if self.save_proc:
                 if self.next_proc is not None:
-                    # Recover the processed data in this module
+                    # Restore this module's output
                     fmri_img.uncache()
                     fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype = self.proc_data.dtype
+                    fmri_img.set_data_dtype(self.proc_data.dtype)
                     fmri_img.set_filename(save_name)
 
-                self.keep_processed_image(fmri_img,
+                self.keep_processed_image(fmri_img, vol_num=vol_idx,
                                           save_temp=self.online_saving)
 
         except Exception:
@@ -222,12 +239,26 @@ class RtpVolreg(RTP):
         return super(RtpVolreg, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _check_regmode(self, regmode):
+        """Return a resampling method name usable for registration."""
+        if isinstance(regmode, (int, np.integer)):
+            # Legacy index of regmode_dict
+            names = {v: k for k, v in RtpVolreg.regmode_dict.items()}
+            regmode = names.get(int(regmode), regmode)
+        if regmode not in RtpVolreg.reg_regmodes:
+            self._logger.error(
+                f"Resampling '{regmode}' cannot be used for registration."
+                " 'heptic' is used.")
+            regmode = 'heptic'
+        return regmode
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_libfuncs(self):
-        """ Setup library function access """
+        """ Set up the C library functions. """
 
         librtp = ctypes.cdll.LoadLibrary(librtp_path)
 
-        # -- Define rtp_align_setup --
+        # -- rtp_align_setup --
         self.rtp_align_setup = librtp.rtp_align_setup
         self.rtp_align_setup.argtypes = \
             [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -235,45 +266,49 @@ class RtpVolreg(RTP):
              ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
              ctypes.c_void_p, ctypes.c_void_p]
 
-        # -- Define rtp_align_one --
+        # -- rtp_align_one --
         self.rtp_align_one = librtp.rtp_align_one
         self.rtp_align_one.argtypes = \
             [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
              ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_void_p,
-             ctypes.c_void_p, ctypes.c_int, ctypes.c_int,  ctypes.c_int,
+             ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
              ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
              ctypes.c_void_p]
 
-        # -- Define THD_rota_vol --
-        self.THD_rota_vol = librtp.THD_rota_vol
-        self.THD_rota_vol.argtypes = \
-            [ctypes.c_int, ctypes.c_int, ctypes.c_int,
-             ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_void_p,
-             ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_float,
-             ctypes.c_int, ctypes.c_float,
-             ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]
-
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_ref_vol(self, ref_vol, ref_vi=0):
-        if isinstance(ref_vol, string_types) or isinstance(ref_vol, Path):
-            # refname is a filename
+        """
+        Set the alignment reference.
+
+        Parameters
+        ----------
+        ref_vol : int, str, or Path
+            int: Index of the reference volume in the current scan.
+            str or Path: Reference image filename. An AFNI-style volume
+            index (e.g., 'func.nii.gz[3]') overrides ref_vi.
+        ref_vi : int, optional
+            Volume index in a 4D reference file. The default is 0.
+        """
+        if isinstance(ref_vol, (str, Path)):
             ref_vol0 = ref_vol
 
-            # Get volume index
+            # Get the volume index
             ma = re.search(r"\'*\[(\d+)\]\'*$", str(ref_vol))
             if ma:
                 ref_vi = int(ma.groups()[0])
                 ref_vol = re.sub(r"\'*\[(\d+)\]\'*$", '', str(ref_vol))
 
-            # Load volume
             ref_vol = nib.load(ref_vol)
             if len(ref_vol.shape) == 4:
-                vol = ref_vol.get_fdata()[:, :, :, ref_vi]
+                vol = np.asarray(ref_vol.dataobj[:, :, :, ref_vi],
+                                 dtype=np.float32)
                 ref_vol = nib.Nifti1Image(vol, ref_vol.affine)
             assert len(ref_vol.shape) == 3
 
             self.ref_vol = ref_vol
-            self.align_setup()  # Prepare alignment volume
+            ref_fname = re.sub(r"\'*\[.*$", '', str(ref_vol0))
+            self.ref_fname = f"{ref_fname}[{ref_vi}]"
+            self.align_setup()
 
             msg = f"Alignment reference = {ref_vol0}"
             if ma is None:
@@ -281,29 +316,30 @@ class RtpVolreg(RTP):
             self._logger.info(msg)
 
         else:
-            # ref_vol is a number. Get reference from ref_vol-th volume in
-            # ongoing scan. Once this reference is set, this will be kept
-            # during the lifetime of the instance.
+            # ref_vol is a volume index. The reference is taken from that
+            # volume of the ongoing scan in do_proc, and then kept for the
+            # lifetime of the instance.
             self.ref_vol = int(ref_vol)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def align_setup(self):
         """
-        Set up refernce image array and Choleski decomposed matrix for lsqfit
+        Set up the reference image array and the Cholesky-decomposed matrix
+        for the least-squares fit.
 
-        Reference image array includes original image, three rotation gradient
-        images and three shift gradient images
+        The reference image array includes the base image, three rotation
+        gradient images, and three shift gradient images.
 
-        Calls rtp_align_setup in librtp.so, which is a modified version of
-        mri_3dalign_setup in mri_3dalign.c of afni source.
+        Calls rtp_align_setup in librtp.so, a modified version of
+        mri_3dalign_setup in mri_3dalign.c of the AFNI source.
 
-        Setup variables
-        ---------------
+        Set variables
+        -------------
         self.fitim: numpy array of float32
-            seven reference volumes
+            Seven reference volumes.
         self.chol_fitim: numpy array of float64
-            Choleski decomposition of weighted covariance matrix between
-            refrence images.
+            Cholesky decomposition of the weighted covariance matrix of the
+            reference images.
 
         C function definition
         ---------------------
@@ -313,8 +349,7 @@ class RtpVolreg(RTP):
                             int nref, float *ref_ims, double *chol_fitim)
         """
 
-        # -- Set parameters --
-        # image dimension
+        # Image dimensions and voxel size
         self.nx, self.ny, self.nz = self.ref_vol.shape
         if hasattr(self.ref_vol.header, 'info'):
             self.dx, self.dy, self.dz = \
@@ -322,33 +357,33 @@ class RtpVolreg(RTP):
         elif hasattr(self.ref_vol.header, 'get_zooms'):
             self.dx, self.dy, self.dz = self.ref_vol.header.get_zooms()[:3]
         else:
-            errmsg = "No voxel size information in ref_vol header"
+            errmsg = "No voxel size information in the ref_vol header"
             self._logger.error(errmsg)
 
-        # rotate orientation
+        # Rotation axes
         self.ax1 = 2  # z-axis, roll
         self.ax2 = 0  # x-axis, pitch
-        self.ax3 = 1  # y-axis, yow
+        self.ax3 = 1  # y-axis, yaw
 
-        # Copy base image data and get pointer
-        base_im_arr = self.ref_vol.get_fdata().astype(np.float32)
-        # x,y,z -> y,z,x -> z,y,x
-        base_im_arr = np.moveaxis(np.moveaxis(base_im_arr, 0, -1), 0, 1).copy()
+        # Copy the base image data and get its pointer
+        base_im_arr = np.asarray(self.ref_vol.dataobj, dtype=np.float32)
+        # x,y,z -> z,y,x (C order with x fastest)
+        base_im_arr = base_im_arr.reshape(
+            self.ref_vol.shape[:3]).transpose(2, 1, 0).copy()
         base_im_p = base_im_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        # -- Prepare return arrays --
+        # -- Prepare the output arrays --
         # Reference image array
         nxyz = self.nx * self.ny * self.nz
         nref = 7
         ref_img_arr = np.ndarray(nref * nxyz, dtype=np.float32)
         ref_ims_p = ref_img_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        # Choleski decomposed matrix for lsqfit
+        # Cholesky-decomposed matrix for the least-squares fit
         chol_fitim_arr = np.ndarray((nref, nref), dtype=np.float64)
         chol_fitim_p = chol_fitim_arr.ctypes.data_as(
                 ctypes.POINTER(ctypes.c_double))
 
-        # -- run func --
         regmode_id = RtpVolreg.regmode_dict[self.regmode]
         self.rtp_align_setup(base_im_p, self.nx, self.ny, self.nz, self.dx,
                              self.dy, self.dz, self.ax1, self.ax2, self.ax3,
@@ -356,14 +391,15 @@ class RtpVolreg(RTP):
 
         self.fitim = ref_img_arr
         self.chol_fitim = chol_fitim_arr
+        self._last_motpar = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def align_one(self, fmri_img, vol_idx):
         """
-        Align one volume [0] of fmri_img to the reference image.
+        Align a single-volume fmri_img to the reference image.
 
         Calls rtp_align_one in librtp.so, a modified version of
-        mri_3dalign_one in mri_3dalign.c from afni source.
+        mri_3dalign_one in mri_3dalign.c of the AFNI source.
 
         C function definition
         ---------------------
@@ -376,7 +412,9 @@ class RtpVolreg(RTP):
         Parameters
         ----------
         fmri_img : nibabel image object
-            fMRI single volumne image to be aligned.
+            Single-volume fMRI image to be aligned.
+        vol_idx : int
+            Volume index (not used).
 
         Returns
         -------
@@ -384,52 +422,62 @@ class RtpVolreg(RTP):
             Aligned volume data.
         motpar : array
             Six motion parameters: roll, pitch, yaw, dx, dy, dz.
-
-
         """
 
-        # Copy function image data and get pointer
-        fim_arr = fmri_img.get_fdata().astype(np.float32)
+        # Copy the functional image data and get its pointer
+        fim_arr = np.asarray(fmri_img.dataobj, dtype=np.float32)
         if fim_arr.ndim > 3:
             fim_arr = np.squeeze(fim_arr)
-        fim_arr = np.moveaxis(np.moveaxis(fim_arr, 0, -1), 0, 1).copy()
+        if fim_arr.shape != (self.nx, self.ny, self.nz):
+            # The C function reads nx*ny*nz values; a different shape would
+            # read out of bounds.
+            raise ValueError(
+                f"Volume shape {fim_arr.shape} does not match the reference"
+                f" {(self.nx, self.ny, self.nz)}")
+        # x,y,z -> z,y,x (C order with x fastest)
+        fim_arr = fim_arr.transpose(2, 1, 0).copy()
         fim_p = fim_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        # Get fitim and chol_fitim data pointer
+        # Pointers to the reference arrays
         fitim_p = self.fitim.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
         chol_fitim_p = self.chol_fitim.ctypes.data_as(
                 ctypes.POINTER(ctypes.c_double))
 
-        # Initial motion parameter
-        if not np.all(self._motion[vol_idx-1, :] == 0):
-            init_motpar = self._motion[vol_idx-1, :]
+        # Initial motion parameters: those of the last aligned volume, in
+        # the order of the C function (roll, pitch, yaw, dx, dy, dz).
+        # (self._motion has the AFNI 3dvolreg output order.)
+        if self._last_motpar is not None:
+            init_motpar = self._last_motpar.copy()
         else:
             init_motpar = np.zeros(6, dtype=np.float32)
 
         init_motpar_p = init_motpar.ctypes.data_as(
                 ctypes.POINTER(ctypes.c_float))
 
-        # Prepare return arrays
+        # Prepare the output arrays. motpar[0] is the intensity scale factor
+        # and motpar[1:] are the six motion parameters.
         nxyz = self.nx * self.ny * self.nz
         tim_arr = np.ndarray(nxyz, dtype=np.float32)
         tim_p = tim_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
         motpar = np.ndarray(7, dtype=np.float32)
         motpar_p = motpar.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-        # -- run func --
         regmode_id = RtpVolreg.regmode_dict[self.regmode]
         self.rtp_align_one(fim_p, self.nx, self.ny, self.nz, self.dx, self.dy,
                            self.dz, fitim_p, chol_fitim_p, 7, self.ax1,
                            self.ax2, self.ax3, init_motpar_p, regmode_id,
                            tim_p, motpar_p)
 
+        # z,y,x -> x,y,z
         tim = np.reshape(tim_arr, (self.nz, self.ny, self.nx))
-        tim = np.moveaxis(np.moveaxis(tim, 0, -1), 0, 1)
+        tim = tim.transpose(2, 1, 0)
+        self._last_motpar = motpar[1:].astype(np.float32)
 
         return tim, motpar[1:]
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class PlotMotion(QtCore.QObject):
+        """Plot the motion parameters and framewise displacement (FD)."""
         finished = QtCore.pyqtSignal()
 
         def __init__(self, root, main_win=None):
@@ -440,12 +488,11 @@ class RtpVolreg(RTP):
             self.main_win = main_win
             self.abort = False
 
-            # Initialize figure
-            plt_winname = 'Motion'
+            # Initialize the figure
             self.plt_win = MatplotlibWindow()
-            self.plt_win.setWindowTitle(plt_winname)
+            self.plt_win.setWindowTitle('Motion')
 
-            # set position
+            # Set the position
             if main_win is not None:
                 main_geom = main_win.geometry()
                 x = main_geom.x() + main_geom.width() + 10
@@ -454,7 +501,7 @@ class RtpVolreg(RTP):
                 x, y = (0, 0)
             self.plt_win.setGeometry(x, y, 500, 500)
 
-            # Set axis
+            # Set the axes
             self.mot_labels = ['roll (deg.)', 'pitch (deg.)', 'yaw (deg.)',
                                'dS (mm)', 'dL (mm)', 'dP (mm)', 'FD']
             self._axes = self.plt_win.canvas.figure.subplots(7, 1)
@@ -468,31 +515,33 @@ class RtpVolreg(RTP):
                 if ii < 6:
                     ax.set_ylim(-0.1, 0.1)
                 else:
+                    # FD alarm thresholds
                     ax.axhline(0.2, c='k', ls=':', lw=0.5)
                     ax.axhline(0.3, c='r', ls='--', lw=0.5)
                     ax.set_ylim(0, 0.5)
             ax.set_xlabel('TR')
 
-            # show window
             self.plt_win.show()
             self.plt_win.canvas.draw()
 
         # ---------------------------------------------------------------------
         def run(self):
-            self._mot_alart_band = []
+            self._fd_alarm_bands = []
             plt_xi = self.root._plt_xi.copy()
             while self.plt_win.isVisible() and not self.abort:
                 if self.main_win is not None and not self.main_win.isVisible():
                     break
 
                 if len(self.root._plt_xi) == len(plt_xi):
+                    # No new volume
                     time.sleep(0.1)
                     continue
 
                 try:
-                    # Plot motion
                     plt_xi = np.array(self.root._plt_xi.copy())
                     plt_motion = self.root._plt_motion
+                    # Framewise displacement: sum of the absolute
+                    # differences of the six parameters
                     plt_FD = np.zeros_like(plt_motion[0])
                     if len(plt_motion[0]) > 1:
                         plt_FD[1:] = np.sum(
@@ -520,7 +569,7 @@ class RtpVolreg(RTP):
                             ymin = np.nanmin(plt_FD) - np.diff(yl) * 0.1
                             ymax = np.nanmax(plt_FD) + np.diff(yl) * 0.1
 
-                        # Rescale ylim
+                        # Expand ylim in steps of 0.05
                         if ymin < yl[0] or ymax > yl[1]:
                             ymin = min(ymin, yl[0])
                             ymin = np.floor(ymin/0.05)*0.05
@@ -535,11 +584,11 @@ class RtpVolreg(RTP):
                         if (plt_xi[-1]//10 + 1)*10 > xl[1]:
                             ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
 
-                    # Motion alarm band
-                    for b in self._mot_alart_band:
-                        b.remove()
+                    # Mark volumes with a large FD
+                    for band in self._fd_alarm_bands:
+                        band.remove()
 
-                    self._mot_alart_band = []
+                    self._fd_alarm_bands = []
                     fd_mark_02_idx = np.argwhere(
                         (plt_FD >= 0.2) & (plt_FD < 0.3)).ravel()
                     fd_mark_03_idx = np.argwhere(plt_FD >= 0.3).ravel()
@@ -548,17 +597,14 @@ class RtpVolreg(RTP):
                     for x in plt_xi[fd_mark_02_idx]:
                         band = ax_FD.axvspan(x-1, x, ec='k', fc='yellow',
                                              alpha=0.3, linewidth=0.1)
-                        self._mot_alart_band.append(band)
+                        self._fd_alarm_bands.append(band)
 
                     for x in plt_xi[fd_mark_03_idx]:
                         band = ax_FD.axvspan(x-1, x, ec='k', fc='red',
                                              alpha=0.3, linewidth=0.1)
-                        self._mot_alart_band.append(band)
+                        self._fd_alarm_bands.append(band)
 
                     self.plt_win.canvas.draw()
-
-                # except IndexError:
-                #     continue
 
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -613,12 +659,14 @@ class RtpVolreg(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
         """
-        When reset_fn is None, set_param is considered to be called from
-        load_parameters function
+        Set a parameter and update the GUI.
+
+        When reset_fn is None, set_param is assumed to be called from the
+        load_parameters function.
         """
         self._logger.debug(f"set_param: {attr} = {val}")
 
-        # -- check value --
+        # -- Check the value --
         if attr == 'enabled':
             if hasattr(self, 'ui_enabled_rdb'):
                 self.ui_enabled_rdb.setChecked(val)
@@ -656,7 +704,7 @@ class RtpVolreg(RTP):
                 if hasattr(self, 'ui_baseVol_cmbBx'):
                     self.ui_baseVol_cmbBx.setCurrentIndex(0)
 
-            elif 'internal' in val:
+            elif val == 'index of internal run':
                 num, okflag = QtWidgets.QInputDialog.getInt(
                         None, "Internal base volume index",
                         "volume index (0 is first)")
@@ -670,7 +718,7 @@ class RtpVolreg(RTP):
                 self.ref_fname = ''
 
             elif val == 'external file':
-                fname = self.select_file_dlg('VOLREG: Selct base volume',
+                fname = self.select_file_dlg('VOLREG: Select base volume',
                                              self.work_dir, "*.BRIK* *.nii*")
                 if fname[0] == '':
                     if reset_fn:
@@ -683,8 +731,8 @@ class RtpVolreg(RTP):
                     num, okflag = QtWidgets.QInputDialog.getInt(
                             None, "VOLREG: Select sub volume",
                             "sub-volume index (0 is first)", 0, 0,
-                            ref_img.shape[3])
-                    if fname[0] == '':
+                            ref_img.shape[3] - 1)
+                    if not okflag:
                         if reset_fn:
                             reset_fn(1)
                         return
@@ -693,27 +741,20 @@ class RtpVolreg(RTP):
                 else:
                     num = 0
 
-                self.ref_fname = ref_fname
+                # set_ref_vol also sets self.ref_fname
                 self.set_ref_vol(fname[0], num)
                 if hasattr(self, 'ui_baseVol_lnEd'):
                     self.ui_baseVol_lnEd.setText(str(ref_fname))
 
             elif type(val) is str:
-                ma = re.search(r"\[(\d+)\]", val)
-                if ma:
-                    num = int(ma.groups()[0])
-                    fname = re.sub(r"\[(\d+)\]", '', val)
-                else:
-                    fname = val
-                    num = 0
-
+                fname, num = self._split_vol_index(val)
                 if not Path(fname).is_file():
                     return
 
                 if reset_fn is None and hasattr(self, 'ui_baseVol_cmbBx'):
                     self.ui_baseVol_cmbBx.setCurrentIndex(0)
 
-                self.ref_fname = val
+                # set_ref_vol also sets self.ref_fname
                 self.set_ref_vol(fname, num)
                 if hasattr(self, 'ui_baseVol_lnEd'):
                     self.ui_baseVol_lnEd.setText(str(self.ref_fname))
@@ -722,46 +763,30 @@ class RtpVolreg(RTP):
 
         elif attr == 'ref_fname':
             if len(val):
-                ma = re.search(r"\[(\d+)\]", val)
-                if ma:
-                    num = int(ma.groups()[0])
-                    val = re.sub(r"\[(\d+)\]", '', val)
-                else:
-                    num = 0
-
+                val, num = self._split_vol_index(val)
                 if not Path(val).is_file():
                     return
 
-                if hasattr(self, 'ui_baseVol_lnEd'):
-                    self.ui_baseVol_lnEd.setText(str(val))
+                # set_ref_vol sets self.ref_fname with the volume index
                 self.set_ref_vol(val, num)
+                if hasattr(self, 'ui_baseVol_lnEd'):
+                    self.ui_baseVol_lnEd.setText(str(self.ref_fname))
+                return
 
-        elif attr == 'regmode' and reset_fn is None:
-            if hasattr(self, 'ui_regmode_cmbBx'):
-                if type(val) is int:
-                    if val not in list(RtpVolreg.regmode_dict.values()):
-                        return
-
-                    regmode_id = val
-                    val = list(RtpVolreg.regmode_dict.keys())[
-                        list(RtpVolreg.regmode_dict.values()).index(val)]
-                else:
-                    regmode_id = RtpVolreg.regmode_dict[val]
-                self.ui_regmode_cmbBx.setCurrentIndex(regmode_id)
+        elif attr == 'regmode':
+            val = self._check_regmode(val)
+            if reset_fn is None and hasattr(self, 'ui_regmode_cmbBx'):
+                self.ui_regmode_cmbBx.setCurrentIndex(
+                    RtpVolreg.reg_regmodes.index(val))
 
         elif attr == 'max_scan_length':
-            if self.desMtx_read is not None and \
-                    self.desMtx_read.shape[0] > val:
-                val = self.desMtx_read.shape[0]
-                if reset_fn:
-                    reset_fn(val)
-
-            # Update self.desMtx0
-            self.setup_regressor_template(self.desMtx_read,
-                                          max_scan_length=val,
-                                          col_names_read=self.col_names_read)
-            if val < self.wait_num:
-                val = self.wait_num + 1
+            val = int(val)
+            if val > self._motion.shape[0]:
+                # Extend the motion array, keeping the values
+                self._motion = np.concatenate(
+                    [self._motion,
+                     np.zeros([val - self._motion.shape[0], 6],
+                              dtype=np.float32)])
 
             if reset_fn is None:
                 if hasattr(self, 'ui_maxLen_spBx'):
@@ -774,15 +799,24 @@ class RtpVolreg(RTP):
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                errmsg = f"{attr} is unrecognized parameter."
+                errmsg = f"{attr} is not a recognized parameter."
                 self._logger.error(errmsg)
                 return
 
-        # -- Set value --
+        # -- Set the value --
         setattr(self, attr, val)
         if echo:
             print(f"{self.__class__.__name__}." + attr, '=',
                   getattr(self, attr))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _split_vol_index(fname):
+        """Split 'file[N]' into ('file', N). N is 0 without an index."""
+        ma = re.search(r"\[(\d+)\]", fname)
+        if ma:
+            return re.sub(r"\[(\d+)\]", '', fname), int(ma.groups()[0])
+        return fname, 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
@@ -790,7 +824,7 @@ class RtpVolreg(RTP):
         ui_rows = []
         self.ui_objs = []
 
-        # enabled
+        # Enabled
         self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
         self.ui_enabled_rdb.setChecked(self.enabled)
         self.ui_enabled_rdb.toggled.connect(
@@ -830,9 +864,12 @@ class RtpVolreg(RTP):
         self.ui_objs.extend([var_lb, self.ui_baseVol_cmbBx,
                              self.ui_baseVol_lnEd])
 
-        if isinstance(self.ref_vol, string_types):
+        if self.ref_fname:
             self.ui_baseVol_cmbBx.setCurrentIndex(0)
-            self.ui_baseVol_lnEd.setText(str(self.ref_vol))
+            self.ui_baseVol_lnEd.setText(str(self.ref_fname))
+        elif not isinstance(self.ref_vol, int):
+            self.ui_baseVol_cmbBx.setCurrentIndex(1)
+            self.ui_baseVol_lnEd.setText("Set from the internal run")
         else:
             self.ui_baseVol_cmbBx.setCurrentIndex(1)
             self.ui_baseVol_lnEd.setText(
@@ -841,14 +878,13 @@ class RtpVolreg(RTP):
         # regmode
         var_lb = QtWidgets.QLabel("Resampling :")
         self.ui_regmode_cmbBx = QtWidgets.QComboBox()
-        self.ui_regmode_cmbBx.addItems(['Nearest Neighbor', 'Linear', 'Cubic',
-                                        'Fourier', 'Quintic', 'Heptic'])
-        regmode_id = RtpVolreg.regmode_dict[self.regmode]
-        self.ui_regmode_cmbBx.setCurrentIndex(regmode_id)
+        self.ui_regmode_cmbBx.addItems(
+            [m.capitalize() for m in RtpVolreg.reg_regmodes])
+        self.ui_regmode_cmbBx.setCurrentIndex(
+            RtpVolreg.reg_regmodes.index(self.regmode))
         self.ui_regmode_cmbBx.currentIndexChanged.connect(
                 lambda idx:
-                self.set_param('regmode',
-                               self.ui_regmode_cmbBx.currentIndex(),
+                self.set_param('regmode', RtpVolreg.reg_regmodes[idx],
                                self.ui_regmode_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, self.ui_regmode_cmbBx))
         self.ui_objs.extend([var_lb, self.ui_regmode_cmbBx])
@@ -867,7 +903,6 @@ class RtpVolreg(RTP):
         self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
 
         # --- Checkbox row ----------------------------------------------------
-        # Save
         self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
         self.ui_saveProc_chb.setChecked(self.save_proc)
         self.ui_saveProc_chb.stateChanged.connect(
@@ -884,6 +919,7 @@ class RtpVolreg(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         all_opts = super().get_params()
+        # The reference and its derived values are restored from ref_fname.
         excld_opts = ('work_dir', 'chol_fitim', 'ref_vol', 'nx', 'ny', 'nz',
                       'fitim', 'dx', 'dy', 'dz', 'ax1', 'ax2', 'ax3')
         sel_opts = {}
@@ -904,21 +940,19 @@ class RtpVolreg(RTP):
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
     # --- Test ---
-    # test data directory
     test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
-    # Load test data
+    # Load the test data
     testdata_f = test_dir / 'func_epi.nii.gz'
     assert testdata_f.is_file()
     img = nib.load(testdata_f)
     img_data = np.asanyarray(img.dataobj)
-    N_vols = img.shape[-1]
 
     work_dir = test_dir / 'work'
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # Create RtpTshift and RtpVolreg  instance
+    # Create RtpTshift and RtpVolreg instances
     from rtpspy.rtp_tshift import RtpTshift
 
     rtp_tshift = RtpTshift()
@@ -928,10 +962,10 @@ if __name__ == '__main__':
 
     rtp_volreg = RtpVolreg(regmode='cubic')
 
-    # Set slice timing from a sample data
-    rtp_tshift.slice_timing_from_sample(testdata_f)
+    # Set the slice timing from sample data
+    rtp_tshift.set_from_sample(testdata_f)
 
-    # Set reference volume
+    # Set the reference volume
     refname = str(testdata_f) + '[0]'
     rtp_volreg.set_ref_vol(refname)
 
@@ -955,14 +989,12 @@ if __name__ == '__main__':
         st = time.time()
         rtp_tshift.do_proc(fmri_img, ii, st)  # run rtp_tshift -> rtp_volreg
 
-    """
-    rtp_volreg tends to estimate temporal difference smaller than 3dvolreg
-    because rtp_volreg starts estimation from the previous motion values for
-    faster covergence, while 3dvolreg starts from 0.
-    """
+    # rtp_volreg tends to estimate smaller volume-to-volume differences than
+    # 3dvolreg, because rtp_volreg starts the estimation from the previous
+    # motion parameters for faster convergence, while 3dvolreg starts from 0.
 
     proc_delay = rtp_volreg.proc_delay
-    motion = rtp_volreg._motion[rtp_volreg._proc_start_idx:, :]
+    motion = rtp_volreg._motion[rtp_volreg._proc_start_idx:N_vols, :]
     rtp_tshift.end_reset()
 
     mot_f = rtp_volreg.saved_filename.name.replace('.nii.gz', '')
@@ -974,4 +1006,5 @@ if __name__ == '__main__':
 
     plt.figure()
     plt.hist(proc_delay[1:], bins='auto')
-    np.median(proc_delay[1:])
+    print(f"Median processing delay: {np.median(proc_delay[1:]):.4f} s")
+    plt.show()

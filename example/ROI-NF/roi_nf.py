@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LA-NF application with RtpApp
+ROI-NF application with RtpApp
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -16,7 +16,7 @@ import nibabel as nib
 from rtpspy import RtpApp
 
 
-# %% ROINF class =============================================================
+# %% ROINF class ==============================================================
 class ROINF(RtpApp):
     """
     Example class for overriding a neurofeedback signal calculation in the
@@ -29,32 +29,30 @@ class ROINF(RtpApp):
 
         Parameters
         ----------
-        fmri_img : nibabel NIfTI1 imageobject
+        fmri_img : nibabel NIfTI1 image object
             Processed fMRI image.
         vol_idx : int, optional
-            Volume index from the scan start (0 base). The default is None.
+            Volume index from the scan start (0-based). The default is None.
         pre_proc_time : float, optional
-            Time (seconds) of previous process end. The default is 0.
+            Time (s) when the previous process ended. The default is 0.
 
         """
         try:
-            # Load ROI if self.ROI_mask is not set.
+            # Load the ROI mask if it is not loaded yet
             if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
-                # Load ROI mask
-                self.ROI_mask = np.asanarry(nib.load(self.ROI_orig).dataobj)
+                self.ROI_mask = np.asanyarray(nib.load(self.ROI_orig).dataobj)
 
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            self._vol_num += 1  # 1-based number of the received volumes
             if vol_idx is None:
                 vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
                 return
 
             if self._proc_start_idx < 0:
                 self._proc_start_idx = vol_idx
 
-            dataV = fmri_img.get_fdata()  # Get data
+            dataV = fmri_img.get_fdata()
 
             # --- Extract and send the ROI mean signal ------------------------
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
@@ -62,12 +60,11 @@ class ROINF(RtpApp):
             self._roi_sig[0].append(mean_sig)
 
             if self.extApp_sock is None:
-                # Error: Socket is not opened.
                 self._logger.error('No socket to an external app.')
 
             else:
-                # Send data to an external application via socket.
-                # Message format should be;
+                # Send the signal to the external application. The message
+                # format is
                 # "NF {time},{volume_index},{signal_value}(,{signal_value}...)"
                 try:
                     scan_onset = self.rtp_objs['TTLPHYSIO'].scan_onset
@@ -81,7 +78,7 @@ class ROINF(RtpApp):
                 except Exception as e:
                     self._logger.error(str(e))
 
-            # --- Post procress -----------------------------------------------
+            # --- Post process ------------------------------------------------
             # Record the processing time
             tstamp = time.time()
             self._proc_time.append(tstamp)
@@ -90,7 +87,6 @@ class ROINF(RtpApp):
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
-            # Log message
             if fmri_img.get_filename():
                 fname = Path(fmri_img.get_filename()).name
             else:
@@ -101,22 +97,20 @@ class ROINF(RtpApp):
                 msg += f';took {proc_delay:.4f}s'
             self._logger.info(msg)
 
-            # Update the signal plot
+            # x-axis of the signal plot
             self._plt_xi.append(vol_idx+1)
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
-            errmsg = str(e) + '\n' + errmsg
-            self._logger.error(errmsg)
+            errmsg = (f"{exc_type}, {exc_tb.tb_frame.f_code.co_filename}:"
+                      f"{exc_tb.tb_lineno}")
+            self._logger.error(str(e) + '\n' + errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
         super().ready_to_run()
 
-        # Send READY message to extApp
+        # Send a READY message to the external application
         if self.send_extApp('READY;'.encode()):
             recv = self.recv_extApp(timeout=3)
             if recv is not None:

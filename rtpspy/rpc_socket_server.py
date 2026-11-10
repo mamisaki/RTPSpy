@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Provides utilities for Remote Procedure Call (RPC) via network socket.
-RPCSocketServer: RPC socket server class
-pack_data: Utility function to pack data.
-send_data: Utility function to send data.
-recv_resp: Utility function to receive data.
+Remote Procedure Call (RPC) via a network socket.
+RPCSocketServer: RPC socket server class.
+RPCSocketCom: RPC client class.
+pack_data: Pack (pickle) data to send.
+recv_message, parse_message: Receive a message and unpack it.
+get_rpc_token: The token that authenticates a message.
 
 @author: mmisaki@libr.net
 """
@@ -27,6 +28,7 @@ import subprocess
 import os
 import hmac
 import secrets
+import shlex
 import tempfile
 import tkinter as tk
 from tkinter import simpledialog
@@ -187,20 +189,14 @@ class RPCSocketCom:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_port(self):
         """
-        Get the port number of a named socket.
-
-        Parameters
-        ----------
-        socket_name : str
-            Name of the socket.
-        host : str or None, optional
-            Hostname to query for the port. If None, reads local config.
+        Get the port number of the socket (address_name[2]) from the
+        config file. For a remote host (address_name[0]), the config file
+        is read via ssh.
 
         Returns
         -------
-        tuple
-            (port, None) if successful, or (None, error_message) if an error
-            occurs.
+        int or None
+            The port number, or None if it is not found.
         """
         host = self.address_name[0]
         socket_name = self.address_name[2]
@@ -218,7 +214,7 @@ class RPCSocketCom:
         else:
             # SSH access to read JSON file on a remote host
             try:
-                # Check if password is required
+                # Check if a password is required
                 ret = subprocess.run(
                     [
                         "ssh",
@@ -243,17 +239,25 @@ class RPCSocketCom:
                     )
                     root.destroy()
                     if not password:
-                        return None, "Password required for SSH access"
-                    cmd = (
-                        f"sshpass -p '{password}' ssh {host}"
-                        "'cat .RTPSpy/rtpspy'"
-                    )
+                        self._logger.error(
+                            "Password required for SSH access")
+                        return None
+                    ssh_cmd = ["sshpass", "-p", password, "ssh", host]
                 else:
-                    cmd = f"ssh {host} 'cat .RTPSpy/rtpspy'"
+                    ssh_cmd = ["ssh", host]
 
-                output = subprocess.check_output(cmd, shell=True).decode()
+                # The config file on the remote host. A path under the local
+                # home is taken as relative to the remote home.
+                cfg_f = self.config_path
+                if cfg_f.is_relative_to(Path.home()):
+                    cfg_f = cfg_f.relative_to(Path.home())
+                cmd = ssh_cmd + [f"cat {shlex.quote(str(cfg_f))}"]
+
+                output = subprocess.check_output(cmd).decode()
                 rtpspy_config = json.loads(output)
-                port = int(rtpspy_config.get(f"{socket_name}_port", None))
+                port = rtpspy_config.get(f"{socket_name}_port", None)
+                if port is not None:
+                    port = int(port)
 
             except Exception as e:
                 errstr = str(e) + "\n" + traceback.format_exc()
@@ -287,14 +291,17 @@ class RPCSocketCom:
 
         Returns
         -------
-        Response from the remote procedure, if applicable.
+        For data 'ping': (True if connected, port). Otherwise, the response
+        of the remote procedure if get_return, or None.
         """
         remote_proc_address = tuple(self.address_name[:2])
         port = remote_proc_address[1]
         if port is None:
             port = self.get_port()
             if port is None:
-                return False, None
+                if data == 'ping':
+                    return False, None
+                return None
             else:
                 remote_proc_address = (remote_proc_address[0], port)
 
@@ -354,7 +361,8 @@ class RPCSocketCom:
         """
         pong, port = self.call_rt_proc("ping", timeout=timeout)
         if not pong and port is not None:
-            # Port might not be valid. Retry
+            # The port may be outdated (e.g., the server restarted). Retry
+            # with the port read from the config file.
             self.address_name[1] = port
             pong, port = self.call_rt_proc("ping", timeout=timeout)
 
@@ -370,7 +378,9 @@ class RPCSocketCom:
 
         Parameters
         ----------
-        data : bytes
+        sock : socket.socket
+            Connected socket.
+        data : bytes, str or any picklable object
             Message to send.
         pkl : bool, optional
             Flag to send data as a pickled byte array. Defaults to False.
@@ -406,6 +416,8 @@ class RPCSocketCom:
 
         Parameters
         ----------
+        sock : socket.socket
+            Connected socket.
         timeout : float
             Seconds to wait for the reply (and between its parts). The
             server closes the connection after replying, so a complete reply
@@ -426,7 +438,7 @@ class RPCSocketServer:
     RPC socket server class.
     Starts a socket server in __init__().
     Receives a call and passes it to the RPC_handler function.
-    When the handler function returns a value, passes it back to the client.
+    When the handler function returns a value, it is sent back to the client.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -456,7 +468,8 @@ class RPCSocketServer:
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error("Failed to start TCPServer\n%s", errstr)
-            self.server = None
+            self._server = None
+            self.port = None
             return
 
         self.port = self._server.server_address[1]
@@ -467,7 +480,8 @@ class RPCSocketServer:
         self._server._cancel = False
         self._server.socket_name = self._socket_name
 
-        # Save the port number in the RT-MRI config file
+        # Save the port number in the config file
+        config_path = self._config_path
         if config_path.is_file():
             with open(config_path, "r") as fid:
                 rtpspy_config = json.load(fid)
@@ -480,7 +494,7 @@ class RPCSocketServer:
         with open(config_path, "w") as fid:
             json.dump(rtpspy_config, fid)
 
-        # Start the server on another thread.
+        # Start the server on another thread
         self._server_thread = Thread(
             target=self._server.serve_forever, args=(0.5,))
         # Make the server thread exit when the main thread terminates
@@ -490,9 +504,10 @@ class RPCSocketServer:
     # /////////////////////////////////////////////////////////////////////////
     class _recvDataHandler(socketserver.BaseRequestHandler):
         def handle(self):
+            """Receive one message, pass it to the callback, and send back
+            the return value."""
             self._logger = logging.getLogger(self.server.socket_name)
 
-            # --- Initialize ---
             client_addr, port = self.client_address
             self._logger.debug(f"Connected from {client_addr}:{port}")
             # --- Receive one message ---
@@ -529,7 +544,7 @@ class RPCSocketServer:
                         if type(ret) is str:
                             ret = ret.encode("utf-8")
                         elif not isinstance(ret, bytes):
-                            # If it's not bytes or string, try to pack it
+                            # Neither bytes nor str: pickle it
                             ret = pack_data(ret)
 
                         self.request.sendall(ret)
@@ -538,7 +553,7 @@ class RPCSocketServer:
                         )
                     else:
                         self._logger.debug(
-                            "Callback returned None, no response sent"
+                            "Callback returned None; no response sent"
                         )
 
                 except Exception as e:
@@ -552,9 +567,9 @@ class RPCSocketServer:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def shutdown(self):
         """
-        Shut down the server and close the connection.
+        Shut down the server and close its socket.
         """
-        if hasattr(self, "_server"):
+        if getattr(self, "_server", None) is not None:
             self._server.shutdown()
             self._server.server_close()
 

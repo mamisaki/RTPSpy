@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Simulate the physio recording device (serial packets of ECG and respiration)
+and the scan TTL signal.
+
 @author: mmisaki@laureateinstitute.org
 """
 
@@ -31,40 +34,41 @@ if '__file__' not in locals():
 
 # %% PhysioFeeder class =======================================================
 class PhysioFeeder(threading.Thread):
+    """
+    Thread that sends ECG and respiration signals to a serial port in the
+    packet format of the physio recording device.
+    """
 
     def __init__(self, ecg_f, resp_f, recording_rate_ms=25,
                  samples_to_average=5, sport='/dev/ptmx', parent=None):
         """
-        Options
-        -------
-        ecg_f: string
-            ECG filename
-        resp_f: string
-            Resp filename
-        recording_rate_ms: int
-            Sampling interval of ECG and Resp file data
-        samples_to_average: int
-            Number of samples averaged at making ECG and Resp file data.
-            The actual signal frequency was
-            1000 * samples_to_average/recording_rate_ms Hz
-        sport: string
-            output serial port device name (default is pseudo serial port
-            /dev/ptmx)
+        Parameters
+        ----------
+        ecg_f : str
+            ECG filename.
+        resp_f : str
+            Respiration filename.
+        recording_rate_ms : int
+            Sampling interval (ms) of the ECG and respiration file data.
+        samples_to_average : int
+            Number of samples averaged to make the ECG and respiration file
+            data. The raw signal frequency is therefore
+            1000 * samples_to_average / recording_rate_ms Hz.
+        sport : str
+            Output serial port device name. The default is the pseudo
+            serial port, /dev/ptmx.
+        parent : object
+            Its logmsg() method is used for logging, if any.
         """
         super().__init__()
 
-        self._cname = self.__class__.__name__
         self.parent = parent
 
-        # -- Read data from file --
         self.read_data_files(ecg_f, resp_f)
 
-        # -- set signal timings --
         self._recording_rate_ms = recording_rate_ms
         self._samples_to_average = samples_to_average
 
-        # -- Set output port --
-        self._sport = sport
         self.set_out_ports(sport)
 
         self._count = 0  # data counter
@@ -73,49 +77,24 @@ class PhysioFeeder(threading.Thread):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_data_files(self, ecg_f, resp_f):
         """
-        Read ECG, Resp data files
+        Read the ECG and respiration data files.
 
-        Set variables
-        -------------
-        self._ecg: array
-            ECG data vector
-        self._resp: array
-            Resp data vector
-        self._siglen: int
-            data length
+        Sets self._ecg and self._resp (int16 arrays) and self._siglen (data
+        length).
         """
-
-        # -- Initialize --
         ecg = []
         resp = []
         minlen = 0
 
-        # -- Read data --
-        # ECG
         if Path(ecg_f).is_file():
-            # Read text
-            ecg = open(ecg_f).read()
-            # Split text and convert to int
-            ecg = [int(round(float(v))) for v in ecg.rstrip().split('\n')]
-            # Convert to short int array
-            ecg = np.array(ecg, dtype=np.int16)
+            ecg = self._read_int16(ecg_f)
             minlen = len(ecg)
-            log_msg = f"Read {len(ecg)} values from {ecg_f}"
-            self._log(log_msg)
 
-        # Respiration
         if Path(resp_f).is_file():
-            # Read text
-            resp = open(resp_f).read()
-            # Split text and convert to int
-            resp = [int(round(float(v))) for v in resp.rstrip().split('\n')]
-            # Convert to short int array
-            resp = np.array(resp, dtype=np.int16)
+            resp = self._read_int16(resp_f)
             minlen = min([minlen, len(resp)])
-            log_msg = f"Read {len(resp)} values from {resp_f}"
-            self._log(log_msg)
 
-        # -- adjust signal length to equalize data length of ECG and Resp --
+        # -- Make the ECG and respiration data the same length --
         if minlen > 0:
             adjusted = False
             if len(ecg) > minlen:
@@ -134,15 +113,24 @@ class PhysioFeeder(threading.Thread):
                 log_msg = f"Data length is adjusted to {minlen}"
                 self._log(log_msg)
 
-        # -- Save data as class variables --
         self._ecg = ecg
         self._resp = resp
         self._siglen = minlen
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_out_ports(self, sport):
+    def _read_int16(self, fname):
+        """Read a text file of one value per line as an int16 array."""
+        txt = open(fname).read()
+        data = [int(round(float(v))) for v in txt.rstrip().split('\n')]
+        data = np.array(data, dtype=np.int16)
+        self._log(f"Read {len(data)} values from {fname}")
+        return data
 
-        # -- Open a serial port --
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_out_ports(self, sport):
+        """Open the output serial port.
+        For a pseudo terminal, sport is 'name:fd', and fd is written.
+        """
         if 'ptmx' in sport:
             sport, fd = sport.split(':')
             self.sport_fd = int(fd)
@@ -155,8 +143,7 @@ class PhysioFeeder(threading.Thread):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def data_packet(self, seqn, ecg, resp, ecg2, ecg3):
-
-        # packing data into a packet
+        """Pack the values into a packet with a checksum."""
         seqn = seqn % (np.iinfo(np.uint16).max+1)
         byte_pack = struct.pack('H', np.array(seqn, dtype=np.uint16))
         byte_pack += struct.pack('h', ecg2)
@@ -164,7 +151,7 @@ class PhysioFeeder(threading.Thread):
         byte_pack += struct.pack('h', resp)
         byte_pack += struct.pack('h', ecg)
 
-        # checksum
+        # Checksum: sum of the 10 bytes above
         chsum = np.array(sum(struct.unpack('B' * 10, byte_pack)),
                          dtype=np.int16)
         byte_pack += struct.pack('h', chsum)
@@ -173,50 +160,43 @@ class PhysioFeeder(threading.Thread):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
-
-        # -- Set signal interval --
+        # Interval of the raw (not averaged) samples
         interval_sec = self._recording_rate_ms/self._samples_to_average/1000
 
-        # Start loop for sending signal
-        log_msg = "Start physio signal feeding"
-        self._log(log_msg)
+        self._log("Start physio signal feeding")
 
         t = 0
         self._count = 0
 
-        t0 = time.time()  # start time
+        t0 = time.time()
         runSend = True
         while runSend:
             # Repeat _samples_to_average times to simulate raw data
             for rep in range(self._samples_to_average):
-                # packet number
-                t = t % 65536
-                ni = self._count % self._siglen
+                t = t % 65536  # Packet number
+                ni = self._count % self._siglen  # Loop over the data
 
-                # Prepare packet
                 byte_pack = self.data_packet(t, self._ecg[ni],
                                              self._resp[ni], 0, 0)
 
-                # wait for feed time
+                # Wait until the feed time
                 feed_sec = (self._count * self._samples_to_average + rep)
                 feed_sec *= interval_sec
 
                 while (time.time() - t0) < feed_sec:
                     time.sleep(interval_sec/10000)
 
-                # Send packet
                 if 'ptmx' in self._ser.name:
                     os.write(self.sport_fd, byte_pack)
                 else:
                     self._ser.write(byte_pack)
-                t += 1  # increment packet number
+                t += 1
 
-                if len(self.cmd):
-                    if self.cmd == 'STOP':
-                        runSend = False
-                        break
+                if self.cmd == 'STOP':
+                    runSend = False
+                    break
 
-            self._count += 1  # increment data index
+            self._count += 1
 
         log_msg = "Finish physio signal feeding."
         n_sent = (self._count + 1) * self._samples_to_average
@@ -231,9 +211,10 @@ class PhysioFeeder(threading.Thread):
             print(msg)
 
 
-# %% SendTTL class ========================================================
+# %% SendTTL class ============================================================
 class SendTTL():
-    """ Scan timing TTL signal sender class """
+    """Send the scan TTL signal via a USB GPIO module or a UNIX domain
+    socket (sig_port='0')."""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, sig_port, sig_sock_file='/tmp/rtp_uds_socket',
@@ -249,7 +230,7 @@ class SendTTL():
         if sig_port == '0':
             self._sig_sock_file = sig_sock_file
 
-        # -- Set onset signal sending port --
+        # -- Set the signal port --
         if '/dev/ttyACM' in sig_port or '/dev/cu.usbmodem' in self._sig_port:
             # Numato 8 Channel USB GPIO Module
             self._sig_port_ser = serial.Serial(sig_port, 19200, timeout=0.1,
@@ -258,24 +239,15 @@ class SendTTL():
             self._sig_port_ser.write(b"gpio clear 0\r")
 
         elif sig_port == '0':
-            # Use UDS socket to send trigger signal
+            # Use a UDS socket to send the trigger signal
             self.onsig_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            try:
-                if self._logfd:
-                    log_msg = "UDS socket {} will be used".format(
-                            self._sig_sock_file)
-                    log_msg += " for sending scan start signal"
-                    self._log(log_msg)
-
-            except socket.error:
-                if self._logfd:
-                    log_msg = "Cannot connect UDS socket "
-                    log_msg += "{}".format(self._sig_sock_file)
-                    self._log(log_msg)
+            if self._logfd:
+                self._log(f"UDS socket {self._sig_sock_file} will be used"
+                          " for sending the scan start signal")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def send_singnal(self, duration=0.015):
-        """ send pulse to the port """
+    def send_signal(self, duration=0.015):
+        """Send a pulse of duration (s) to the port."""
         if self._sig_port is None:
             return
 
@@ -298,9 +270,8 @@ class SendTTL():
 
         elif self._sig_port == '0':
             if not os.path.exists(self._sig_sock_file):
-                errmsg = 'No UDS file'
-                errmsg += ' {}\n'.format(self._sig_sock_file)
-                errmsg += 'UDS socket file must be prepared by the receiver.'
+                errmsg = f'No UDS file {self._sig_sock_file}\n'
+                errmsg += 'The receiver must create the UDS socket file.'
                 if self._logfd:
                     self._log(errmsg)
             else:
@@ -311,6 +282,7 @@ class SendTTL():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_state(self):
+        """Set the GPIO output low."""
         if self._sig_port is None:
             return
 
@@ -332,13 +304,13 @@ class SendTTL():
 # %% SimPhysio class ==========================================================
 class SimPhysio():
     """
-    Physiological signal simulation
+    Physiological signal simulation: runs a PhysioFeeder thread.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self):
         self.physio_kwargs = {}
-        self.phyio_feeder = None
+        self.physio_feeder = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_physio(self, ecg_src, resp_src, physio_port, recording_rate_ms=25,
@@ -353,11 +325,11 @@ class SimPhysio():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def feed_Physio(self, mode):
+        """Start ('start') or stop ('stop') physio feeding."""
         if mode == 'start':
-            if self.phyio_feeder is not None \
-                    and self.phyio_feeder.is_alive():
-                # phyio_feeder is running
-                return
+            if self.physio_feeder is not None \
+                    and self.physio_feeder.is_alive():
+                return  # Already running
 
             if not ('ecg_f' in self.physio_kwargs and
                     'resp_f' in self.physio_kwargs and
@@ -365,16 +337,16 @@ class SimPhysio():
                 sys.stderr.write("!!! Physio parameters have not been set.")
                 return
 
-            self.phyio_feeder = PhysioFeeder(**self.physio_kwargs)
-            self.phyio_feeder.start()
+            self.physio_feeder = PhysioFeeder(**self.physio_kwargs)
+            self.physio_feeder.start()
 
         elif mode == 'stop':
-            if self.phyio_feeder is not None and \
-                    self.phyio_feeder.is_alive():
-                self.phyio_feeder.cmd = 'STOP'
-                self.phyio_feeder.join()
-                del self.phyio_feeder
-                self.phyio_feeder = None
+            if self.physio_feeder is not None and \
+                    self.physio_feeder.is_alive():
+                self.physio_feeder.cmd = 'STOP'
+                self.physio_feeder.join()
+                del self.physio_feeder
+                self.physio_feeder = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -388,51 +360,30 @@ if __name__ == '__main__':
 
     # --- Parse arguments -----------------------------------------------------
     parser = argparse.ArgumentParser(
-        description='Simulate physio signal')
+        description='Simulate physio signals')
     parser.add_argument('--test_data', default=TEST_DATA_ROOT,
-                        help='test data ditectory')
+                        help='Test data directory')
     args = parser.parse_args()
     test_data_dir = Path(args.test_data)
 
     recording_rate_ms = 25
     samples_to_average = 5
 
-    # --- Get list of serial port ---------------------------------------------
+    # --- List the serial ports ----------------------------------------------
     ser_ports = {}
     for pt in comports():
         ser_ports[pt.device] = pt.description
 
     if platform_name != 'Windows':
-        # Set psuedo serial port for simulating physio recording
+        # Make a pseudo serial port to simulate the physio recording device
         master, slave = pty.openpty()
         s_name = os.ttyname(slave)
         try:
             m_name = os.ttyname(master)
         except Exception:
-            m_name = 'Psuedo master'
+            m_name = 'Pseudo master'
         physio_port = f"{m_name}:{master}"
-        ser_ports[physio_port] = f'Psuedo tty to {os.ttyname(slave)}'
-
-    # # --- Select Physio port ------------------------------------------------
-    # default_sport_phys = '1'
-    # msg_txt = '\n' + '=' * 80 + '\n'
-    # msg_txt += "Select physio port\n0)exit"
-    # for ii, (sport, lab) in enumerate(ser_ports.items()):
-    #     msg_txt += f"\n{ii+1}){sport} ({lab})"
-    # msg_txt += f'\n[{default_sport_phys}]: '
-    # while True:
-    #     sport_phyis_i = input(msg_txt)
-    #     if sport_phyis_i == '':
-    #         sport_phyis_i = default_sport_phys
-    #     try:
-    #         sport_phyis_i = int(sport_phyis_i)
-    #         assert sport_phyis_i <= len(ser_ports)
-    #     except Exception:
-    #         continue
-    #     break
-    # if sport_phyis_i == '0':
-    #     sys.exit()
-    # sport_phyis = list(ser_ports.keys())[sport_phyis_i-1]
+        ser_ports[physio_port] = f'Pseudo tty to {s_name}'
 
     # --- Select TTL port -----------------------------------------------------
     default_sport_ttl = '2'
@@ -452,7 +403,7 @@ if __name__ == '__main__':
         except Exception:
             continue
         break
-    if sport_ttl_i == '0':
+    if sport_ttl_i == 0:
         sys.exit()
     sport_ttl = list(ser_ports.keys())[sport_ttl_i-1]
 
@@ -460,7 +411,7 @@ if __name__ == '__main__':
     END_P_LOOP = False
     default_phydata_i = '1'
     while not END_P_LOOP:
-        # -- Set Physio data -------------------------------------------------
+        # -- Select the physio data -----------------------------------------
         physfs = [f.name.replace('ECG_', '')
                   for f in test_data_dir.glob('ECG*.1D')
                   if (test_data_dir / f.name.replace('ECG', 'Resp')
@@ -481,29 +432,27 @@ if __name__ == '__main__':
             except Exception:
                 continue
             break
-        if phydata_i == '0':
-            continue
+        if phydata_i == 0:
+            sys.exit()
         physf = physfs[phydata_i-1]
         ecg_f = test_data_dir / ('ECG_' + physf)
         assert ecg_f.is_file()
         resp_f = test_data_dir / ('Resp_' + physf)
         assert resp_f.is_file()
 
-        # --- Loop for TTL wait -----------------------------------------------
+        # --- Send a TTL at each return key ----------------------------------
         sim_ttl = SendTTL(sport_ttl)
 
-        ttl_interval = 0
         while True:
             try:
                 ttl = input('Press return to send TTL ')
                 if ttl == 'q':
                     break
 
-                sim_ttl.send_singnal()
+                sim_ttl.send_signal()
 
             except KeyboardInterrupt:
                 print("\nExit TTL loop.\n")
-                full_automatic = False
                 break
 
         if ttl == 'q':

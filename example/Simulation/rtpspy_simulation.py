@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+RTPSpy simulation: run the RTP pipeline offline on the test data, feeding
+the volumes one by one.
+
 @author: mmisaki@laureateinstitute.org
 """
 
@@ -14,7 +17,7 @@ import numpy as np
 import nibabel as nib
 
 from rtpspy import RtpApp
-from rtpspy import RtpTTLPhysio
+from rtpspy.rtp_sim import SavedPhysio
 
 
 # %% main =====================================================================
@@ -23,11 +26,9 @@ if __name__ == '__main__':
     print("RTPSpy simulation")
     sys.stdout.flush()
 
-    # --- Filenames -------------------------------------------------------
-    # test data directory
+    # --- Filenames -----------------------------------------------------------
     test_dir = Path(__file__).absolute().parent.parent.parent / 'tests'
 
-    # Set test data files
     testdata_f = test_dir / 'func_epi.nii.gz'
     anat_f = test_dir / 'anat_mprage.nii.gz'
     template_f = test_dir / 'MNI152_2009_template.nii.gz'
@@ -39,26 +40,23 @@ if __name__ == '__main__':
     if not work_dir.is_dir():
         work_dir.mkdir()
 
-    # --- Create RtpApp instance -----------------------------------------
+    # --- Create an RtpApp instance -------------------------------------------
     rtp_app = RtpApp(work_dir=work_dir)
 
-    # --- Make mask images ------------------------------------------------
-    rtp_app.fastSeg_batch_size = 2  # Adjust the size according to GPU
+    # --- Make mask images ----------------------------------------------------
+    # Adjust the batch size to the GPU memory
+    rtp_app.fastSeg_batch_size = 2
     rtp_app.make_masks(func_orig=str(testdata_f)+"'[0]'", anat_orig=anat_f,
                        template=template_f, ROI_template=ROI_template_f,
                        overwrite=False)
 
-    # --- Set up RTP ------------------------------------------------------
-    # Set RtpTTLPhysio
-    resp = np.loadtxt(resp_f)
-    card = np.loadtxt(ecg_f)
-    rtp_app.rtp_objs['TTLPHYSIO'] = RtpTTLPhysio(
-        sample_freq=40, device='Dummy', sim_data=(card, resp))
+    # --- Set up RTP ----------------------------------------------------------
+    # Slice timing and TR are read from the fMRI file in RTP_setup().
+    rtp_app.func_param_ref = str(testdata_f)
 
     # RTP parameters
     rtp_params = {'WATCH': {'enabled': False},
-                  'TSHIFT': {'slice_timing_from_sample': testdata_f,
-                             'method': 'cubic', 'ignore_init': 3},
+                  'TSHIFT': {'method': 'cubic', 'ignore_init': 3},
                   'VOLREG': {'regmode': 'cubic'},
                   'SMOOTH': {'blur_fwhm': 6.0},
                   'REGRESS': {'mot_reg': 'mot12',
@@ -66,15 +64,18 @@ if __name__ == '__main__':
                               'Vent_reg': True, 'phys_reg': 'RICOR8',
                               'wait_num': 40}}
 
-    # RTP setup
+    # The mask files made by make_masks() are set in RTP_setup().
     rtp_app.RTP_setup(rtp_params=rtp_params)
-    # Mask files made by make_masks() are automatically set in RTP_setup()
 
-    # Ready to run the pipeline
+    # RETROICOR regressors from the saved physio signals (40 Hz)
+    resp = np.loadtxt(resp_f)
+    card = np.loadtxt(ecg_f)
+    rtp_app.rtp_objs['REGRESS'].set_param(
+        'rtp_physio', SavedPhysio(card, resp, sample_freq=40))
+
     proc_chain = rtp_app.ready_to_run()
 
-    # --- Simulate scan (Feed data volume-by-volume) ----------------------
-    # Load data
+    # --- Simulate scan (feed the data volume by volume) ----------------------
     img = nib.load(testdata_f)
     fmri_data = np.asanyarray(img.dataobj)
     N_vols = img.shape[-1]
@@ -87,8 +88,7 @@ if __name__ == '__main__':
 
     saved_fnames = rtp_app.end_run(scan_name='sim_test')
 
-    # End
     print('-' * 80)
     print('End process')
     for k, pp in saved_fnames.items():
-        print(f'{k} is saved in,\n  {pp}')
+        print(f'{k} is saved in\n  {pp}')

@@ -6,9 +6,9 @@
 
 float Max(float *arr, int n) {
 	int ii;
-	float max;
+	float max = arr[0];
 
-	for (ii = 0; ii < n; ii++)
+	for (ii = 1; ii < n; ii++)
 		max = MAX(max, arr[ii]);
 
 	return max;
@@ -16,9 +16,9 @@ float Max(float *arr, int n) {
 
 float Min(float *arr, int n) {
 	int ii;
-	float min;
+	float min = arr[0];
 
-	for (ii = 0; ii < n; ii++)
+	for (ii = 1; ii < n; ii++)
 		min = MIN(min, arr[ii]);
 
 	return min;

@@ -25,15 +25,15 @@ from rtp_serve import RTP_SERVE, boot_RTP_SERVE_app
 # %% Stimulus parameters ======================================================
 
 # --- Instruction screen ---
-# text size is ralative to the screen height (=1.0)
+# Text size relative to the screen height (=1.0)
 inst_txt_height = 0.04
-# text wrap width is realative to scareen height (=1.0)
+# Text wrap width relative to the screen height (=1.0)
 inst_txt_wrap = 0.95
 
 # --- Box size, color, and text size in block screen ---
 box_size = 0.16
 blkMsg_txt_height = box_size/4.5  # text height in the box
-# word size in describe block
+# Word size in the describe block
 desc_word_height = 0.04
 
 box_color = {}
@@ -41,13 +41,13 @@ box_color['Rest'] = tuple((np.array([135, 206, 250])-128)/128)  # lightskyblue
 box_color['Happy'] = tuple((np.array([255, 99, 71])-128)/128)  # tomato
 box_color['Count'] = tuple((np.array([255, 215, 0])-128)/128)  # gold
 
-# --- Set Feedback bar color and size ---
+# --- Feedback bar colors ---
 fbBar_pos_color = tuple((np.array([255, 0, 0])-128)/128)  # red
-fbBar_neg_color = tuple((np.array([30, 144, 255])-128)/128)  # dodgeblue
+fbBar_neg_color = tuple((np.array([30, 144, 255])-128)/128)  # dodgerblue
 targetBar_color = tuple((np.array([0, 0, 255])-128)/128)  # blue
 fb_valTxt_color = (1, 1, 1)
 
-# Feedback bar size
+# Line and text colors
 # screen height = 1.0
 nf_range = [-1.6, 1.6]
 bar_amax = 0.4  # maximum height of the bar
@@ -71,8 +71,8 @@ ln_color = (1.0, 1.0, 1.0)  # fixation line color
 txt_color = (1.0, 1.0, 1.0)  # message text color
 
 # --- Fixation size ---
-fix_len = 0.05  # fixation cross line length; ralative to screen height
-fix_lw = 2      # fixation cross line width in pixels
+fix_len = 0.05  # Fixation cross length relative to the screen height
+fix_lw = 2      # Fixation cross line width in pixels
 
 nf_range = [-1.5, 1.5]
 
@@ -86,7 +86,7 @@ class NFApp(object):
                  log_dir='./log', debug=False, open_param_dialog=False,
                  **kwargs):
         """
-        Left amygdala neurofeedback with happy memory recall PyschoPy
+        Left amygdala neurofeedback with happy memory recall PsychoPy
         application.
 
         Parameters
@@ -95,7 +95,8 @@ class NFApp(object):
             Allow remote access (connection from other than localhost).
             The default is False.
         request_host : str, optional
-            Host to receive the sever address:port. The default is None.
+            'host:port' to which the server address:port is sent.
+            The default is None.
         size : array or int, optional
             Size of the window in pixels [x, y]. The default is (800, 600).
         pos : array or int, optional
@@ -181,9 +182,7 @@ class NFApp(object):
             if hasattr(self, '_log_fd') and self._log_fd != sys.stdout:
                 self._log_fd.close()
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            traceback.print_exception(exc_type, exc_obj, exc_tb)
-            pass
+            traceback.print_exc()
 
         if log_dir is not None:
             if self.DEBUG:
@@ -205,7 +204,7 @@ class NFApp(object):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _open_window(self, **kwargs):
-        # Open the stimulu window
+        # Open the stimulus window
         if self.DEBUG:
             kwargs['allowGUI'] = True
             kwargs['fullscr'] = False
@@ -286,9 +285,9 @@ class NFApp(object):
         self._log_fd.flush()
 
         if self.sess_log is not None:
-            self.sess_log = self.sess_log.append(
-                {'datetime': tstr, 'time_from_scan_onset': et,
-                 'event': event, 'misc': misc}, ignore_index=True)
+            self.sess_log.loc[len(self.sess_log)] = {
+                'datetime': tstr, 'time_from_scan_onset': et,
+                'event': event, 'misc': misc}
 
         # echo to stdout
         if self.DEBUG and self._log_fd != sys.stdout:
@@ -300,36 +299,28 @@ class NFApp(object):
         InitDur, HappyDur, CountDur, RestDur, repeat_blocks = timings
 
         # Make event sequence
-        self.seq = pd.DataFrame(columns=('onset', 'event', 'option'))
         count_intv = np.random.permutation([3, 4, 6, 7, 9])
 
         t = 0
-        self.seq = self.seq.append(
-            pd.Series({'onset': t, 'event': 'Rest'}), ignore_index=True)
+        events = [{'onset': t, 'event': 'Rest'}]
         t += InitDur
         for rep in range(repeat_blocks):
             if HappyDur > 0:
-                self.seq = self.seq.append(
-                    pd.Series({'onset': t, 'event': 'Happy',
-                               'option': target_level}),
-                    ignore_index=True)
+                events.append({'onset': t, 'event': 'Happy',
+                               'option': target_level})
                 t += HappyDur
 
             if CountDur > 0:
-                self.seq = self.seq.append(
-                    pd.Series({'onset': t, 'event': 'Count',
-                               'option': count_intv[rep]}),
-                    ignore_index=True)
+                events.append({'onset': t, 'event': 'Count',
+                               'option': count_intv[rep]})
                 t += CountDur
 
             if RestDur > 0:
-                self.seq = self.seq.append(
-                    pd.Series({'onset': t, 'event': 'Rest'}),
-                    ignore_index=True)
+                events.append({'onset': t, 'event': 'Rest'})
                 t += RestDur
 
-        self.seq = self.seq.append(
-            pd.Series({'onset': t, 'event': 'END'}), ignore_index=True)
+        events.append({'onset': t, 'event': 'END'})
+        self.seq = pd.DataFrame(events, columns=('onset', 'event', 'option'))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def draw_connection_status(self):
@@ -872,7 +863,7 @@ class NFApp(object):
                         if cur_ev == 'Rest':
                             # Show Rest screen
                             self.show_screen(cur_ev)
-                            # Reset Rest paramter values
+                            # Reset the Rest parameter values
                             restBlk_ons_vidx = int(tCurr // TR)
                             restBlk_offs_vidx = int(tNext // TR)
                             baseMean = None
@@ -1147,7 +1138,7 @@ class NFApp(object):
 
 # %% main =====================================================================
 if __name__ == '__main__':
-    # --- parse auguments -----------------------------------------------------
+    # --- Parse arguments -----------------------------------------------------
     parser = argparse.ArgumentParser()
     parser.add_argument('--size', type=int, nargs='+', help='window size',
                         default=[800, 600])
@@ -1157,16 +1148,17 @@ if __name__ == '__main__':
                         help='fullscreen mode')
     parser.add_argument('--log_dir', default='./log', help='log directory')
     parser.add_argument('--tell_port', action='store_true', default=False,
-                        help='Print opened port, folk process to run the app,'
-                        + ' and return immediately.')
+                        help='Print the opened port, fork a process to run'
+                        + ' the app, and return immediately.')
     parser.add_argument("--debug", action='store_true', default=False,
                         help="debug mode")
 
-    # WHen booted with boot_RTP_SERVE_app
+    # Options used when booted by boot_RTP_SERVE_app
     parser.add_argument('--allow_remote_access', action='store_true',
                         default=False, help='allow remote access')
     parser.add_argument('--request_host',
-                        help="host:port to answer the sever's host:port")
+                        help="host:port to which the server's host:port is"
+                        " sent")
 
     args = parser.parse_args()
     kwargs = args.__dict__
@@ -1187,13 +1179,8 @@ if __name__ == '__main__':
         print(addr)
 
     else:
-        kwargs = args.__dict__
-
-        # Make TaskApp instance
         app = NFApp(**kwargs)
         app.command_loop()
-
-        # End
         del app
 
     sys.exit(0)

@@ -13,7 +13,6 @@ from functools import partial
 import time
 from collections import OrderedDict
 import logging
-import sys
 
 import torch
 from PyQt5 import QtCore, QtWidgets, QtGui
@@ -25,13 +24,20 @@ except Exception:
     from rtpspy.rtp_common import save_parameters, load_parameters
 
 GPU_available = (
-    torch.backends.mps.is_available() or torch.backends.mps.is_available()
+    torch.cuda.is_available() or torch.backends.mps.is_available()
 )
+
+# RTP modules shown in the RTP tab and the parameter list, in processing
+# order
+_RTP_PROCS = ("WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS", "EXTSIG")
+
+# Background color of the selected module button
+_SELECTED_BTN_STYLE = "background-color: rgb(255,201,32)"
 
 
 # %% RtpGUI class =============================================================
 class RtpGUI(QtWidgets.QMainWindow):
-    """RtpGUI class"""
+    """Main window of an RTPSpy application."""
 
     def __init__(
         self,
@@ -44,17 +50,16 @@ class RtpGUI(QtWidgets.QMainWindow):
         """
         Parameters
         ----------
-        rtp_objs : dictionary, optional
-            RTP objects given by RtpApp.rtp_objs.
-        rtp_apps : TYPE, optional
-            RtpApp or derived class object.
+        rtp_objs : dict
+            RTP module objects given by RtpApp.rtp_objs.
+        rtp_apps : dict
+            {application name: RtpApp (or derived class) object}.
         log_file : str or Path, optional
-            Log file. The default is None
+            Log file to display in the window. The default is None.
         winTitle : str, optional
-            WIndow title. The default is 'RTPSpy'.
+            Window title. The default is 'RTPSpy'.
         onGPU : bool, optional
-            Flag to use GPU. The default is given by torch.cuda.is_available()
-            or torch.backends.mps.is_available().
+            Use the GPU. The default is GPU_available.
 
         """
         QtWidgets.QMainWindow.__init__(self)
@@ -69,8 +74,8 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         self.watchDir_start = Path.cwd()
 
-        # Setup main UI
-        self.setWindowTitle(winTitle)  # Set window title
+        # Set up the main UI
+        self.setWindowTitle(winTitle)
         self.mainWidget = QtWidgets.QWidget(self)
         self.setCentralWidget(self.mainWidget)
 
@@ -88,10 +93,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         if log_file:
             self.set_log(log_file)
 
-        msg = "=== Start application ===\n"
-        self._logger.info(msg)
+        self._logger.info("=== Start application ===\n")
 
-        # Wait until the window is ready
         self.resize(self.sizeHint())
         self.move(50, 0)
         self.show()
@@ -100,11 +103,11 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_physio_geometry(self):
+        """Place the physio window to the right of the main window."""
         if (
             "TTLPHYSIO" in self.rtp_objs and
             self.rtp_objs["TTLPHYSIO"] is not None
         ):
-            # Get top right corner of the main window
             geo = self.geometry()
             x = geo.x() + geo.width() + 5
             y = geo.y()
@@ -113,7 +116,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_menu(self):
-        # --- menu bar --------------------------------------------------------
+        """Make the File menu."""
         # Save parameters
         saveOptAct = QtWidgets.QAction(QtGui.QIcon("save.png"), "&Save", self)
         saveOptAct.setShortcut("Ctrl+S")
@@ -151,38 +154,36 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_ui(self, rtp_objs, onGPU=GPU_available):
-        """Make GUI controls
+        """Make GUI controls.
 
-        Options
-        -------
-        rpt_mods: dictionary
-            dictionary of RTP module instances
+        Parameters
+        ----------
+        rtp_objs : dict
+            RTP module objects.
+        onGPU : bool, optional
+            Initial state of the 'Use GPU' checkbox.
         """
 
         # region: Watch/Work dir controls -------------------------------------
-        # Watching Directory Label
+        # Watching directory
         self.labelWatchDir = QtWidgets.QLabel(self.mainWidget)
         self.labelWatchDir.setText("rtfMRI watching directory")
 
-        # Watching Directory LineEdit
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWatchDir.setReadOnly(True)
         self.lineEditWatchDir.setStyleSheet("border: 0px none;")
 
-        # Set watching directory button
         self.btnSetWatchDir = QtWidgets.QPushButton("Set", self.mainWidget)
         self.btnSetWatchDir.clicked.connect(self.set_watchDir)
 
-        # Working Directory Label
+        # Working directory
         self.labelWorkDir = QtWidgets.QLabel(self.mainWidget)
         self.labelWorkDir.setText("Working directory")
 
-        # Working Directory LineEdit
         self.lineEditWorkDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWorkDir.setReadOnly(True)
         self.lineEditWorkDir.setStyleSheet("border: 0px none;")
 
-        # Set working directory button
         self.btnSetWorkDir = QtWidgets.QPushButton("Set", self.mainWidget)
         self.btnSetWorkDir.clicked.connect(self.set_workDir)
         # endregion: Watch/Work dir controls ----------------------------------
@@ -228,8 +229,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         # endregion: Devices and plot checkbox --------------------------------
 
         # region: Experiment control space ------------------------------------
-        # Will be used by a RtpApp obejct to place a experiment controls.
-        # This needs to be defined before the app_obj.ui_set_param() call.
+        # RtpApp.ui_set_param() places the experiment controls here, so this
+        # must be made before calling it.
         self.hBoxExpCtrls = QtWidgets.QHBoxLayout()
 
         # --- Parameter setting -----------------------------------------------
@@ -248,16 +249,14 @@ class RtpGUI(QtWidgets.QMainWindow):
             self.Apps_btn[app_name].clicked.connect(
                 partial(self.on_clicked_setOption, app_name)
             )
-            self.Apps_btn[app_name].setStyleSheet(
-                "background-color: rgb(255,201,32)"
-            )
+            self.Apps_btn[app_name].setStyleSheet(_SELECTED_BTN_STYLE)
 
         # Application setting pane stack
         self.stackedAppSetPanes = QtWidgets.QStackedWidget(self.mainWidget)
         self.AppSetPanes = OrderedDict()
         for app_name, app_obj in self.rtp_apps.items():
             self.AppSetPanes[app_name] = QtWidgets.QGroupBox(
-                "{} setting".format(app_name), self.mainWidget
+                f"{app_name} setting", self.mainWidget
             )
             self.stackedAppSetPanes.addWidget(self.AppSetPanes[app_name])
             fLayout = QtWidgets.QFormLayout(self.AppSetPanes[app_name])
@@ -269,64 +268,24 @@ class RtpGUI(QtWidgets.QMainWindow):
                     fLayout.addRow(*ui_row)
 
         # --- RTP setting tab ---
-        # Selection buttons
+        # Selection buttons. The EXTSIG button (if any) comes first.
         self.RTP_btn = OrderedDict()
-
-        # EXTSIG
+        btn_procs = list(_RTP_PROCS[:-1])
         if "EXTSIG" in rtp_objs:
-            self.RTP_btn["EXTSIG"] = QtWidgets.QPushButton(
-                "EXT SIGNAL", self.mainWidget
+            btn_procs.insert(0, "EXTSIG")
+        for proc in btn_procs:
+            label = "EXT SIGNAL" if proc == "EXTSIG" else proc
+            self.RTP_btn[proc] = QtWidgets.QPushButton(label, self.mainWidget)
+            self.RTP_btn[proc].clicked.connect(
+                partial(self.on_clicked_setOption, proc)
             )
-            self.RTP_btn["EXTSIG"].clicked.connect(
-                partial(self.on_clicked_setOption, "EXTSIG")
-            )
-        # WATCH
-        self.RTP_btn["WATCH"] = QtWidgets.QPushButton("WATCH", self.mainWidget)
-        self.RTP_btn["WATCH"].clicked.connect(
-            partial(self.on_clicked_setOption, "WATCH")
-        )
-        # VOLREG
-        self.RTP_btn["VOLREG"] = QtWidgets.QPushButton(
-            "VOLREG", self.mainWidget
-        )
-        self.RTP_btn["VOLREG"].clicked.connect(
-            partial(self.on_clicked_setOption, "VOLREG")
-        )
-        # TSHIFT
-        self.RTP_btn["TSHIFT"] = QtWidgets.QPushButton(
-            "TSHIFT", self.mainWidget
-        )
-        self.RTP_btn["TSHIFT"].clicked.connect(
-            partial(self.on_clicked_setOption, "TSHIFT")
-        )
-        # SMOOTH
-        self.RTP_btn["SMOOTH"] = QtWidgets.QPushButton(
-            "SMOOTH", self.mainWidget
-        )
-        self.RTP_btn["SMOOTH"].clicked.connect(
-            partial(self.on_clicked_setOption, "SMOOTH")
-        )
-        # REGRESS
-        self.RTP_btn["REGRESS"] = QtWidgets.QPushButton(
-            "REGRESS", self.mainWidget
-        )
-        self.RTP_btn["REGRESS"].clicked.connect(
-            partial(self.on_clicked_setOption, "REGRESS")
-        )
 
         # RTP setting pane stack
         self.stackedRTPSetPanes = QtWidgets.QStackedWidget(self.mainWidget)
         self.RTPSetPanes = {}
-        for proc in [
-            "WATCH",
-            "VOLREG",
-            "TSHIFT",
-            "SMOOTH",
-            "REGRESS",
-            "EXTSIG",
-        ]:
+        for proc in _RTP_PROCS:
             self.RTPSetPanes[proc] = QtWidgets.QGroupBox(
-                "{} options".format(proc), self.mainWidget
+                f"{proc} options", self.mainWidget
             )
             self.stackedRTPSetPanes.addWidget(self.RTPSetPanes[proc])
             fLayout = QtWidgets.QFormLayout(self.RTPSetPanes[proc])
@@ -381,7 +340,6 @@ class RtpGUI(QtWidgets.QMainWindow):
         watchDirHBox.addWidget(self.labelWatchDir)
         watchDirHBox.addWidget(self.lineEditWatchDir)
         watchDirHBox.addWidget(self.btnSetWatchDir)
-        # watchDirHBox.addWidget(self.afniBootBtn)
 
         workDirHBox = QtWidgets.QHBoxLayout()
         vBoxTop.addLayout(workDirHBox)
@@ -405,9 +363,9 @@ class RtpGUI(QtWidgets.QMainWindow):
         if hasattr(self, "chbShowMotion"):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
 
-        for app_name in self.rtp_apps.keys():
-            if hasattr(self.rtp_apps[app_name], "ui_showROISig_cbx"):
-                ui_cbx = self.rtp_apps[app_name].ui_showROISig_cbx
+        for app_name, app_obj in self.rtp_apps.items():
+            if hasattr(app_obj, "ui_showROISig_cbx"):
+                ui_cbx = app_obj.ui_showROISig_cbx
                 ui_cbx.setText(f"{app_name}:{ui_cbx.text()}")
                 self.ui_hChkBoxes.addWidget(ui_cbx)
 
@@ -422,8 +380,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Application selection buttons
         hBoxAppBtns = QtWidgets.QHBoxLayout()
         vBoxAppSet.addLayout(hBoxAppBtns)
-        for app_name in self.Apps_btn.keys():
-            hBoxAppBtns.addWidget(self.Apps_btn[app_name])
+        for btn in self.Apps_btn.values():
+            hBoxAppBtns.addWidget(btn)
 
         vBoxAppSet.addWidget(self.stackedAppSetPanes)
 
@@ -435,8 +393,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         # RTP selection buttons
         hBoxRTPBtns = QtWidgets.QHBoxLayout()
         vBoxRTPSet.addLayout(hBoxRTPBtns)
-        for rtp in self.RTP_btn.keys():
-            hBoxRTPBtns.addWidget(self.RTP_btn[rtp])
+        for btn in self.RTP_btn.values():
+            hBoxRTPBtns.addWidget(btn)
 
         vBoxRTPSet.addWidget(self.stackedRTPSetPanes)
 
@@ -453,17 +411,27 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_popup(self, errmsg):
+        """Show an error message dialog."""
         msgBox = QtWidgets.QMessageBox()
         msgBox.setIcon(QtWidgets.QMessageBox.Critical)
         msgBox.setText(errmsg)
         msgBox.setWindowTitle(self.__class__.__name__)
         msgBox.exec()
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _all_objs(self):
+        """Return a new dict of the RTP modules and applications.
+
+        A new dict is made not to add the applications to self.rtp_objs,
+        which is RtpApp.rtp_objs.
+        """
+        return {**self.rtp_objs, **self.rtp_apps}
+
     # --- slot functions ------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_save_parameters(self):
-        allObjs = self.rtp_objs
-        allObjs.update(self.rtp_apps)
+        """Save the parameters of all modules and applications to a file."""
+        allObjs = self._all_objs()
 
         path = os.getcwd()
         fname, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -479,8 +447,8 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_load_parameters(self):
-        allObjs = self.rtp_objs
-        allObjs.update(self.rtp_apps)
+        """Load the parameters of all modules and applications from a file."""
+        allObjs = self._all_objs()
 
         path = os.getcwd()
         fname, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -492,6 +460,11 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_workDir(self, wdir=None):
+        """Set the working directory of all modules.
+
+        A directory dialog opens if wdir is not given. A missing directory
+        is created.
+        """
         if wdir is None or wdir is False:  # Button press gives False
             wdir = QtWidgets.QFileDialog.getExistingDirectory(
                 self, "Select working directory", str(self.watchDir_start)
@@ -502,7 +475,7 @@ class RtpGUI(QtWidgets.QMainWindow):
             if not Path(wdir).is_dir():
                 Path(wdir).mkdir()
 
-        for obj in self.rtp_objs.values():
+        for obj in self._all_objs().values():
             if hasattr(obj, "work_dir") and Path(obj.work_dir) != Path(wdir):
                 obj.set_param("work_dir", Path(wdir))
 
@@ -512,9 +485,13 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_watchDir(self, wdir=None):
+        """Set the watching directory of the modules that have one.
+
+        A directory dialog opens if wdir is not given.
+        """
         if wdir is None or wdir is False:  # Button press gives False
             wdir = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Select Watch directory", str(self.watchDir_start)
+                self, "Select watching directory", str(self.watchDir_start)
             )
             if len(wdir) == 0:
                 return -1
@@ -525,7 +502,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                 self.err_popup(errmsg)
                 return -1
 
-        for obj in self.rtp_objs.values():
+        for obj in self._all_objs().values():
             if hasattr(obj, "watch_dir") and (
                 obj.watch_dir is None or Path(obj.watch_dir) != Path(wdir)
             ):
@@ -537,30 +514,29 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_log(self, log_file):
-        # Open a log file to display in the window
+        """Display the log file in the window."""
         self._log_f = Path(log_file).absolute()
 
-        # Wait for the log file is ready
+        # Wait up to 5 s for the log file to be created
         st = time.time()
-        while not Path(self._log_f).is_file() and time.time() - st < 5:
+        while not self._log_f.is_file() and time.time() - st < 5:
             time.sleep(0.5)
 
-        # Open log file
         if self._log_f.is_file():
-            log_fd = open(self._log_f, "r")
+            self._log_fd = open(self._log_f, "r")
 
-            if log_fd is None:
-                sys.stderr.write(f"Failed to open {self._log_f}")
-            else:
-                self._log_fd = log_fd
-
-        # Set log update timer
+        # Poll the log file for new lines
         self._log_update_timer.setInterval(333)
         self._log_update_timer.timeout.connect(self.update_log_display)
         self._log_update_timer.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def update_log_display(self):
+        """Append new log lines to the log console.
+
+        Lines with '!!!' or 'ERROR' are shown in red ('!!!' is removed).
+        Lines with '<B>' are shown in bold ('<B>' is removed).
+        """
         if self._log_fd is None:
             return
 
@@ -569,39 +545,31 @@ class RtpGUI(QtWidgets.QMainWindow):
             self.logOutput_txtEd.moveCursor(QtGui.QTextCursor.End)
             log_lines = new_entries.split("\n")
             for ii, log_line in enumerate(log_lines):
+                # The last item is the rest after the last newline.
                 if ii != len(log_lines) - 1:
                     add_line = log_line + "\n"
                 else:
                     add_line = log_line
 
-                # Determine if this line should be red
-                is_error_line = "!!!" in add_line or "ERROR" in add_line
-
-                # Font Color
-                if is_error_line:
-                    # Red color
+                if "!!!" in add_line or "ERROR" in add_line:
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
                     add_line = add_line.replace("!!!", "")
                 else:
-                    # Black color for normal lines
                     self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
 
-                # Font weight
                 if "<B>" in add_line:
-                    # Bold face
                     self.logOutput_txtEd.setFontWeight(QtGui.QFont.Bold)
                     add_line = add_line.replace("<B>", "")
                 else:
                     self.logOutput_txtEd.setFontWeight(QtGui.QFont.Normal)
 
-                # insert
                 self.logOutput_txtEd.insertPlainText(add_line)
 
-                # Move scroll bar
+                # Scroll to the end
                 sb = self.logOutput_txtEd.verticalScrollBar()
                 sb.setValue(sb.maximum())
 
-                # Reset text color
+                # Reset the text format
                 cursor = self.logOutput_txtEd.textCursor()
                 default_format = QtGui.QTextCharFormat()
                 default_format.clearForeground()
@@ -609,28 +577,28 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_clicked_setOption(self, proc):
+        """Show the setting pane of an application or RTP module."""
         if proc in self.AppSetPanes:
             self.options_tab.setCurrentIndex(0)
             self.stackedAppSetPanes.setCurrentWidget(self.AppSetPanes[proc])
-            # Set button color
-            for app_name, btnObj in self.Apps_btn.items():
-                if app_name == proc:
-                    btnObj.setStyleSheet("background-color: rgb(255,201,32)")
-                else:
-                    btnObj.setStyleSheet("")
-
+            buttons = self.Apps_btn
         elif proc in self.RTPSetPanes:
             self.options_tab.setCurrentIndex(1)
             self.stackedRTPSetPanes.setCurrentWidget(self.RTPSetPanes[proc])
-            # Set button color
-            for rtp_name, btnObj in self.RTP_btn.items():
-                if rtp_name == proc:
-                    btnObj.setStyleSheet("background-color: rgb(255,201,32)")
-                else:
-                    btnObj.setStyleSheet("")
+            buttons = self.RTP_btn
+        else:
+            return
+
+        # Highlight the selected button
+        for name, btnObj in buttons.items():
+            if name == proc:
+                btnObj.setStyleSheet(_SELECTED_BTN_STYLE)
+            else:
+                btnObj.setStyleSheet("")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_mot_chk(self, state):
+        """Open or close the motion plot."""
         if "VOLREG" not in self.rtp_objs:
             return
 
@@ -641,6 +609,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_physio_chk(self, state):
+        """Show or hide the physio window."""
         if (
             "TTLPHYSIO" not in self.rtp_objs or
             self.rtp_objs["TTLPHYSIO"] is None
@@ -649,39 +618,40 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         if state > 0:
             self.rtp_objs["TTLPHYSIO"].show()
-            if hasattr(self, "chbShowPhysio"):
-                self.chbShowPhysio.blockSignals(True)
-                self.chbShowPhysio.setCheckState(2)
-                self.chbShowPhysio.blockSignals(False)
         else:
             self.rtp_objs["TTLPHYSIO"].hide()
-            if hasattr(self, "chbShowPhysio"):
-                self.chbShowPhysio.blockSignals(True)
-                self.chbShowPhysio.setCheckState(0)
-                self.chbShowPhysio.blockSignals(False)
+
+        # Sync the checkbox when this is called from the program
+        if hasattr(self, "chbShowPhysio"):
+            self.chbShowPhysio.blockSignals(True)
+            self.chbShowPhysio.setCheckState(2 if state > 0 else 0)
+            self.chbShowPhysio.blockSignals(False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def enable_GPU(self, *args):
-        for obj in self.rtp_objs.values():
+        """Set the GPU use of all modules from the checkbox."""
+        for obj in self._all_objs().values():
             if hasattr(obj, "onGPU"):
                 obj.onGPU = self.chbUseGPU.checkState() > 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_options_list(self, html=True, hide_sham=True):
-        """Print parameter list on text browser"""
+        """Show the parameter list in the text browser.
 
+        Parameters
+        ----------
+        html : bool, optional
+            If False, return the parameter dictionary without showing it.
+        hide_sham : bool, optional
+            Hide the parameters with 'sham' in the name.
+        """
         all_params = OrderedDict()
-        for rtp in (
-            "WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS", "EXTSIG"
-        ):
-            if rtp not in self.rtp_objs:
-                continue
+        for rtp in _RTP_PROCS:
+            if rtp in self.rtp_objs and self.rtp_objs[rtp].enabled:
+                all_params[rtp] = self.rtp_objs[rtp].get_params()
 
-            if not self.rtp_objs[rtp].enabled:
-                continue
-
-            all_params[rtp] = self.rtp_objs[rtp].get_params()
-
+        # enable_RTP of the last enabled application decides whether the RTP
+        # module parameters are shown.
         enable_RTP = True
         for app_name, app_obj in self.rtp_apps.items():
             if not app_obj.enabled:
@@ -698,14 +668,7 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         param_list = ""
         for rtp, opt_dict in all_params.items():
-            if not enable_RTP and rtp in (
-                "WATCH",
-                "VOLREG",
-                "TSHIFT",
-                "SMOOTH",
-                "REGRESS",
-                "EXTSIG",
-            ):
+            if not enable_RTP and rtp in _RTP_PROCS:
                 continue
 
             param_list += "<p>"
@@ -713,13 +676,12 @@ class RtpGUI(QtWidgets.QMainWindow):
 
             for k, val in opt_dict.items():
                 if k == "proc_times":
-                    # hide options
                     continue
 
                 if hide_sham and "sham" in k.lower():
                     continue
 
-                param_list += "<b>{}</b>: {}<br/>\n".format(k, val)
+                param_list += f"<b>{k}</b>: {val}<br/>\n"
 
             param_list += "</p>\n"
 
@@ -727,12 +689,13 @@ class RtpGUI(QtWidgets.QMainWindow):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def keyPressEvent(self, event):
+        # Pass the key press to the applications (e.g., manual scan start)
         for rtp_app in self.rtp_apps.values():
             rtp_app.keyPressEvent(event)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def closeEvent(self, event):
-        # Check is the dcm2nnix is running
+        # Do not close while dcm2niix is running
         for rtp_app in self.rtp_apps.values():
             if rtp_app._is_running_dcm2nii():
                 event.ignore()
@@ -745,25 +708,24 @@ class RtpGUI(QtWidgets.QMainWindow):
         ):
             self.rtp_objs["TTLPHYSIO"].quit()
 
-        # Move logfile to work_dir
-        cpfnames = {}
-        for rtp in list(self.rtp_objs.values()) + list(self.rtp_apps.values()):
-            if (
-                hasattr(rtp, "_log_f")
-                and hasattr(rtp, "work_dir")
-                and os.path.realpath(rtp.work_dir) != os.getcwd()
-            ):
-                logf = self._log_f
-                if logf not in cpfnames:
-                    cpfnames[logf] = Path(rtp.work_dir) / logf.name
+        # Copy the log file shown in this window (set_log) to the work_dir
+        # of the modules and applications
+        dst_fnames = set()
+        if hasattr(self, "_log_f") and self._log_f.is_file():
+            for rtp in self._all_objs().values():
+                if (
+                    hasattr(rtp, "work_dir")
+                    and str(rtp.work_dir) != ""
+                    and os.path.realpath(rtp.work_dir) != os.getcwd()
+                ):
+                    dst_f = Path(rtp.work_dir).absolute() / self._log_f.name
+                    if dst_f != self._log_f:
+                        dst_fnames.add(dst_f)
 
-        for src_fname, dst_fname in cpfnames.items():
-            if not Path(src_fname).is_file():
-                continue
+        for dst_fname in dst_fnames:
+            if not dst_fname.parent.is_dir():
+                os.makedirs(dst_fname.parent)
 
-            if not Path(dst_fname).parent.is_dir():
-                os.makedirs(Path(dst_fname).parent)
-
-            shutil.copy(src_fname, dst_fname)
+            shutil.copy(self._log_f, dst_fname)
 
         self._log_update_timer.stop()

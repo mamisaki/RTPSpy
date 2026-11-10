@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RTP online slice-timeing correction
+RTP online slice-timing correction
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -13,15 +13,10 @@ import sys
 import time
 import copy
 import traceback
-import warnings
 import json
-
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
 
 import numpy as np
 import nibabel as nib
-from six import string_types
 from PyQt5 import QtWidgets
 
 try:
@@ -38,8 +33,8 @@ class RtpTshift(RTP):
     def __init__(self, method='cubic', ref_time=0, TR=2.0,
                  slice_timing=[], slice_dim=2, **kwargs):
         """
-        TR and slice_timing can be set from a sample fMRI data file using the
-        'set_from_sample' method
+        TR and slice_timing can be set from a sample fMRI data file with the
+        'set_from_sample' method.
 
         Parameters
         ----------
@@ -47,14 +42,15 @@ class RtpTshift(RTP):
             Temporal interpolation method for the correction.
             The default is 'cubic'.
         ref_time : float, optional
-            Reference slice time. The default is 0.
+            Reference time (seconds) to which all slices are aligned.
+            The default is 0.
         TR : float, optional
-            Ccan interval (second). The default is 2.0.
+            Scan interval (seconds). The default is 2.0.
         slice_timing : array like, optional
-            Timing of each slices. The default is [].
+            Acquisition time (seconds) of each slice. The default is [].
         slice_dim : int, optional
-            silce dimension
-                0: x axis (sagital slice)
+            Slice dimension
+                0: x axis (sagittal slice)
                 1: y axis (coronal slice)
                 2: z axis (axial slice)
             The default is 2.
@@ -70,18 +66,20 @@ class RtpTshift(RTP):
         self.slice_timing = slice_timing
         self.slice_dim = slice_dim
 
-        # Init parameters
-        self.prep_weight = False  # Flag if precalculation is done.
-        self.pre_data = []  # previous data volumes
+        # Initialize the process state
+        self.prep_weight = False  # True when the weights are calculated
+        self._weight_shape = None  # Volume shape of the weights
+        self.pre_data = []  # Previous data volumes
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
-        if self.slice_timing is None or self.TR is None:
+        if self.slice_timing is None or len(self.slice_timing) == 0 or \
+                self.TR is None:
             errmsg = "Slice timing is not set. "
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             self._proc_ready = False
-            return
+            return False
 
         self._proc_ready = True  # ready in any case
         if self.next_proc:
@@ -92,13 +90,13 @@ class RtpTshift(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         try:
-            # Increment the number of received volume
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            # Increment the number of received volumes
+            self._vol_num += 1  # 1-based number of received volumes
             if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-base index
+                vol_idx = self._vol_num - 1  # 0-based index
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
+                # Skip the initial volumes
                 return
 
             if self._proc_start_idx < 0:
@@ -106,103 +104,65 @@ class RtpTshift(RTP):
 
             # --- Initialize --------------------------------------------------
             if fmri_img.shape[self.slice_dim] != len(self.slice_timing):
-                errmsg = 'Slice timing array mismathces to data.'
+                errmsg = 'Slice timing array does not match the data.'
                 self._logger.error(errmsg)
                 return
 
-            # Set the interpolation weights.
-            if not self.prep_weight:
-                self._pre_culc_weight(fmri_img.shape[:3])
+            # Set the interpolation weights (again if the volume shape
+            # changed).
+            if not self.prep_weight or \
+                    self._weight_shape != tuple(fmri_img.shape[:3]):
+                self._calc_weights(fmri_img.shape[:3])
+                if not self.prep_weight:
+                    return
 
-            dataV = fmri_img.get_fdata()
+            dataV = np.asarray(fmri_img.dataobj, dtype=np.float32)
             if dataV.ndim > 3:
                 dataV = np.squeeze(dataV)
 
-            # If there is no previous data, return.
+            # The first volume cannot be corrected alone. Keep it and correct
+            # it retrospectively when the next volume arrives.
             if len(self.pre_data) == 0:
                 self.pre_fmri_img = copy.deepcopy(fmri_img)
                 self.pre_data.append(dataV)
                 return
 
-            # --- Run the procress --------------------------------------------
-            # Retrospective correction
+            # --- Run the process ---------------------------------------------
             if hasattr(self, 'pre_fmri_img'):
-                #
-                if self.method == 'linear':
-                    retro_shft_dataV = \
-                        self.r1wm1 * self.pre_data[-1] + self.r1w0 * dataV
+                # Correct the kept previous volume and pass it on.
+                self._correct_previous_volume(dataV, vol_idx)
 
-                elif self.method == 'cubic':
-                    if len(self.pre_data) == 1:
-                        retro_shft_dataV = \
-                            self.r1wm2 * self.pre_data[-1] + \
-                            self.r1wm1 * self.pre_data[-1] + \
-                            self.r1w0 * dataV + \
-                            self.r1wp1 * dataV
-                    elif len(self.pre_data) == 2:
-                        retro_shft_dataV = \
-                            self.r1wm2 * self.pre_data[-2] + \
-                            self.r1wm1 * self.pre_data[-1] + \
-                            self.r1w0 * dataV + \
-                            self.r1wp1 * dataV
-
-                self.pre_fmri_img.uncache()
-                self.pre_fmri_img._dataobj = retro_shft_dataV
-                self.pre_fmri_img.set_data_dtype = retro_shft_dataV.dtype
-
-                # log message
-                fname = Path(self.pre_fmri_img.get_filename()).name
-                fname = fname.replace('.nii.gz', '')
-                msg = f"#{vol_idx};"
-                msg += f"Retrospective slice-timing correction;{fname}"
-                self._logger.info(msg)
-
-                # Set save_name
-                self.pre_fmri_img.set_filename(
-                    'ts.' + Path(self.pre_fmri_img.get_filename()).name)
-
-                # Save processed image
-                if self.save_proc:
-                    self.keep_processed_image(self.pre_fmri_img,
-                                              save_temp=self.online_saving,
-                                              vol_num=vol_idx-1)
-
-                if self.next_proc:
-                    # Keep the current processed data
-                    self.proc_data = np.asanyarray(self.pre_fmri_img.dataobj)
-                    # Run the next process
-                    self.next_proc.do_proc(self.pre_fmri_img, vol_idx-1,
-                                           time.time())
-
-                if self.method == 'cubic':
-                    # Two previous volumes are required for cubic intepolation.
-                    if len(self.pre_data) < 2:
-                        self.pre_data.append(dataV)
-                        self.pre_fmri_img = copy.deepcopy(fmri_img)
-                        return
+                if self.method == 'cubic' and len(self.pre_data) < 2:
+                    # Cubic interpolation needs two previous volumes. Keep
+                    # the current volume too and correct it retrospectively
+                    # when the next volume arrives.
+                    self.pre_data.append(dataV)
+                    self.pre_fmri_img = copy.deepcopy(fmri_img)
+                    return
 
                 del self.pre_fmri_img
 
-            # Slice timing correction for the current data
+            # Slice-timing correction of the current volume
             if self.method == 'linear':
                 shift_dataV = self.wm1 * self.pre_data[-1] + self.w0 * dataV
             elif self.method == 'cubic':
+                # The next volume is not available; the current volume is
+                # used in its place (w0p1 = w0 + wp1).
                 shift_dataV = \
                     self.wm2 * self.pre_data[-2] + \
                     self.wm1 * self.pre_data[-1] + \
-                    self.w0 * dataV + \
-                    self.wp1 * dataV
+                    self.w0p1 * dataV
 
-            # set corrected data in fmri_img
+            # Set the corrected data in fmri_img
             fmri_img.uncache()
             fmri_img._dataobj = shift_dataV
-            fmri_img.set_data_dtype = shift_dataV.dtype
+            fmri_img.set_data_dtype(shift_dataV.dtype)
 
-            # update pre_data list
+            # Update the previous volume list
             self.pre_data.append(dataV)
             self.pre_data.pop(0)
 
-            # --- Post procress -----------------------------------------------
+            # --- Post process ------------------------------------------------
             # Record process time
             tstamp = time.time()
             self._proc_time.append(tstamp)
@@ -211,7 +171,7 @@ class RtpTshift(RTP):
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
-            # log message
+            # Log message
             if fmri_img.get_filename():
                 fname = Path(fmri_img.get_filename()).name
             else:
@@ -237,13 +197,14 @@ class RtpTshift(RTP):
             # Save processed image
             if self.save_proc:
                 if self.next_proc is not None:
-                    # Recover the processed data in this module
+                    # Restore the data processed in this module, as the next
+                    # process may have changed fmri_img.
                     fmri_img.uncache()
                     fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype = self.proc_data.dtype
+                    fmri_img.set_data_dtype(self.proc_data.dtype)
                     fmri_img.set_filename(save_name)
 
-                self.keep_processed_image(fmri_img,
+                self.keep_processed_image(fmri_img, vol_num=vol_idx,
                                           save_temp=self.online_saving)
 
         except Exception:
@@ -254,28 +215,87 @@ class RtpTshift(RTP):
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _correct_previous_volume(self, dataV, vol_idx):
+        """
+        Correct the kept previous volume (self.pre_fmri_img) retrospectively,
+        using the current volume (dataV), and pass it to the next process.
+
+        The previous volume is the one before vol_idx (index vol_idx - 1).
+        """
+        if self.method == 'linear':
+            retro_shft_dataV = \
+                self.r1wm1 * self.pre_data[-1] + self.r1w0 * dataV
+
+        elif self.method == 'cubic':
+            # The volume after the current one is not available yet; the
+            # current volume is used in its place (r1w0p1). With only one
+            # earlier volume, it is used for both earlier time points
+            # (r1wm2m1).
+            if len(self.pre_data) == 1:
+                retro_shft_dataV = \
+                    self.r1wm2m1 * self.pre_data[-1] + \
+                    self.r1w0p1 * dataV
+            elif len(self.pre_data) == 2:
+                retro_shft_dataV = \
+                    self.r1wm2 * self.pre_data[-2] + \
+                    self.r1wm1 * self.pre_data[-1] + \
+                    self.r1w0p1 * dataV
+
+        pre_img = self.pre_fmri_img
+        pre_img.uncache()
+        pre_img._dataobj = retro_shft_dataV
+        pre_img.set_data_dtype(retro_shft_dataV.dtype)
+
+        # Log message
+        fname = pre_img.get_filename() or "unknown.nii.gz"
+        fname = Path(fname).name.replace('.nii.gz', '')
+        msg = f"#{vol_idx};"
+        msg += f"Retrospective slice-timing correction;{fname}"
+        self._logger.info(msg)
+
+        # Set the save filename
+        pre_img.set_filename('ts.' + fname + '.nii.gz')
+
+        # Save processed image
+        if self.save_proc:
+            self.keep_processed_image(pre_img, save_temp=self.online_saving,
+                                      vol_num=vol_idx-1)
+
+        if self.next_proc:
+            # Keep the current processed data
+            self.proc_data = np.asanyarray(pre_img.dataobj)
+            # Run the next process
+            self.next_proc.do_proc(pre_img, vol_idx-1, time.time())
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """ End process and reset process parameters. """
 
         self._logger.info(f"Reset {self.__class__.__name__} module.")
 
         self.pre_data = []
+        if hasattr(self, 'pre_fmri_img'):
+            del self.pre_fmri_img
+        self.prep_weight = False
 
         return super(RtpTshift, self).end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_from_sample(self, fmri_img):
         """
-        Set parameters from a sample fmri data
+        Set TR, slice_timing, and slice_dim from a sample fMRI data.
+
+        The values are read from a JSON sidecar file made by dcm2niix
+        (same name with '.json'), if it exists, or from the image header.
 
         Parameters
         ----------
-        fmri_img: string_types or nibabel image object
-            If fmri_img is string_types, it should be a BRIK filename of sample
-            data.
+        fmri_img: str, Path, or nibabel image object
+            If fmri_img is str or Path, it is the filename of the sample
+            data (NIfTI or AFNI BRIK).
         """
         # Read header
-        if isinstance(fmri_img, string_types) or isinstance(fmri_img, Path):
+        if isinstance(fmri_img, (str, Path)):
             img = nib.load(fmri_img)
             vol_shape = img.shape[:3]
             header = img.header
@@ -323,20 +343,17 @@ class RtpTshift(RTP):
             except nib.spatialimages.HeaderDataError:
                 pass
 
-        # Get slice orientation
+        # Get the slice dimension: the array axis whose size matches the
+        # number of slice times. dcm2niix and RtpWatch store the slices along
+        # the third array axis, whatever the slice orientation is, so the
+        # third axis is preferred when several axes match.
         slice_dim = None
-        if img_info and 'ImageOrientationPatientDICOM' in img_info:
-            imgOri = img_info['ImageOrientationPatientDICOM']
-            F = np.reshape(imgOri, (2, 3)).T
-            d1 = 'xyz'[np.argmax(F[:, 0]).ravel()[0]]
-            d2 = 'xyz'[np.argmax(F[:, 1]).ravel()[0]]
-            slice_ori = ''.join(sorted([d1, d2]))
-            if slice_ori == 'xy':
+        if len(slice_timing):
+            dims = [d for d in range(3) if vol_shape[d] == len(slice_timing)]
+            if 2 in dims:
                 slice_dim = 2
-            elif slice_ori == 'xz':
-                slice_dim = 1
-            elif slice_ori == 'yz':
-                slice_dim = 0
+            elif len(dims):
+                slice_dim = dims[0]
 
         # Set parameters
         notset_params = []
@@ -360,46 +377,44 @@ class RtpTshift(RTP):
 
         if len(notset_params):
             errmsg = ', '.join(notset_params)
-            errmsg += ' has not been read from the sample.'
+            errmsg += ' could not be read from the sample.'
             self._logger.warning(errmsg)
             self.err_popup(errmsg)
 
-        # set interpolation weight
-        self._pre_culc_weight(vol_shape)
+        # Set the interpolation weights
+        self._calc_weights(vol_shape)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _pre_culc_weight(self, vol_shape):
+    def _calc_weights(self, vol_shape):
         """
-        Pre-calculation of weights for temporal interpolation
+        Calculate the weights for temporal interpolation in advance.
+        Each weight is a per-slice array shaped to broadcast over a volume.
 
         Set variables
         -------------
         Interpolation weights
-        self.wm1: weigth for minus 1 TR data
-        self.w0: weigth for current TR data
+        self.wm1: weight for the volume at t-1
+        self.w0: weight for the current volume (t)
 
         Only for cubic interpolation
-        self.wm2: weigth for minus 2 TR data
-        self.wp1: weigth for plus 1 TR data
-                  used by cubic interpolation assuming the next data is the
-                  same as current data
+        self.wm2: weight for the volume at t-2
+        self.wp1: weight for the volume at t+1
+        self.w0p1: w0 + wp1, used because the volume at t+1 is not
+                   available and the current volume is used in its place
 
-        Retrospective extrapolation weights
-        self.r1wm1: 1-TR retrospective weigth for minus 1 TR data
-        self.r1w0: 1-TR retrospective weigth for current TR data
+        Retrospective (1 TR back) extrapolation weights
+        self.r1wm1: weight for the volume at t-1
+        self.r1w0: weight for the current volume (t)
 
         Only for cubic interpolation
-        self.r1wm2: 1-TR retrospective weigth for minus 2 TR data
-        self.r1wp1: 1-TR retrospective weigth for plus 1 TR data
-
-        self.r2wm1: 2-TR retrospective weigth for minus 1 TR data
-        self.r2w0: 2-TR retrospective weigth for current TR data
-        self.r2wm2: 2-TR retrospective weigth for minus 2 TR data
-        self.r2wp1: 2-TR retrospective weigth for plus 1 TR data
+        self.r1wm2: weight for the volume at t-2
+        self.r1wp1: weight for the volume at t+1
+        self.r1w0p1: r1w0 + r1wp1 (the current volume is used for t+1)
+        self.r1wm2m1: r1wm2 + r1wm1 (the volume at t-1 is used for t-2)
         """
 
         if self.slice_timing is None or self.TR is None:
-            errmsg = "slice timing is not set."
+            errmsg = "Slice timing is not set."
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             return
@@ -410,98 +425,52 @@ class RtpTshift(RTP):
             self.err_popup(errmsg)
             return
 
-        # Set reference time
-        ref_time = self.ref_time
+        if self.slice_dim not in (0, 1, 2) or \
+                vol_shape[self.slice_dim] != len(self.slice_timing):
+            errmsg = 'Slice timing array does not match the data.'
+            self._logger.error(errmsg)
+            return
 
-        # slice timing shift from ref_time (relative to TR)
-        shf = [(slt - ref_time)/self.TR for slt in self.slice_timing]
+        # Slice timing shift from ref_time (relative to TR)
+        shf = (np.asarray(self.slice_timing, dtype=np.float64) -
+               self.ref_time) / self.TR
 
-        # Initialize masked weight
-        self.wm1 = np.ones(vol_shape, dtype=np.float32)  # weight for t-1
-        self.w0 = np.ones(vol_shape, dtype=np.float32)  # weight for t
-        # retrospective weight
-        self.r1wm1 = np.ones(vol_shape, dtype=np.float32)  # weight for t-1
-        self.r1w0 = np.ones(vol_shape, dtype=np.float32)  # weight for t
+        # Shape the per-slice weights to broadcast over a volume.
+        wshape = [1, 1, 1]
+        wshape[self.slice_dim] = len(shf)
 
-        if self.method == 'cubic':
-            self.wm2 = np.ones(vol_shape, dtype=np.float32)  # weight for t-2
-            self.wp1 = np.ones(vol_shape, dtype=np.float32)  # weight for t+1
-            # retrospective weight
-            self.r1wm2 = np.ones(vol_shape, dtype=np.float32)  # weight for t-1
-            self.r1wp1 = np.ones(vol_shape, dtype=np.float32)  # weight for t
+        def _w(w):
+            return np.reshape(w, wshape).astype(np.float32)
 
-        # Set weight
-        for sli in range(len(self.slice_timing)):
-            if self.method == 'linear':
-                wm1 = shf[sli]  # <=> x1
-                w0 = 1.0 - wm1  # <=> -x0
-                if self.slice_dim == 0:
-                    self.wm1[sli, :, :] *= wm1
-                    self.w0[sli, :, :] *= w0
-                elif self.slice_dim == 1:
-                    self.wm1[:, sli, :] *= wm1
-                    self.w0[:, sli, :] *= w0
-                elif self.slice_dim == 2:
-                    self.wm1[:, :, sli] *= wm1
-                    self.w0[:, :, sli] *= w0
+        if self.method == 'linear':
+            self.wm1 = _w(shf)  # weight for t-1
+            self.w0 = _w(1.0 - shf)  # weight for t
+            # Retrospective weights
+            self.r1wm1 = _w(shf + 1.0)
+            self.r1w0 = _w(-shf)
 
-                # Retrospective weight
-                r1wm1 = shf[sli] + 1.0  # <=> x1 - (-1)
-                r1w0 = -shf[sli]  # <=> -X1
-                if self.slice_dim == 0:
-                    self.r1wm1[sli, :, :] *= r1wm1
-                    self.r1w0[sli, :, :] *= r1w0
-                elif self.slice_dim == 1:
-                    self.r1wm1[:, sli, :] *= r1wm1
-                    self.r1w0[:, sli, :] *= r1w0
-                elif self.slice_dim == 2:
-                    self.r1wm1[:, :, sli] *= r1wm1
-                    self.r1w0[:, :, sli] *= r1w0
+        elif self.method == 'cubic':
+            aa = 1.0 - shf
+            wm2 = aa * (1.0-aa) * (aa-2.0) * 0.1666667
+            wm1 = (aa+1.0) * (aa-1.0) * (aa-2.0) * 0.5
+            w0 = aa * (aa+1.0) * (2.0-aa) * 0.5
+            wp1 = aa * (aa+1.0) * (aa-1.0) * 0.1666667
+            self.wm2, self.wm1 = _w(wm2), _w(wm1)
+            self.w0, self.wp1 = _w(w0), _w(wp1)
+            self.w0p1 = _w(w0 + wp1)
 
-            elif self.method == 'cubic':
-                aa = 1.0 - shf[sli]
-                wm2 = aa * (1.0-aa) * (aa-2.0) * 0.1666667
-                wm1 = (aa+1.0) * (aa-1.0) * (aa-2.0) * 0.5
-                w0 = aa * (aa+1.0) * (2.0-aa) * 0.5
-                wp1 = aa * (aa+1.0) * (aa-1.0) * 0.1666667
-                if self.slice_dim == 0:
-                    self.wm2[sli, :, :] *= wm2
-                    self.wm1[sli, :, :] *= wm1
-                    self.w0[sli, :, :] *= w0
-                    self.wp1[sli, :, :] *= wp1
-                elif self.slice_dim == 1:
-                    self.wm2[:, sli, :] *= wm2
-                    self.wm1[:, sli, :] *= wm1
-                    self.w0[:, sli, :] *= w0
-                    self.wp1[:, sli, :] *= wp1
-                elif self.slice_dim == 2:
-                    self.wm2[:, :, sli] *= wm2
-                    self.wm1[:, :, sli] *= wm1
-                    self.w0[:, :, sli] *= w0
-                    self.wp1[:, :, sli] *= wp1
+            # Retrospective weights (1 TR back)
+            aa = 1.0 - shf - 1.0
+            r1wm2 = aa * (1.0-aa) * (aa-2.0) * 0.1666667
+            r1wm1 = (aa+1.0) * (aa-1.0) * (aa-2.0) * 0.5
+            r1w0 = aa * (aa+1.0) * (2.0-aa) * 0.5
+            r1wp1 = aa * (aa+1.0) * (aa-1.0) * 0.1666667
+            self.r1wm2, self.r1wm1 = _w(r1wm2), _w(r1wm1)
+            self.r1w0, self.r1wp1 = _w(r1w0), _w(r1wp1)
+            self.r1w0p1 = _w(r1w0 + r1wp1)
+            self.r1wm2m1 = _w(r1wm2 + r1wm1)
 
-                # 1-TR Retrospective weight
-                aa = 1.0 - shf[sli] - 1.0
-                r1wm2 = aa * (1.0-aa) * (aa-2.0) * 0.1666667
-                r1wm1 = (aa+1.0) * (aa-1.0) * (aa-2.0) * 0.5
-                r1w0 = aa * (aa+1.0) * (2.0-aa) * 0.5
-                r1wp1 = aa * (aa+1.0) * (aa-1.0) * 0.1666667
-                if self.slice_dim == 0:
-                    self.r1wm2[sli, :, :] *= r1wm2
-                    self.r1wm1[sli, :, :] *= r1wm1
-                    self.r1w0[sli, :, :] *= r1w0
-                    self.r1wp1[sli, :, :] *= r1wp1
-                elif self.slice_dim == 1:
-                    self.r1wm2[:, sli, :] *= r1wm2
-                    self.r1wm1[:, sli, :] *= r1wm1
-                    self.r1w0[:, sli, :] *= r1w0
-                    self.r1wp1[:, sli, :] *= r1wp1
-                elif self.slice_dim == 2:
-                    self.r1wm2[:, :, sli] *= r1wm2
-                    self.r1wm1[:, :, sli] *= r1wm1
-                    self.r1w0[:, :, sli] *= r1w0
-                    self.r1wp1[:, :, sli] *= r1wp1
-
+        self._weight_shape = tuple(vol_shape)
         self.prep_weight = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -516,11 +485,11 @@ class RtpTshift(RTP):
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
         """
         When reset_fn is None, set_param is considered to be called from
-        load_parameters function
+        the load_parameters function.
         """
         self._logger.debug(f"set_param: {attr} = {val}")
 
-        # -- check value --
+        # -- Check value --
         if attr == 'enabled':
             if hasattr(self, 'ui_enabled_rdb'):
                 self.ui_enabled_rdb.setChecked(val)
@@ -550,7 +519,7 @@ class RtpTshift(RTP):
         elif attr == 'set_from_sample':
             if val is None:
                 fname = self.select_file_dlg(
-                        'TSHIFT: Selct slice timing sample',
+                        'TSHIFT: Select a slice timing sample',
                         self.work_dir, "*.BRIK* *.nii*")
                 if fname[0] == '':
                     return -1
@@ -588,12 +557,15 @@ class RtpTshift(RTP):
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                errmsg = f"{attr} is unrecognized parameter."
+                errmsg = f"{attr} is an unrecognized parameter."
                 self._logger.error(errmsg)
                 return
 
         # -- Set value --
         setattr(self, attr, val)
+        if attr in ('method', 'ref_time', 'TR', 'slice_timing', 'slice_dim'):
+            # The interpolation weights must be computed again
+            self.prep_weight = False
         if echo:
             print("{}.".format(self.__class__.__name__) + attr, '=',
                   getattr(self, attr))
@@ -675,7 +647,7 @@ class RtpTshift(RTP):
         # slice_dim
         var_lb = QtWidgets.QLabel("Slice orientation :")
         self.ui_sliceDim_cmbBx = QtWidgets.QComboBox()
-        self.ui_sliceDim_cmbBx.addItems(['x (Sagital)', 'y (Coronal)',
+        self.ui_sliceDim_cmbBx.addItems(['x (Sagittal)', 'y (Coronal)',
                                          'z (Axial)'])
         self.ui_sliceDim_cmbBx.setCurrentIndex(self.slice_dim)
         self.ui_sliceDim_cmbBx.currentIndexChanged.connect(
@@ -704,9 +676,10 @@ class RtpTshift(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         all_opts = super().get_params()
-        excld_opts = ('work_dir', 'pre_data',
-                      'pre_mri_data', 'prep_weight', 'wm2', 'wm1', 'w0', 'wp1',
-                      'r1wm2', 'r1wm1', 'r1w0', 'r1wp1')
+        # Exclude the process state and the interpolation weights
+        excld_opts = ('work_dir', 'pre_data', 'pre_fmri_img', 'prep_weight',
+                      'wm2', 'wm1', 'w0', 'wp1', 'w0p1',
+                      'r1wm2', 'r1wm1', 'r1w0', 'r1wp1', 'r1w0p1', 'r1wm2m1')
         sel_opts = {}
         for k, v in all_opts.items():
             if k in excld_opts:
@@ -771,7 +744,7 @@ if __name__ == '__main__':
 
     plt.figure()
     plt.hist(proc_delay[1:], bins='auto')
-    np.median(proc_delay[1:])
+    print(f"Median processing delay: {np.median(proc_delay[1:]):.4f}s")
 
     plot_range = 30  # TRs
     sli = 1

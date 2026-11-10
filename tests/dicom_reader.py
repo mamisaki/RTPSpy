@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+DicomReader for the test scripts (an older copy of rtpspy/dicom_reader.py)
+"""
 
 # %% import ===================================================================
 from pathlib import Path
 import time
 from datetime import datetime
 import logging
-import sys
 import traceback
 
 import numpy as np
@@ -18,12 +20,25 @@ import nibabel as nib
 class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, vendor='SiemensXA30'):
+    def __init__(self):
         self.logger = logging.getLogger('DicomReader')
-        self.vendor = vendor
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _read_scan_info(self, dcm):
+        """Read scan information with the reader for the manufacturer.
+        Return None if it is not supported."""
+        manufacturer = dcm.Manufacturer.lower()
+        if 'siemens' in manufacturer:
+            return self.read_siemens_dicom_info(dcm)
+        elif 'ge' in manufacturer:
+            return self.read_ge_dicom_info(dcm)
+
+        return None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def safe_read_dicom_file(self, dicom_file, root_dir=None, timeout=1):
+        """Read a DICOM file, retrying until timeout (s) while the file is
+        being written. Returns the dataset and the scan information."""
         dcm = None
         scan_info = None
 
@@ -34,15 +49,10 @@ class DicomReader():
                 dcm = pydicom.dcmread(dicom_file)
                 assert hasattr(dcm, 'pixel_array')
 
-                manufacturer = dcm.Manufacturer.lower()
-                if 'siemens' in manufacturer:
-                    scan_info = self.read_siemens_dicom_info(dcm)
-                elif 'GE' in manufacturer:
-                    scan_info = self.read_ge_dicom_info(dcm)
-                else:
-                    break
+                scan_info = self._read_scan_info(dcm)
+                if scan_info is None:
+                    break  # Not supported
 
-                assert scan_info is not None
                 break
             except Exception:
                 time.sleep(0.05)
@@ -59,6 +69,8 @@ class DicomReader():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_dicom_info(self, dicom, is_file=True, root_dir=None,
                         timeout=1):
+        """Return the scan information of a DICOM file (is_file=True) or a
+        dataset. None if it cannot be read."""
         if is_file:
             dcm, scan_info = self.safe_read_dicom_file(
                 dicom, root_dir, timeout)
@@ -66,57 +78,36 @@ class DicomReader():
                 self.logger.error(f"Failed to read {dicom} as DICOM")
                 return None
         else:
-            dcm = dicom
-            if self.vendor == 'GE':
-                scan_info = self.read_ge_dicom_info(dcm)
-            elif self.vendor == 'SiemensMosaic':
-                scan_info = self.read_mosaic_dicom_info(dcm)
-            elif self.vendor == 'SiemensXA30':
-                scan_info = self.read_siemensXA30_dicom_info(dcm)
+            scan_info = self._read_scan_info(dicom)
 
-        if scan_info is not None:
-            if is_file:
-                if root_dir is not None:
-                    dcm_dir = Path(dicom).relative_to(root_dir).parent
-                else:
-                    dcm_dir = Path(dicom).parent
-                scan_info['DICOM directory'] = str(dcm_dir)
-
+        # For a file, safe_read_dicom_file() has set 'DICOM directory'.
         return scan_info
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def dcm2nii(self, dicom_files=[], dcms=[], time_out=2):
-        """_summary_
+    def dcm2nii(self, dicom_files=[], dcms=None, time_out=2):
+        """Convert DICOM files (or datasets in dcms) of a volume to a NIfTI
+        image.
 
-        Args:
-            img_ornt_pat (_type_): _description_
-            img_pix_space (_type_): _description_
-            img_pos (_type_): _description_
-            pixel_array (_type_): _description_
-
-        Refered to
+        See
         https://stackoverflow.com/questions/21759013/dicom-affine-matrix-transformation-from-image-space-to-patient-space-in-matlab
         https://nipy.org/nibabel/dicom/dicom_orientation.html#dicom-voxel-to-patient-coordinate-system-mapping
         """
 
-        # --- Load dicom files ---
+        # --- Load the DICOM files ---
+        dcms = [] if dcms is None else list(dcms)
         for dcm_f in dicom_files:
+            dcm = None
             st = time.time()
             while time.time() - st < time_out:
                 # Wait until the file is readable.
                 try:
                     dcm = pydicom.dcmread(dcm_f)
                     assert hasattr(dcm, 'pixel_array')
-                    if self.vendor == 'GE':
-                        scan_info = self.read_ge_dicom_info(dcm)
-                    elif self.vendor == 'SiemensMosaic':
-                        scan_info = self.read_mosaic_dicom_info(dcm)
-                    elif self.vendor == 'SiemensXA30':
-                        scan_info = self.read_siemensXA30_dicom_info(dcm)
-                    assert scan_info is not None
+                    assert self._read_scan_info(dcm) is not None
                     dcms.append(dcm)
                     break
                 except Exception:
+                    dcm = None
                     time.sleep(0.01)
             if dcm is None:
                 self.logger.error(f"Failed to read DICOM file {dcm_f}")
@@ -128,7 +119,7 @@ class DicomReader():
         if 'PerFrameFunctionalGroupsSequence' in dcms[0]:
             rets = self.load_dicom_data_volume(dcms[0])
         else:
-            rets = self.load_dicom_data_volume(dcms)
+            rets = self.load_dicom_data_multislice(dcms)
 
         if rets is None:
             return None
@@ -147,7 +138,6 @@ class DicomReader():
         A[:2, :] *= -1
 
         # -> LPI
-        # image_pos = _multiframe_get_image_position(dicoms[0], 0)
         point = np.array([[0, pixel_array.shape[1]-1, 0, 1]]).T
         k = np.dot(A, point)
         A[:, 1] *= -1
@@ -159,13 +149,13 @@ class DicomReader():
 
         nii_image = nib.Nifti1Image(img_array, A)
 
-        # Set TR and TE in pixdim and db_name field
+        # Set TR in pixdim
         TR = scan_info['TR']
         TE = scan_info['TE']
         nii_image.header.structarr['pixdim'][4] = TR / 1000.0
 
         nii_image.header.set_slope_inter(1, 0)
-        # set units for xyz (leave t as unknown)
+        # Set units for xyz (leave t as unknown)
         nii_image.header.set_xyzt_units(2)
 
         # Get slice orientation
@@ -174,7 +164,7 @@ class DicomReader():
             # Axial
             slice = 2  # z is slice
         elif ori_code[0] == 0 and ori_code[1] > 0 and ori_code[2] > 0:
-            # Saggital
+            # Sagittal
             slice = 0  # x is slice
         elif ori_code[0] > 0 and ori_code[1] == 0 and ori_code[2] > 0:
             # Coronal
@@ -195,7 +185,7 @@ class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_ge_dicom_info(self, dcm):
-        # Get info from headers
+        """Read the scan information from GE DICOM headers."""
         scan_info = {}
         try:
             scan_info['Series Information'] = f"scan_{dcm.SeriesNumber}"
@@ -209,7 +199,7 @@ class DicomReader():
             scan_info['Scan started'] = acqtime.strftime('%H:%M:%S')
 
             Service_id = dcm[(0x0009, 0x1030)].value
-            scan_info['Scanner'] = f'SITE-{Service_id[-3:]}'
+            scan_info['Scanner'] = f'GE-{Service_id[-3:]}'
             if (0x0043, 0x1096) in dcm:
                 scan_info['Mode'] = dcm[(0x0043, 0x1096)].value
 
@@ -278,9 +268,7 @@ class DicomReader():
                 scan_info['Acquisition Duration'] = dcm[(0x0019, 0x105a)].value
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errstr = traceback.format_exc()
             msg = f"Failed to read DICOM info: {errstr}"
             self.logger.error(msg)
             scan_info = None
@@ -289,6 +277,7 @@ class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_siemens_dicom_info(self, dcm):
+        """Read the scan information from Siemens DICOM headers."""
         scan_info = {}
         try:
             scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
@@ -302,9 +291,7 @@ class DicomReader():
             scan_info['SeriesDescription'] = dcm.SeriesDescription
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errstr = traceback.format_exc()
             msg = f"Failed to read DICOM info: {errstr}"
             self.logger.error(msg)
             scan_info = None
@@ -313,12 +300,12 @@ class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def load_dicom_data_volume(self, dcm):
-        """Read DICOM data that contains multiframe volume, e.g. Siemense XA30
-        function data that has multi-frame field (i.e.,
-        PerFrameFunctionalGroupsSequence)
+        """Read a multi-frame DICOM volume (with
+        PerFrameFunctionalGroupsSequence), e.g., Siemens XA30 functional
+        data.
 
         Args:
-            dcm (pydicom.dataset.FileDataset): dicom dataset read by pydicom
+            dcm (pydicom.dataset.FileDataset): DICOM dataset read by pydicom
         """
         try:
             # Check multi-frame field
@@ -331,7 +318,7 @@ class DicomReader():
             # Get ImageOrientationPatient (should be the same for all slices)
             # img_ornt_pat: direction cosines of the first row and the first
             # column with respect to the patient.
-            # These Attributes shall be provide as a pair.
+            # These attributes are provided as a pair.
             # Row value for the x, y, and z axes respectively followed by the
             # Column value for the x, y, and z axes respectively.
             img_ornt_pat = dcm.PerFrameFunctionalGroupsSequence[
@@ -349,17 +336,10 @@ class DicomReader():
                 [np.array(pos)[None, :] for pos in img_pos], axis=0)
 
             pixel_array = dcm.pixel_array
-            if self.vendor == 'GE':
-                scan_info = self.read_ge_dicom_info(dcm)
-            elif self.vendor == 'SiemensMosaic':
-                scan_info = self.read_mosaic_dicom_info(dcm)
-            elif self.vendor == 'SiemensXA30':
-                scan_info = self.read_siemensXA30_dicom_info(dcm)
+            scan_info = self._read_scan_info(dcm)
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errstr = traceback.format_exc()
             self.logger.error(errstr)
             return None
 
@@ -367,8 +347,9 @@ class DicomReader():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def load_dicom_data_multislice(self, dcms):
+        """Read a volume from single-slice DICOM datasets."""
         try:
-            # Check imae position fields
+            # Check the image position fields
             assert 'ImageOrientationPatient' in dcms[0]
             assert 'PixelSpacing' in dcms[0]
             assert 'ImagePositionPatient' in dcms[0]
@@ -379,7 +360,7 @@ class DicomReader():
             # Get ImageOrientationPatient (should be the same for all slices)
             # img_ornt_pat: direction cosines of the first row and the first
             # column with respect to the patient.
-            # These Attributes shall be provide as a pair.
+            # These attributes are provided as a pair.
             # Row value for the x, y, and z axes respectively followed by the
             # Column value for the x, y, and z axes respectively.
             img_ornt_pat = dcms[0].ImageOrientationPatient
@@ -397,12 +378,10 @@ class DicomReader():
                 [np.array(pos)[None, :] for pos in img_pos], axis=0)
             pixel_array = np.concatenate(
                 [np.array(arr)[None, :, :] for arr in pixel_array], axis=0)
-            scan_info = self.load_dicom_data_volume(dcms[0])
+            scan_info = self._read_scan_info(dcms[0])
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errstr = ''.join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            errstr = traceback.format_exc()
             self.logger.error(errstr)
             return None
 
@@ -411,158 +390,25 @@ class DicomReader():
 
 # %% __main__ =================================================================
 if __name__ == '__main__':
-    '''Sample files
-    # --- GE MR750 ---
-    # localizer
-    dicom_file = Path('test_data/p234/e235/s2445/i14853692.MRDC.1')
-    dicom_file = Path('test_data/p235/e236/s2452/i14863892.MRDC.1')
-    # corrupted
+    import argparse
 
-    # calibration scans
-    dicom_file = Path('test_data/p235/e236/s2453/i14863900.MRDC.1')
-    dicom_file = Path('test_data/p235/e236/s2454/i14863929.MRDC.1')
+    parser = argparse.ArgumentParser(
+        description='Print the scan information of the DICOM files in a'
+        ' directory, sorted by content time.')
+    parser.add_argument('dicom_dir', help='DICOM file directory')
+    args = parser.parse_args()
 
-    # Functions (epi)
-    dicom_file = Path('test_data/p235/e236/s2455/i14864051.MRDC.1')
-    dicom_file = Path('test_data/p235/e236/s2456/i14871069.MRDC.1')
-
-    # mprage
-    dicom_file = Path('test_data/p235/e236/s2459/i14906665.MRDC.1')
-
-    # DWPROP
-    dicom_file = Path('test_data/p235/e236/s2463/i14907121.MRDC.1')
-
-    # epi2
-    dicom_file = Path('test_data/p235/e236/s2468/i14907274.MRDC.1')
-
-    # ? epi2
-    dicom_file = Path('test_data/p235/e236/s2469/i14907319.MRDC.1')
-    dicom_file = Path('test_data/p235/e236/s2470/i14907353.MRDC.1')
-
-    # ABCD
-    # DTI : muxepi2
-    dicom_file = Path('test_data/p238/e239/s2489/i15000472.MRDC.1')
-
-    # muxepi2
-    dicom_file = Path('test_data/p238/e239/s2486/i14953445.MRDC.1')
-
-    # fieldmap
-    dicom_file = Path('test_data/p238/e239/s2491/i15009108.MRDC.1')
-
-    # ABCD_Scan_Session Fieldmap
-    dicom_file = Path('test_data/p246/e247/s2574/i15644607.MRDC.1')
-    dicom_file1 = Path('test_data/p246/e247/s2574/i15644842.MRDC.240')
-
-    dicom_file = Path('test_data/p246/e247/s2575/i15645743.MRDC.1')
-    dicom_file1 = Path('test_data/p246/e247/s2575/i15671992.MRDC.27180')
-
-    dicom_file = Path('test_data/p239/e240/s2518/i15323002.MRDC.1')
-
-    # QA
-    dicom_file = Path('test_data/p296/e297/s3091/i18948214.MRDC.1')
-
-    # --- Siemense XA30 ---
-    # UCSD (UC Riverside)
-    # fcMRI
-    dicom_file = Path(
-        'test_data/XA30/URBANE_Axial_fcMRI/'
-        'URBANE_Pilot_01.MR.URBANE_Final'
-        '.3.1.2022.09.20.14.01.15.768.22081276.dcm')
-
-    # DTI
-    dicom_file = Path(
-        'test_data/XA30/URBANE_Axial_DTI_AP/'
-        'URBANE_Pilot_01.MR.URBANE_Final'
-        '.7.1.2022.09.20.14.02.37.881.46058563.dcm')
-
-    # T1W
-    dicom_file = Path(
-        'test_data/XA30/URBANE_T1W_3DMPRAGE/'
-        'URBANE_Pilot_01.MR.URBANE_Final'
-        '.2001.1.2022.09.20.13.58.17.841.11445763.dcm')
-
-    # PCASL
-    dicom_file = Path(
-        'test_data/XA30/URBANE_PCASL/'
-        'URBANE_Pilot_01.MR.URBANE_Final'
-        '.13.1.2022.09.20.14.04.12.453.16837788.dcm')
-
-    # Mclean
-    # fMRI
-    dicom_file = Path(
-        'test_data/XA30-anon-hierarchical/Subject/Study/'
-        'S011/IM-0011-0001.dcm')
-    dicom_files = [dicom_file]
-    nii_file = Path(
-        'test_data/XA30-anon-hierarchical/Subject/Study/'
-        'S011/S011_lfms-mb_720ms_20220427121855_23.nii')
-    img = nib.load(nii_file)
-    affine = img.affine
-    img_data = img.get_fdata()[:, :, :, 0]
-
-    img = nib.load('23_lfms-mb_720ms.nii.gz')
-    affine = img.affine
-    img_data = img.get_fdata()
-
-    # MPRAGE
-    dicom_dir = Path(
-        'test_data/XA30-anon-hierarchical/Subject/Study/S013')
-    dicom_files = np.array(list(dicom_dir.glob('IM-0013-*.dcm')))
-    fidx = [int(fname.stem.split('-')[-1]) for fname in dicom_files]
-    dicom_files = dicom_files[np.argsort(fidx).ravel()]
-    dicom_file = dicom_files[0]
-
-    '''
-    # MR1 Prisma
-    from tqdm import tqdm
     dcmReader = DicomReader()
-    dicom_dir = Path(
-        'test_data/SCANNER_ser' +
-        '/ba3beee3a4aaa60032bfa6c4314ca5fde0112dff_MP0_2023_20231018/Ser_08')
-    dicom_files = np.array(list(dicom_dir.glob('*')))
-    content_times = {}
-    derived = {}
-    for ii, ff in tqdm(enumerate(dicom_files), total=len(dicom_files),
-                       desc=f'read files in {dicom_dir.name}'):
+    scan_infos = []
+    for ff in sorted(Path(args.dicom_dir).glob('*')):
+        if not ff.is_file():
+            continue
         scan_info = dcmReader.read_dicom_info(ff, timeout=0.1)
         if scan_info is None:
-            # Not a DICOM file
-            continue
-        at = datetime.strptime(scan_info['ContentTime'], '%H%M%S.%f')
-        content_times[ii] = at
-        derived[ii] = 'DERIVED' in scan_info['ImageType']
-    # sort with content_time
-    t_order = np.argsort(list(content_times.values())).ravel()
-    sidx = np.array(list(content_times.keys()))[list(t_order)]
-    dicom_files = np.array(dicom_files)[sidx]
-    derived = [derived[idx] for idx in sidx]
-    acq_time = np.array([content_times[idx] for idx in sidx])
+            continue  # Not a DICOM file
+        scan_infos.append((scan_info.get('ContentTime', ''), ff.name,
+                           scan_info))
 
-    dcmReader = DicomReader()
-    dcm_f = Path('/path/to/export')
-    dcm = dcmReader.safe_read_dicom_file(dcm_f)
-    # 20230902140053.387500
-    # 'Wed Oct 18 03:10:45 2023'
-    # 1697616645.6933825
-
-    dicom_files_orig = dicom_files[np.logical_not(derived)]
-    np.diff(acq_time[np.logical_not(derived)])
-
-    dcm0 = dcmReader.safe_read_dicom_file(dicom_files[2])
-    dcm1 = dcmReader.safe_read_dicom_file(dicom_files[0])
-    dcm2 = dcmReader.safe_read_dicom_file(dicom_files[1])
-    dcm3 = dcmReader.safe_read_dicom_file(dicom_files[3])
-
-    dcm_l1 = dcmReader.safe_read_dicom_file(dicom_files_orig[-1])
-    dcm_l2 = dcmReader.safe_read_dicom_file(dicom_files_orig[-2])
-    with open('dcm_header_l1.txt', 'w') as fd:
-        print(dcm_l1, file=fd)
-
-    with open('dcm_header_l2.txt', 'w') as fd:
-        print(dcm_l2, file=fd)
-
-    # dicom_file = Path(
-    #     'test_data/XA30-anon-hierarchical/Subject/Study/'
-    #     'S011/IM-0011-0001.dcm')
-    # dicom_files = [dicom_file]
-    # nii_img = dcmReader.dcm2nii(dicom_files)
+    for content_time, fname, scan_info in sorted(scan_infos):
+        print(f"{fname}: Series {scan_info['SeriesNumber']},"
+              f" ContentTime {content_time}")

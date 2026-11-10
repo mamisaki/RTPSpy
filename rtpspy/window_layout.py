@@ -6,7 +6,7 @@ Default window layout of the RT-MRI GUI, fitted to the primary screen.
 The windows are placed in the usable area of the primary monitor (the
 monitor area minus panels such as the GNOME top bar). The browser and
 motion windows are stacked at the left edge, the physio window is next to
-the browser, and the log window (main) is small at the bottom right.
+the browser, and the small log window (main) is at the bottom right.
 
     +-------------+-----------+----------------+
     | MRI browser |           |                |

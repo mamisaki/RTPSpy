@@ -3,9 +3,9 @@
 """
 Alarm sound of the RT-MRI GUI (motion alarm, missing TTL alarm).
 
-print("\\a") makes no sound when stdout is not a terminal (e.g., run by the
-launcher or the systemd service), so a WAV file made here is played with a
-sound player found on the system. No sound file of the system is needed.
+print("\\a") makes no sound when stdout is not a terminal (e.g., when run by
+the launcher or the systemd service). Instead, a WAV file made here is played
+with a sound player found on the system, so no system sound file is needed.
 
 mmisaki@laureateinstitute.org
 """
@@ -61,8 +61,9 @@ def find_alarm_player():
 
 # %% AlarmSound ===============================================================
 class AlarmSound:
-    """Play the alarm sound without blocking. A sound still playing is not
-    overlapped. Without a sound player, the Tk bell of tk_widget is used."""
+    """Play the alarm sound without blocking. A new sound is not started
+    while the previous one is playing. Without a sound player, the Tk bell
+    of tk_widget is used."""
 
     def __init__(self):
         self._logger = logging.getLogger("AlarmSound")
@@ -77,9 +78,12 @@ class AlarmSound:
 
     @property
     def cmd(self):
+        """Command to play the alarm sound, or None."""
         return self._cmd
 
     def play(self, tk_widget=None):
+        """Play the alarm sound, or ring the bell of tk_widget if there is
+        no sound player or the player fails."""
         if self._cmd is not None:
             if self._proc is not None and self._proc.poll() is None:
                 return

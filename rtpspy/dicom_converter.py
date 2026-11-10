@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Convert DICOM files to NIfTI (and AFNI BRIK) with dcm2niix.
+
 mmisaki@libr.net
 """
 
@@ -22,19 +24,19 @@ import nibabel as nib
 import pydicom
 import tempfile
 
-if '__file__' not in locals():
-    __file__ = 'this.py'
 
-
-# %% DicomConverter =========================================================
+# %% DicomConverter ===========================================================
 class DicomConverter():
+    """List DICOM files by series and convert each series to NIfTI."""
+
     def __init__(self, study_prefix='P', cmd_pipe=None):
         self._logger = logging.getLogger('DicomConverter')
         self.study_prefix = study_prefix
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
-        # Remove characters that are not safe for paths
+        # Replace each run of characters that are not safe for paths with
+        # one underscore
         cleaned_string = re.sub(r'[\\/:"*?<>|]+', '_', input_string)
 
         # Replace spaces and other non-alphanumeric characters with underscores
@@ -55,6 +57,13 @@ class DicomConverter():
         rt_mrib_com=None,
         overwrite=False
     ):
+        """Convert the series with the lowest series number in dicom_dir
+        (used at the end of a real-time scan).
+
+        The files in dicom_dir are copied to a temporary directory and to
+        'out_dir / dicom'. The source files of the series that were copied
+        are then removed, and the series is converted to out_dir.
+        """
         if not dicom_dir.is_dir():
             return
 
@@ -62,18 +71,6 @@ class DicomConverter():
             dicom_dst = out_dir / 'dicom'
             if not dicom_dst.is_dir():
                 os.makedirs(dicom_dst)
-
-            # Copy DICOM files to dicom_dst
-            self._logger.debug(
-                f"Copy DICOM files from {dicom_dir} to {dicom_dst}"
-            )
-            cmd = f"rsync -auz {dicom_dir}/ {dicom_dst}/"
-            try:
-                subprocess.check_call(shlex.split(cmd))
-            except Exception as e:
-                errstr = str(e) + "\n" + traceback.format_exc()
-                sys.stderr.write(errstr)
-                return
 
             # Copy DICOM files to tmp for processing
             with tempfile.TemporaryDirectory(
@@ -83,6 +80,21 @@ class DicomConverter():
                     f"Copy DICOM files from {dicom_dir} to {tmp_dicom_dir}"
                 )
                 cmd = f"rsync -auz {dicom_dir}/ {tmp_dicom_dir}/"
+                try:
+                    subprocess.check_call(shlex.split(cmd))
+                except Exception as e:
+                    errstr = str(e) + "\n" + traceback.format_exc()
+                    sys.stderr.write(errstr)
+                    return
+
+                # Copy the same files from tmp to dicom_dst, so that every
+                # file processed (and removed from the source below) is kept
+                # in dicom_dst. Files arriving at dicom_dir after the copy
+                # above stay in the source.
+                self._logger.debug(
+                    f"Copy DICOM files from {tmp_dicom_dir} to {dicom_dst}"
+                )
+                cmd = f"rsync -au {tmp_dicom_dir}/ {dicom_dst}/"
                 try:
                     subprocess.check_call(shlex.split(cmd))
                 except Exception as e:
@@ -102,7 +114,8 @@ class DicomConverter():
                 rm_files = dcm_info[dcm_info['SeriesNumber'] == ser_nr].index
                 for ff in rm_files:
                     src_f = dicom_dir / Path(ff).name
-                    if src_f.is_file():
+                    # Remove only the files kept in dicom_dst
+                    if src_f.is_file() and (dicom_dst / src_f.name).is_file():
                         src_f.unlink()
 
                 # Process files
@@ -122,9 +135,20 @@ class DicomConverter():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _list_dicom_files(self, dicom_dir, out_dir, timeout=3, rt_mode=False):
+        """List the DICOM files in dicom_dir with their header information.
+
+        Unless rt_mode is True, the list is saved in
+        'out_dir / dicom / DICOM_INFO.csv' and reused at the next call, so
+        that only new files are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            File information indexed by the filename.
+        """
         self._logger.info(f'List DICOM files in {dicom_dir} ...')
 
-        # -- Initialize file list ---
+        # --- Initialize the file list ---
         dicom_dir = Path(dicom_dir)
 
         dcm_info_f = Path(out_dir) / 'dicom' / 'DICOM_INFO.csv'
@@ -143,7 +167,7 @@ class DicomConverter():
                          'NumberOfTemporalPositions'))
             dcm_info.index.name = 'Filename'
 
-        # --- Updating the DICOM File List ---
+        # --- Update the DICOM file list ---
         all_files = list(dicom_dir.glob('*.dcm'))
 
         # List new files
@@ -158,51 +182,74 @@ class DicomConverter():
                 dcm = pydicom.dcmread(ff)
             except Exception:
                 # Not a DICOM file
-                dcm_info.loc[ff, 'SeriesNumber'] = pd.NA
+                self._logger.debug(f"{ff} is not a DICOM file.")
                 continue
 
-            # Check if this is an image DICOM with complete pixel data
+            # For an image DICOM, wait until the pixel data is complete
+            is_image = 'PixelData' in dcm
             st = time.time()
             read_fail = False
-            while (time.time() - st) < timeout:
+            while is_image:
                 try:
-                    is_image = hasattr(dcm, 'pixel_array')
-                    if is_image:
-                        # Verify pixel data is complete by accessing it
-                        _ = dcm.pixel_array
-                        break
-                except ValueError:
+                    # Verify pixel data is complete by accessing it
+                    _ = dcm.pixel_array
+                    read_fail = False
+                    break
+                except Exception:
                     # File is incomplete or corrupted
                     read_fail = True
-                    continue
 
-                except Exception:
-                    is_image = False
+                if (time.time() - st) > timeout:
                     break
+
+                # Re-read the file
+                time.sleep(0.1)
+                try:
+                    dcm = pydicom.dcmread(ff)
+                except Exception:
+                    pass
+
             if read_fail:
+                self._logger.warning(f"Failed to read pixel data in {ff}")
                 continue
 
             # Append file info
-            addrow = pd.Series()
-            addrow['SOPInstanceUID'] = str(dcm.SOPInstanceUID)
-            patinet = str(dcm.PatientName).split('^')
-            if re.match(r'\w\w\d\d\d', patinet[0]):  # LIBR ID
-                addrow['Patient'] = patinet[0]
-            else:
-                addrow['Patient'] = '_'.join(patinet)
-            addrow['SeriesNumber'] = int(dcm.SeriesNumber)
-            addrow['SeriesDescription'] = dcm.SeriesDescription
-            addrow['AcquisitionDateTime'] = float(dcm.AcquisitionDateTime)
-            addrow['InstanceNumber'] = int(dcm.InstanceNumber)
-            addrow['IsImage'] = is_image
-            if hasattr(dcm, 'NumberOfTemporalPositions'):
-                nt = int(dcm.NumberOfTemporalPositions)
-            else:
-                nt = 0
-            addrow['NumberOfTemporalPositions'] = nt
+            try:
+                addrow = pd.Series()
+                addrow['SOPInstanceUID'] = str(dcm.SOPInstanceUID)
+                patient = str(dcm.PatientName).split('^')
+                if re.match(r'\w\w\d\d\d', patient[0]):
+                    # Subject ID format of two letters and three digits
+                    addrow['Patient'] = patient[0]
+                else:
+                    addrow['Patient'] = '_'.join(patient)
+                addrow['SeriesNumber'] = int(dcm.SeriesNumber)
+                addrow['SeriesDescription'] = dcm.SeriesDescription
+                if 'AcquisitionDateTime' in dcm:
+                    acq_dt = dcm.AcquisitionDateTime
+                else:
+                    acq_dt = dcm.get('ContentDate', '') + \
+                        dcm.get('ContentTime', '')
+                try:
+                    addrow['AcquisitionDateTime'] = float(acq_dt)
+                except (TypeError, ValueError):
+                    addrow['AcquisitionDateTime'] = np.nan
+                addrow['InstanceNumber'] = int(dcm.InstanceNumber)
+                addrow['IsImage'] = is_image
+                if hasattr(dcm, 'NumberOfTemporalPositions'):
+                    nt = int(dcm.NumberOfTemporalPositions)
+                else:
+                    nt = 0
+                addrow['NumberOfTemporalPositions'] = nt
+            except Exception as e:
+                self._logger.warning(f"Failed to read DICOM header {ff}: {e}")
+                continue
             dcm_info.loc[ff, :] = addrow
 
         if len(new_flist):
+            # Rows without SeriesNumber (e.g., non-DICOM files in an old
+            # list) cannot be converted to int.
+            dcm_info = dcm_info[dcm_info.SeriesNumber.notna()]
             dcm_info.sort_values(
                 ['SeriesNumber', 'IsImage', 'AcquisitionDateTime'],
                 inplace=True)
@@ -228,12 +275,31 @@ class DicomConverter():
         rt_mrib_com=None,
         overwrite=False
     ):
+        """Convert each series in dcm_info to NIfTI in out_dir with dcm2niix.
+
+        Parameters
+        ----------
+        dcm_info : pandas.DataFrame
+            File list made by _list_dicom_files.
+        dicom_dir : Path
+            DICOM directory (used only for the log message).
+        out_dir : Path
+            Output directory.
+        ser_nrs : list of int, optional
+            Series numbers to convert. If None, all series are converted.
+        make_brik : bool, optional
+            Also make AFNI BRIK files.
+        rt_mrib_com : RPCSocketCom, optional
+            If given, the NIfTI file is opened on the MRI browser.
+        overwrite : bool, optional
+            Overwrite existing files.
+        """
         self._logger.debug(f'Process DICOM files in {dicom_dir} ...')
 
         dicom_dir = Path(dicom_dir)
         out_dir = Path(out_dir)
 
-        # Process for each series
+        # Process each series
         created_nii = {}
 
         if ser_nrs is None:
@@ -256,14 +322,16 @@ class DicomConverter():
             out_fname = self._make_path_safe(out_fname)
 
             nii_f = out_dir / (out_fname + '.nii.gz')
-            # Find modified filename
+            # dcm2niix may add a suffix to the filename (e.g., '_e2').
             nii_fs = list(out_dir.glob(out_fname + '*.nii.gz'))
             if len(nii_fs) == 1:
                 nii_f = nii_fs[0]
 
             if nii_f.is_file() and (pd.isnull(serDesc) or
                                     'localizer' not in serDesc):
-                # Check the integrity of existing nii_f
+                # Check the integrity of the existing nii_f: the number of
+                # volumes (4D) or slices (3D, one slice per file) must match
+                # the number of files. Remove it to convert again if not.
                 nii = nib.load(nii_f)
                 if len(nii.shape) < 4:
                     if len(ser_df) != 1 and len(ser_df) != nii.shape[-1]:
@@ -302,12 +370,8 @@ class DicomConverter():
                         logstr = stdout.decode().rstrip()
                         self._logger.info(logstr)
                         if proc.returncode != 0:
-                            # Error
                             errstr = stderr.decode().rstrip()
                             self._logger.error(errstr)
-
-                    except subprocess.CalledProcessError as e:
-                        self._logger.error(str(e))
 
                     except Exception as e:
                         errstr = str(e) + "\n" + traceback.format_exc()
@@ -328,8 +392,8 @@ class DicomConverter():
             if not make_brik:
                 continue
 
-            # -- Convert NIfTI into BRIK ----------------------------------
-            # find the NIfTI file with a modified name
+            # -- Convert NIfTI into BRIK -------------------------------------
+            # Include the files with a suffix added by dcm2niix
             nii_fs = list(out_dir.glob(out_fname + '*.nii.gz'))
             for nii_f in nii_fs:
                 out_prefix = nii_f.stem.replace('.nii', '')
@@ -348,9 +412,6 @@ class DicomConverter():
                             self._logger.info(logstr + errstr)
                         else:
                             self._logger.error(logstr + errstr)
-
-                    except subprocess.CalledProcessError as e:
-                        self._logger.error(str(e))
 
                     except Exception as e:
                         errstr = str(e) + "\n" + traceback.format_exc()

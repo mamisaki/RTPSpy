@@ -11,7 +11,7 @@ LA-NF application with RtpApp
 from pathlib import Path
 from datetime import timedelta
 import time
-import sys
+import traceback
 
 import numpy as np
 import nibabel as nib
@@ -20,11 +20,11 @@ from PyQt5 import QtWidgets, QtCore
 from rtpspy.rtp_app import RtpApp
 
 
-# %% LANF class =============================================================
+# %% LANF class ===============================================================
 class LANF(RtpApp):
     """
     Left amygdala (LA) ROI signal neurofeedback.
-    The signal is sent to an external neurofedback presentation application.
+    The signal is sent to an external neurofeedback presentation application.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -89,7 +89,8 @@ class LANF(RtpApp):
 
         state = self.recv_extApp(timeout=5)
         if state is None:
-            self.errmsg('No response to GET_STATE from the external app.')
+            self._ext_app_error(
+                'No response to GET_STATE from the external app.')
             return -1
 
         if state.decode() != 'cmd_loop':
@@ -100,7 +101,8 @@ class LANF(RtpApp):
 
             ret = self.recv_extApp(timeout=5)
             if ret is None:
-                self.errmsg('No response to QUIT from the external app.')
+                self._ext_app_error(
+                    'No response to END from the external app.')
                 return -1
 
         # Send session log directory
@@ -135,10 +137,10 @@ class LANF(RtpApp):
         # Check response from extApp
         recv = self.recv_extApp(timeout=3)
         if recv is None:
-            self.errmsg('No response from the external app.')
+            self._ext_app_error('No response from the external app.')
             return -1
         elif recv.decode() != 'PREPED;':
-            self.errmsg(f'External app returned {recv.decode()}')
+            self._ext_app_error(f'External app returned {recv.decode()}')
             return -1
 
         self.running_session = session
@@ -171,14 +173,15 @@ class LANF(RtpApp):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
-        super().ready_to_run()
+        proc_chain = super().ready_to_run()
 
         # Send READY message to extApp
         if self.send_extApp('READY;'.encode()):
             recv = self.recv_extApp(timeout=3)
             if recv is not None:
-                if self._verb:
-                    self.logmsg(f"Recv {recv.decode()}")
+                self._logger.info(f"Recv {recv.decode()}")
+
+        return proc_chain
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None):
@@ -188,13 +191,11 @@ class LANF(RtpApp):
         """
 
         try:
-            # Increment the number of received volume
-            self._vol_num += 1  # 1- base number of volumes recieved by this
+            self._vol_num += 1  # 1-based number of the received volumes
             if vol_idx is None:
                 vol_idx = self._vol_num - 1  # 0-base index
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
                 return
 
             if self._proc_start_idx < 0:
@@ -204,41 +205,36 @@ class LANF(RtpApp):
 
             # --- Initialize --------------------------------------------------
             if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
-                # Load ROI mask
-                self.ROI_mask = np.asanarry(nib.load(self.ROI_orig).dataobj)
+                self.ROI_mask = np.asanyarray(nib.load(self.ROI_orig).dataobj)
 
-            # --- Run the procress --------------------------------------------
-            if not self.sham:
-                roi_id = 1
-            else:
-                roi_id = 2
+            # --- Run the process ---------------------------------------------
+            # Mask value 1 is the target ROI; 2 is the sham feedback ROI.
+            roi_id = 2 if self.sham else 1
 
-            # Get mean signal in the ROI
+            # Mean signal in the ROI
             roimask = (self.ROI_mask == roi_id) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
 
             if self.extApp_sock is None:
-                # Error: Socket is not opened.
-                self.errmsg('No socket to an external app.', no_pop=True)
+                self._logger.error('No socket to an external app.')
 
             else:
-                # Send data to the external application via socket,
-                # self.extApp_sock
+                # Send the signal to the external application. The message
+                # format is
+                # "NF {time},{volume_index},{signal_value}(,{signal_value}...)"
                 try:
-                    scan_onset = self.rtp_objs['EXTSIG'].scan_onset
-                    val_str = f"{time.time()-scan_onset:.4f},"
+                    val_str = f"{time.time()-self.scan_onset:.4f},"
                     val_str += f"{vol_idx},{mean_sig:.6f}"
                     msg = f"NF {val_str};"
 
                     self.send_extApp(msg.encode(), no_err_pop=True)
-                    if self._verb:
-                        self.logmsg(f"Sent '{msg}' to an external app")
+                    self._logger.info(f"Sent '{msg}' to an external app")
 
                 except Exception as e:
-                    self.errmsg(str(e), no_pop=True)
+                    self._logger.error(str(e))
 
-            # --- Post procress -----------------------------------------------
-            # Record process time
+            # --- Post process ------------------------------------------------
+            # Record the processing time
             tstamp = time.time()
             self._proc_time.append(tstamp)
             if pre_proc_time is not None:
@@ -246,28 +242,22 @@ class LANF(RtpApp):
                 if self.save_delay:
                     self.proc_delay.append(proc_delay)
 
-            # log message
-            if self._verb:
-                if fmri_img.get_filename():
-                    fname = Path(fmri_img.get_filename()).name
-                else:
-                    fname = "unknown.nii.gz"
-                msg = f"#{vol_idx+1};ROI signal extraction;{fname}"
-                msg += f";tstamp={tstamp}"
-                if pre_proc_time is not None:
-                    msg += f";took {proc_delay:.4f}s"
-                self.logmsg(msg)
+            if fmri_img.get_filename():
+                fname = Path(fmri_img.get_filename()).name
+            else:
+                fname = "unknown.nii.gz"
+            msg = f"#{vol_idx+1};ROI signal extraction;{fname}"
+            msg += f";tstamp={tstamp}"
+            if pre_proc_time is not None:
+                msg += f";took {proc_delay:.4f}s"
+            self._logger.info(msg)
 
-            # Update signal plot
+            # Data for the signal plot
             self._plt_xi.append(vol_idx+1)
             self._roi_sig[0].append(mean_sig)
 
         except Exception as e:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = '{}, {}:{}'.format(
-                    exc_type, exc_tb.tb_frame.f_code.co_filename,
-                    exc_tb.tb_lineno)
-            self.errmsg(str(e) + '\n' + errmsg, no_pop=True)
+            self._logger.error(str(e) + '\n' + traceback.format_exc())
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_proc(self):
@@ -279,7 +269,13 @@ class LANF(RtpApp):
             self.ui_sessSetup_grpBx.setEnabled(True)
 
     # -------------------------------------------------------------------------
-    # Custom utility mrthods
+    # Custom utility methods
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ext_app_error(self, errmsg):
+        """Log an error and show it in a popup."""
+        self._logger.error(errmsg)
+        self.err_popup(errmsg)
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def update_total_dur(self):
         existAttr = [hasattr(self, attr) for attr in
@@ -309,8 +305,8 @@ class LANF(RtpApp):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
         """
-        When reset_fn is None, set_param is considered called from
-        load_parameters function.
+        Set a task parameter and update its GUI widget.
+        reset_fn is None when called from load_parameters().
         """
 
         super().set_param(attr, val, reset_fn, echo)
@@ -318,7 +314,9 @@ class LANF(RtpApp):
         self._logger.debug(f"set_param: {attr} = {val}")
 
         if attr == 'ROI_orig':
-            if Path(self.ROI_orig).is_file():
+            if not hasattr(self, 'ui_NFROI_lnEd'):
+                pass  # The UI is not made yet
+            elif Path(self.ROI_orig).is_file():
                 self.ui_NFROI_lnEd.setText(str(self.ROI_orig))
             else:
                 self.ui_NFROI_lnEd.setText("N/A")
@@ -335,7 +333,7 @@ class LANF(RtpApp):
                 getattr(self, f'ui_{attr}_spBx').setValue(val)
 
         else:
-            # Ignore others: Those should be handled insuper().set_param.
+            # Others are handled in super().set_param().
             return
 
         setattr(self, attr, val)
@@ -549,14 +547,14 @@ class LANF(RtpApp):
         taskRun_vLayout.addLayout(task_row_hLayout)
 
         # Baseline
-        self.ui_PracticeRun_btn = QtWidgets.QPushButton('Baseline')
-        self.ui_PracticeRun_btn.setStyleSheet(
+        self.ui_BaselineRun_btn = QtWidgets.QPushButton('Baseline')
+        self.ui_BaselineRun_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_PracticeRun_btn.clicked.connect(
+        self.ui_BaselineRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Baseline', no_RTP=True))
-        task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
+        task_row_hLayout.addWidget(self.ui_BaselineRun_btn)
 
-        # Paractice
+        # Practice
         self.ui_PracticeRun_btn = QtWidgets.QPushButton('Practice')
         self.ui_PracticeRun_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
@@ -565,36 +563,36 @@ class LANF(RtpApp):
         task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
 
         # NF1
-        self.ui_PracticeRun_btn = QtWidgets.QPushButton('NF1')
-        self.ui_PracticeRun_btn.setStyleSheet(
+        self.ui_NF1Run_btn = QtWidgets.QPushButton('NF1')
+        self.ui_NF1Run_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_PracticeRun_btn.clicked.connect(
+        self.ui_NF1Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF1', no_RTP=False))
-        task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
+        task_row_hLayout.addWidget(self.ui_NF1Run_btn)
 
         # NF2
-        self.ui_PracticeRun_btn = QtWidgets.QPushButton('NF2')
-        self.ui_PracticeRun_btn.setStyleSheet(
+        self.ui_NF2Run_btn = QtWidgets.QPushButton('NF2')
+        self.ui_NF2Run_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_PracticeRun_btn.clicked.connect(
+        self.ui_NF2Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF2', no_RTP=False))
-        task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
+        task_row_hLayout.addWidget(self.ui_NF2Run_btn)
 
         # NF3
-        self.ui_PracticeRun_btn = QtWidgets.QPushButton('NF3')
-        self.ui_PracticeRun_btn.setStyleSheet(
+        self.ui_NF3Run_btn = QtWidgets.QPushButton('NF3')
+        self.ui_NF3Run_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_PracticeRun_btn.clicked.connect(
+        self.ui_NF3Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF3', no_RTP=False))
-        task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
+        task_row_hLayout.addWidget(self.ui_NF3Run_btn)
 
         # Transfer
-        self.ui_PracticeRun_btn = QtWidgets.QPushButton('Transfer')
-        self.ui_PracticeRun_btn.setStyleSheet(
+        self.ui_TransferRun_btn = QtWidgets.QPushButton('Transfer')
+        self.ui_TransferRun_btn.setStyleSheet(
             "background-color: rgb(151,217,235);")
-        self.ui_PracticeRun_btn.clicked.connect(
+        self.ui_TransferRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Transfer', no_RTP=True))
-        task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
+        task_row_hLayout.addWidget(self.ui_TransferRun_btn)
 
         # --- Sham tab ----------------------------------------------------
         shamTab = QtWidgets.QWidget()

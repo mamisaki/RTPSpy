@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RTP common utility classes
+Common base class and utilities for the RTP modules
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -36,33 +36,42 @@ from matplotlib.figure import Figure
 
 
 # %% RTP base class ===========================================================
+# Default maximum scan length (number of volumes) used to pre-allocate the
+# buffers (e.g., 800 volumes = 20 min with TR 1.5 s). Set max_scan_length to
+# the realistic length of the scan.
+DEFAULT_MAX_SCAN_LENGTH = 800
+
+
 class RTP(object):
-    """ Base class for real-time processing modules"""
+    """Base class for the real-time processing modules"""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ignore_init=0, next_proc=None, save_proc=False,
                  online_saving=False, save_delay=False, work_dir='',
-                 max_scan_length=300, main_win=None, **kwargs):
+                 max_scan_length=None, main_win=None, **kwargs):
 
-        # Set arguments
         self.ignore_init = ignore_init
         self.next_proc = next_proc
         self.save_proc = save_proc
         self.online_saving = online_saving
         self.save_delay = save_delay
         self.work_dir = work_dir
+        if max_scan_length is None:
+            max_scan_length = DEFAULT_MAX_SCAN_LENGTH
         self.max_scan_length = max_scan_length
         self.main_win = main_win
 
-        # Initialize parameters
-        self._vol_num = 0  # 1-base, Number of processed (received) volumes
-        self._proc_start_idx = -1  # 0-base index
+        # Run state
+        self._vol_num = 0  # Number of received volumes
+        self._proc_start_idx = -1  # 0-based index of the first processed vol
         self._proc_time = []
         self.proc_delay = []
 
         self.saved_files = []
-        self.saved_filename = None  # filename svaing canatenated data
+        self._temp_saved_files = []  # files written by save_temp
+        self.saved_filename = None  # File of the concatenated saved data
         self.saved_data = None
+        self._saved_last_idx = -1  # 0-based index of the last saved volume
         self.enabled = True
 
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -93,11 +102,15 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         """
-        Ready the process.
-        If self.next_proc is not None, self.next_proc.ready_proc() is called.
-        Return all the process is ready (True) or not (False).
+        Prepare the process. If self.next_proc is set, its ready_proc() is
+        also called.
 
-        This should be overridden.
+        Subclasses should override this.
+
+        Returns
+        -------
+        bool
+            True if this and all the following processes are ready.
         """
 
         self._vol_num = 0
@@ -105,7 +118,9 @@ class RTP(object):
         self._proc_time = []
         self.proc_delay = []
         self.saved_files = []
+        self._temp_saved_files = []
         self.saved_data = None
+        self._saved_last_idx = -1
 
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
@@ -115,20 +130,18 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0):
         """
-        Do the process.
-        If self.next_proc is not None, self.next_proc.do_proc() is called.
+        Process a volume. If self.next_proc is set, its do_proc() is called.
 
-        This should be overridden.
+        Subclasses should override this.
 
         Parameters
         ----------
         fmri_img : nibabel image object
-            nibabel image object.
+            Volume to process.
         vol_idx : int, optional
-            VOlume index. The default is None.
+            0-based index of the volume. The default is None.
         pre_proc_time : float, optional
-            Processing time until the previous modelue. The default is 0.
-
+            Time stamp when the previous module finished. The default is 0.
         """
 
         if self.next_proc is not None:
@@ -138,36 +151,48 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """
-        End process and reset process parameters.
+        End the process, save the kept data, and reset the run state.
+        If self.next_proc is set, its end_reset() is also called.
 
-        If self.next_proc is not None, self.next_proc.end_reset() is called.
-        Return all the process is ready (True) or not (False).
-
+        Returns
+        -------
+        dict
+            Saved files of this and the following processes
+            ({'<class name>:<content>': file}).
         """
 
         out_files = {}
 
-        # Save proc_delay
-        if self.save_delay and len(self.proc_delay) > 0:
-            out_f = self.save_proc_delay()
-            out_files[f"{self.__class__.__name__}:process time"] = out_f
+        try:
+            # Save proc_delay
+            if self.save_delay and len(self.proc_delay) > 0:
+                out_f = self.save_proc_delay()
+                out_files[f"{self.__class__.__name__}:process time"] = out_f
 
-        # concatenate saved volumes
-        if self.saved_data is not None:
-            self.save_processed_data(self.saved_data, self.saved_data_affine,
-                                     saved_files=self.saved_files)
-            out_files[f"{self.__class__.__name__}:processed image"] = \
-                self.saved_filename
+            # Save the kept volumes as a 4D file
+            if self.saved_data is not None:
+                self.save_processed_data(
+                    self.saved_data, self.saved_data_affine,
+                    saved_files=self.saved_files)
+                out_files[f"{self.__class__.__name__}:processed image"] = \
+                    self.saved_filename
+        except Exception:
+            self._logger.error(
+                "Failed to save the processed data:\n"
+                + traceback.format_exc())
+        finally:
+            # Reset running variables even if saving failed, so that the
+            # state does not leak into the next run.
+            self._vol_num = 0
+            self._proc_start_idx = -1
+            self._proc_time = []
+            self.proc_delay = []
+            self.saved_files = []
+            self._temp_saved_files = []
+            self.saved_data = None
+            self._saved_last_idx = -1
 
-        # Reset running variables
-        self._vol_num = 0
-        self._proc_start_idx = -1
-        self._proc_time = []
-        self.proc_delay = []
-        self.saved_files = []
-        self.saved_data = None
-
-        # Reset child process
+        # Reset the following process
         if self.next_proc:
             out_fs = self.next_proc.end_reset()
             if out_fs is not None:
@@ -187,8 +212,8 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
         """
-        Retrun the list of usrer interfaces for setting parameters
-        Each element is placed in QFormLayout.
+        Return the list of user interface rows for setting the parameters.
+        Each element is placed in a QFormLayout.
         """
 
         pass
@@ -196,7 +221,8 @@ class RTP(object):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def select_file_dlg(self, caption, directory, filt, parent=None):
         """
-        If the user presses Cancel, it returns a tuple of empty string.
+        Open a file selection dialog. Returns the (filename, filter) tuple of
+        QFileDialog.getOpenFileName; filename is '' if the user cancels.
         """
         if sys.platform == 'darwin':
             fname = QtWidgets.QFileDialog.getOpenFileName(
@@ -209,67 +235,71 @@ class RTP(object):
                 options=options
             )
 
-        # dialog = QtWidgets.QFileDialog()
-        # dialog.setWindowTitle(caption)
-        # dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
-        # # dialog.setDirectory(QtCore.QDir(str(directory)))
-        # dialog.setNameFilter(filt)
-        # fname = ('',)
-        # if dialog.exec_():
-        #     fname = dialog.selectedFiles()
-
         return fname
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def keep_processed_image(self, fmri_img, vol_num=None, save_temp=False):
         """
-        The data is kept in self.saved_data. At the end of the scan,
-        self.saved_data will be saved as a 4D file by
-        self.save_processed_data() .
+        Keep the processed volume in self.saved_data. At the end of the scan,
+        self.saved_data is saved as a 4D file by self.save_processed_data().
 
         Parameters
         ----------
         fmri_img : nibabel image
             nibabel image object.
         vol_num : int, optional
-            Saving volume index. If vol_num is None, self._vol_num is used.
-            The default is None.
+            0-based index of the volume. If None, the latest received volume
+            (self._vol_num - 1) is used. The default is None.
         save_temp : bool, optional
-            Save the current data online as a single volume filet for debugging
-            or something. The online save files will be deleted after the
-            concatenated 4D file is saved.
-
+            Also save the volume immediately as a single-volume file (e.g., for
+            debugging). These files are deleted after the 4D file is saved.
         """
 
-        savefname = fmri_img.get_filename()
-        if Path(savefname).is_file():
-            savefname = 'RTP_image'
-            if self._vol_num > 0:
-                savefname += f"_{self._vol_num:04d}"
-            savefname += '.nii.gz'
-
-        savefname = Path(self.work_dir) / 'RTP' / savefname
-        self.saved_files.append(str(savefname))
-
-        if self.saved_data is None:
-            self.saved_data = np.zeros(
-                [*fmri_img.shape, self.max_scan_length], dtype=np.float32)
-
         if vol_num is None:
-            vol_num = self._vol_num
+            vol_num = self._vol_num - 1  # 0-based index of the latest volume
+
+        # Save as work_dir/RTP/<image filename>. The image filename can be
+        # the path of an existing file (e.g., the input file, or the file
+        # written by nib.save with save_temp). The name is changed only not
+        # to overwrite a file that is not an output of this module.
+        savefname = fmri_img.get_filename()
+        if savefname is not None:
+            savefname = Path(self.work_dir) / 'RTP' / Path(savefname).name
+        if savefname is None or (savefname.is_file() and
+                                 str(savefname) not in self._temp_saved_files):
+            savefname = Path(self.work_dir) / 'RTP' / \
+                f"RTP_image_{vol_num + 1:04d}.nii.gz"
+
+        self.saved_files.append(str(savefname))
 
         if save_temp:
             self.save_data(fmri_img, savefname)
+            self._temp_saved_files.append(str(savefname))
 
-        if vol_num == self.saved_data.shape[-1]:
-            # Expand self.saved_data
-            save_data = self.saved_data
-            self.saved_data = np.zeros(
-                [*save_data.shape[:3], vol_num+100], dtype=save_data.dtype)
-            self.saved_data[:, :, :, :save_data.shape[3]] = save_data
+        # The buffer is allocated once for max_scan_length volumes (np.zeros
+        # reserves the memory lazily, so this is fast). It is extended only
+        # when the scan is longer than max_scan_length, which should be set
+        # to the realistic scan length.
+        if self.saved_data is None:
+            n = max(vol_num + 1, self.max_scan_length)
+            self.saved_data = np.zeros([*fmri_img.shape[:3], n],
+                                       dtype=np.float32)
+        elif vol_num >= self.saved_data.shape[-1]:
+            n = max(vol_num + 1, int(self.saved_data.shape[-1] * 1.25) + 100)
+            self._logger.warning(
+                f"The scan is longer than max_scan_length "
+                f"({self.max_scan_length}). The save buffer is extended to "
+                f"{n} volumes. Set max_scan_length to the scan length.")
+            old_data = self.saved_data
+            self.saved_data = np.zeros([*old_data.shape[:3], n],
+                                       dtype=old_data.dtype)
+            self.saved_data[..., :old_data.shape[-1]] = old_data
 
-        self.saved_data[:, :, :, vol_num] = fmri_img.get_fdata()
+        self.saved_data[..., vol_num] = np.asarray(
+            fmri_img.dataobj, dtype=np.float32).reshape(
+                self.saved_data.shape[:3])
         self.saved_data_affine = fmri_img.affine
+        self._saved_last_idx = max(self._saved_last_idx, vol_num)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_data(self, fmri_img, savefname):
@@ -278,8 +308,7 @@ class RTP(object):
             save_dir.mkdir()
 
         nib.save(fmri_img, savefname)
-        msg = f"Save data as {savefname}"
-        self._logger.info(msg)
+        self._logger.info(f"Saved data as {savefname}")
 
         return savefname
 
@@ -289,43 +318,36 @@ class RTP(object):
         if not save_dir.is_dir():
             save_dir.mkdir()
 
-        clname = self.__class__.__name__
         save_fname = os.path.join(
-                save_dir, clname + '_proc_delay_' +
-                time.strftime('%Y%m%d_%H%M%S') + '.txt')
+            save_dir, f"{self.__class__.__name__}_proc_delay_"
+            f"{time.strftime('%Y%m%d_%H%M%S')}.txt")
         np.savetxt(save_fname, self.proc_delay, delimiter='\n')
         return save_fname
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
-        opts = dict()
-        excld_opts = ('main_win',
-                      'saved_files', 'next_proc',
-                      'enabled', 'save_proc',
-                      'save_delay', 'proc_delay', 'done_proc:', 'proc_data',
-                      'saved_data', 'max_scan_length', 'done_proc',
-                      'saved_data_affine', 'saved_filename',
-                      'online_saving')
+        """
+        Return the parameters to save (see save_parameters). Run-time data,
+        private (underscore) attributes, UI objects, and objects that cannot
+        be pickled are excluded.
+        """
+        excluded_opts = ('main_win', 'saved_files', 'next_proc', 'enabled',
+                         'save_proc', 'save_delay', 'proc_delay', 'proc_data',
+                         'saved_data', 'max_scan_length', 'done_proc',
+                         'saved_data_affine', 'saved_filename',
+                         'online_saving')
 
+        opts = dict()
         for var_name, val in self.__dict__.items():
-            if var_name in excld_opts or var_name[0] == '_' or \
-                    'ui_' in var_name or \
-                    isinstance(val, RTP) or \
-                    isinstance(val, serial.Serial) or \
-                    isinstance(val, QtCore.QThread) or \
-                    isinstance(val, threading.Thread):
+            if var_name in excluded_opts or var_name[0] == '_' or \
+                    'ui_' in var_name or _is_unsaved_type(val):
                 continue
 
             if isinstance(val, Path):
-                get_val = str(val)
-            else:
-                get_val = val
+                val = str(val)
 
-            try:
-                pickle.dumps(get_val)
-                opts[var_name] = get_val
-            except Exception:
-                continue
+            if _is_picklable(val):
+                opts[var_name] = val
 
         return opts
 
@@ -333,7 +355,9 @@ class RTP(object):
     def save_processed_data(self, saved_data, affine, saved_files=[],
                             save_prefix=''):
         """
-        Seve processd data
+        Save the kept volumes (from the first processed volume to the last
+        kept one) as a 4D NIfTI file. The filename is made from the common
+        part of saved_files, or from save_prefix if saved_files is empty.
         """
 
         # --- Start message ---
@@ -346,41 +370,40 @@ class RTP(object):
 
         # --- Set filename ---
         if len(saved_files):
-            commstr = re.sub(r'\.nii.*', '', saved_files[0])
+            # Characters common to all the saved filenames (compared at the
+            # same position), without the volume and channel numbers
+            common_str = re.sub(r'\.nii.*', '', saved_files[0])
             for ff in saved_files[1:]:
-                commstr = ''.join(
-                    [c for ii, c in enumerate(str(ff)[:len(commstr)])
-                     if c == commstr[ii]])
+                common_str = ''.join(
+                    [c for ii, c in enumerate(str(ff)[:len(common_str)])
+                     if c == common_str[ii]])
 
-            savefname0 = re.sub(r'_nr_\d*', '', commstr)
+            savefname0 = re.sub(r'_nr_\d*', '', common_str)
             savefname0 = re.sub(r'_ch\d*', '', savefname0)
-            savefname = savefname0
         else:
-            savefname = save_prefix + '.nii.gz'
+            savefname0 = str(Path(self.work_dir) / 'RTP' / save_prefix)
 
-        # Add file number postfix
+        # Add a number suffix not to overwrite an existing file
+        savefname = savefname0
         fn = 1
         while os.path.isfile(savefname + '.nii.gz'):
             savefname = f"{savefname0}_{fn}"
             fn += 1
-        savefname += '.nii.gz'
-        savefname = Path(savefname)
+        savefname = Path(savefname + '.nii.gz')
 
         if not savefname.parent.is_dir():
             os.makedirs(savefname.parent)
 
-        # Preapre data array
-        stidx = max(self._proc_start_idx, 0)
-        img_data = saved_data[:, :, :, stidx:self._vol_num]
-        simg = nib.Nifti1Image(img_data, affine)
-        simg.to_filename(savefname)
+        # --- Save ---
+        start_idx = max(self._proc_start_idx, 0)
+        img_data = saved_data[:, :, :, start_idx:self._saved_last_idx + 1]
+        nib.Nifti1Image(img_data, affine).to_filename(savefname)
 
-        # --- Remove individual saved_files ---
-        if len(saved_files):
-            for ff in saved_files:
-                if Path(ff).is_file():
-                    self._logger.info(f'Delete {ff}')
-                    Path(ff).unlink()
+        # --- Delete the single-volume files saved with save_temp ---
+        for ff in self._temp_saved_files:
+            if Path(ff).is_file():
+                self._logger.info(f'Delete {ff}')
+                Path(ff).unlink()
 
         self.saved_filename = savefname
         self._logger.info(f"Done. Processed data is saved as {savefname}")
@@ -389,9 +412,10 @@ class RTP(object):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_popup(self, errmsg):
+        """Show an error message box (only when the GUI is used)."""
         if self.main_win is not None:
-            # 'parent' cannot be self.main_win since this could be called by
-            # other thread.
+            # The parent is not set to self.main_win since this can be called
+            # from another thread.
             msgBox = QtWidgets.QMessageBox()
             msgBox.setIcon(QtWidgets.QMessageBox.Critical)
             msgBox.setText(str(errmsg))
@@ -399,9 +423,33 @@ class RTP(object):
             msgBox.exec()
 
 
+# %% Helpers for get_params and save_parameters ==============================
+def _is_unsaved_type(val):
+    """True if val is an object that is never saved as a parameter."""
+    return isinstance(val, (RTP, serial.Serial, QtCore.QThread,
+                            threading.Thread))
+
+
+def _is_picklable(val):
+    try:
+        pickle.dumps(val)
+        return True
+    except Exception:
+        return False
+
+
 # %% save_parameters ==========================================================
 def save_parameters(objs, fname='RTPSpy_params.pkl'):
+    """
+    Save the parameters of the RTP modules to a pickle file.
 
+    Parameters
+    ----------
+    objs : dict
+        {module name: RTP object}.
+    fname : str or Path, optional
+        Output file. The default is 'RTPSpy_params.pkl'.
+    """
     props = dict()
     for k in objs.keys():
         if k == 'RETROTS':
@@ -411,30 +459,37 @@ def save_parameters(objs, fname='RTPSpy_params.pkl'):
         if objs[k] is None or not hasattr(objs[k], 'get_params'):
             continue
 
+        # get_params can be overridden, so filter its output again
         for var_name, var_val in objs[k].get_params().items():
             if var_name in ('main_win', '_std_out', '_err_out') or \
-                    'ui_' in var_name or \
-                    isinstance(var_val, RTP) or \
-                    isinstance(var_val, serial.Serial) or \
-                    isinstance(var_val, QtCore.QThread) or \
-                    isinstance(var_val, threading.Thread):
+                    'ui_' in var_name or _is_unsaved_type(var_val):
                 continue
 
-            try:
-                pickle.dumps(var_val)
+            if _is_picklable(var_val):
                 props[k][var_name] = var_val
-            except Exception:
-                continue
 
     with open(fname, 'wb') as fd:
         pickle.dump(props, fd)
 
 
 # %% load_parameters ==========================================================
-def load_parameters(objs, fname='RTPSpy_params.pkl'):
+# Old parameter names saved by earlier versions: {old name: current name}
+RENAMED_PARAMS = {'aseg_oirg': 'aseg_orig'}
 
+
+def load_parameters(objs, fname='RTPSpy_params.pkl'):
+    """
+    Load the parameters saved by save_parameters and set them to the RTP
+    modules with set_param. Only the attributes that the objects have are
+    set.
+
+    Returns
+    -------
+    dict, False, or None
+        The loaded parameters; False if fname is not found; None if loading
+        failed.
+    """
     if not Path(fname).is_file():
-        # sys.stderr.write("Not found parameter file: {}".format(fname))
         return False
 
     try:
@@ -446,23 +501,20 @@ def load_parameters(objs, fname='RTPSpy_params.pkl'):
             if mod in objs:
                 obj = objs[mod]
                 for var_name, val in props[mod].items():
+                    var_name = RENAMED_PARAMS.get(var_name, var_name)
                     if not hasattr(obj, var_name) or var_name is None:
                         continue
                     try:
                         obj.set_param(var_name, val)
                     except TypeError:
-                        errmsg = "Error setting "
-                        errmsg += f"{obj.__class__.__name__}.{var_name}"
-                        errmsg += f" = {str(val)}"
-                        sys.stderr.write(errmsg)
+                        sys.stderr.write(
+                            "Error setting "
+                            f"{obj.__class__.__name__}.{var_name} = {val}")
 
         return props
 
     except Exception:
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        errmsg = ''.join(
-            traceback.format_exception(exc_type, exc_obj, exc_tb))
-        print(errmsg)
+        print(traceback.format_exc())
 
 
 # %% DlgProgressBar ===========================================================
@@ -501,12 +553,6 @@ class DlgProgressBar(QtWidgets.QDialog):
         self.desc_pTxtEd = QtWidgets.QPlainTextEdit(self)
         self.desc_pTxtEd.setReadOnly(True)
         self.desc_pTxtEd.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
-        """
-        fmt = QtGui.QTextBlockFormat()
-        fmt.setLineHeight(0, QtGui.QTextBlockFormat.SingleHeight)
-        self.desc_pTxtEd.textCursor().setBlockFormat(fmt)
-        """
-
         vBoxLayout.addWidget(self.desc_pTxtEd)
 
         # Cancel button
@@ -520,36 +566,29 @@ class DlgProgressBar(QtWidgets.QDialog):
 
         self.st_time = st_time
         self.title = title
+        # Stream object that writes to the console text box (e.g., to
+        # redirect sys.stdout)
         self.ostream = DlgProgressBar.EmittingStream(
             textWritten=self.update_console)
 
         self.show()
 
     def update_console(self, text):
-
-        self.desc_pTxtEd.moveCursor(QtGui.QTextCursor.End)
-        self.desc_pTxtEd.insertPlainText(text)
-
-        sb = self.desc_pTxtEd.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-        self.repaint()
-        QtWidgets.QApplication.instance().processEvents()
+        self.add_desc(text)
 
     def set_value(self, val):
         """
-        Set progress bar value
+        Set the progress bar value (%). If st_time is set, the estimated
+        remaining time is shown in the window title.
         """
         self.progBar.setValue(int(val))
         if self.st_time is not None:
-            ep = self.progBar.value()
-            if ep > 0:
-                et = time.time() - self.st_time
-                last_t = (et/ep) * (100-ep)
-                last_t_str = str(timedelta(seconds=last_t))
-                last_t_str = last_t_str.split('.')[0]
-                tstr = f"{self.title} (ETA {last_t_str})"
-                self.setWindowTitle(tstr)
+            progress = self.progBar.value()
+            if progress > 0:
+                elapsed = time.time() - self.st_time
+                remain = (elapsed/progress) * (100-progress)
+                remain_str = str(timedelta(seconds=remain)).split('.')[0]
+                self.setWindowTitle(f"{self.title} (ETA {remain_str})")
 
         self.repaint()
         QtWidgets.QApplication.instance().processEvents()
@@ -575,6 +614,17 @@ class DlgProgressBar(QtWidgets.QDialog):
         QtWidgets.QApplication.instance().processEvents()
 
     def proc_print_progress(self, proc, bar_inc=None, ETA=None):
+        """
+        Show the output of a subprocess (proc, with stdout=PIPE) in the
+        console text box until it ends. If bar_inc is set, the progress bar
+        is advanced by up to bar_inc over the expected time ETA (seconds).
+        Closing the dialog terminates proc (see closeEvent).
+
+        Returns
+        -------
+        int or None
+            Return code of proc.
+        """
         if bar_inc is not None:
             bar_val0 = self.progBar.value()
 
@@ -636,7 +686,8 @@ class DlgProgressBar(QtWidgets.QDialog):
 # %% plot_pause ===============================================================
 def plot_pause(interval):
     """
-    Pause function for matplotlib to update a plot in background
+    Pause function for matplotlib to update a plot in the background
+    without raising the window
     https://stackoverflow.com/questions/45729092/make-interactive-matplotlib-window-not-pop-to-front-on-each-update-windows-7/45734500#45734500
     """
 
@@ -649,12 +700,11 @@ def plot_pause(interval):
                 canvas.draw()
 
             canvas.start_event_loop(interval)
-            return
 
 
 # %% RingBuffer ===============================================================
 class RingBuffer:
-    """ Ring buffer with shared memory Array """
+    """Ring buffer in a shared memory Array"""
 
     def __init__(self, max_size):
         self.cur = Value('i', 0)
@@ -663,13 +713,13 @@ class RingBuffer:
         self._lock = Lock()
 
     def append(self, x):
-        """ Append an element overwriting the oldest one. """
+        """Append an element, overwriting the oldest one."""
         with self._lock:
             self.data[self.cur.value] = x
             self.cur.value = (self.cur.value+1) % self.max
 
     def get(self):
-        """ return list of elements in correct order """
+        """Return the elements in order from the oldest."""
         return np.concatenate([self.data[self.cur.value:],
                                self.data[:self.cur.value]])
 
@@ -685,23 +735,36 @@ class MatplotlibWindow(qt_compat.QtWidgets.QMainWindow):
 
 # %% make_design_matrix =======================================================
 def make_design_matrix(stim_times, scan_len, TR, out_f):
+    """
+    Make a design matrix with AFNI 3dDeconvolve and save it as a CSV file.
 
+    Parameters
+    ----------
+    stim_times : list of str
+        Each element is 'times;basis;name', where times and basis are given
+        to the -stim_times option of 3dDeconvolve.
+    scan_len : float
+        Scan length (seconds).
+    TR : float
+        Repetition time (seconds).
+    out_f : str or Path
+        Output CSV file.
+    """
     NT = int(scan_len//TR)
-    cmd = "3dDeconvolve -x1D_stop -nodata {} {}".format(NT, TR)
+    cmd = f"3dDeconvolve -x1D_stop -nodata {NT} {TR}"
     cmd += " -local_times -x1D stdout:"
-    cmd += " -num_stimts {}".format(len(stim_times))
-    ii = 0
+    cmd += f" -num_stimts {len(stim_times)}"
     names = []
-    for optstr in stim_times:
-        ii += 1
+    for ii, optstr in enumerate(stim_times, start=1):
         times, opt, name = optstr.split(';')
         names.append(name)
-        cmd += " -stim_times {} '{}' '{}'".format(ii, times, opt)
-        cmd += " -stim_label {} {}".format(ii, name)
+        cmd += f" -stim_times {ii} '{times}' '{opt}'"
+        cmd += f" -stim_label {ii} {name}"
 
     pr = subprocess.run(shlex.split(cmd), stdout=subprocess.PIPE)
     out = pr.stdout.decode()
 
+    # The matrix is between the '# >' and '# <' lines
     ma = re.search(r'\# \>\n(.+)\n# \<', out, re.MULTILINE | re.DOTALL)
     mtx = ma.groups()[0]
     mtx = np.array([[float(v) for v in ll.split()] for ll in mtx.split('\n')])
@@ -711,13 +774,52 @@ def make_design_matrix(stim_times, scan_len, TR, out_f):
     desMtx.to_csv(out_f, index=False)
 
 
+# %% _list_proc_argv ==========================================================
+def _list_proc_argv():
+    """
+    List (pid, argv) of the running processes, except this one. argv is
+    read from /proc/<pid>/cmdline (NUL-separated). Returns an empty list
+    if /proc is not available.
+    """
+    procs = []
+    for cmdline_f in Path('/proc').glob('[0-9]*/cmdline'):
+        pid = int(cmdline_f.parent.name)
+        if pid == os.getpid():
+            continue
+        try:
+            argv = cmdline_f.read_bytes().decode(errors='replace')
+        except OSError:
+            continue  # The process has ended or is not accessible
+        argv = argv.rstrip('\0').split('\0')
+        if len(argv[0]):
+            procs.append((pid, argv))
+
+    return procs
+
+
 # %% boot_afni ================================================================
 def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
+    """
+    Start AFNI in boot_dir. If an AFNI process for boot_dir is already
+    running, the user is asked whether to kill it.
 
+    Parameters
+    ----------
+    main_win : QMainWindow, optional
+        The AFNI window is placed below this window.
+    boot_dir : str or Path, optional
+        Directory to open with AFNI. The default is './'.
+    rt : bool, optional
+        Start AFNI in real-time mode. The default is True.
+    TRUSTHOST : str, optional
+        AFNI_TRUSTHOST for the real-time mode. 'ask' shows an input dialog
+        (only with main_win). If None, or 'ask' without main_win, the subnet
+        of this host is used.
+    """
     if rt:
         # Set TRUSTHOST
         ip = socket.gethostbyname(socket.gethostname())
-        if TRUSTHOST is None or main_win is None:
+        if TRUSTHOST is None or (TRUSTHOST == 'ask' and main_win is None):
             TRUSTHOST = '.'.join(ip.split('.')[:-1])
         elif TRUSTHOST == 'ask':
             dlg = QtWidgets.QInputDialog(main_win)
@@ -731,44 +833,35 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
 
             TRUSTHOST = dlg.textValue()
 
-    # Check afni process
-    cmd0 = f"afni .* {boot_dir}"
-    pret = subprocess.run(shlex.split(f"pgrep -af '{cmd0}'"),
-                          stdout=subprocess.PIPE)
-    procs = pret.stdout
-    procs = [ll for ll in procs.decode().rstrip().split('\n')
-             if "pgrep -af 'afni" not in ll and 'RTafni' not in ll and
-             len(ll) > 0]
-    if len(procs) > 0:
-        for ll in procs:
-            llsp = ll.split()
-            pid = int(llsp[0])
-            cmdl = ' '.join(llsp[4:])
-            if 'RTafni' in cmdl:
-                continue
+    # Check for a running AFNI process for boot_dir, identified by its
+    # argument vector (the program is afni and the last argument is
+    # boot_dir), not by a substring of the command line.
+    for pid, argv in _list_proc_argv():
+        if Path(argv[0]).name != 'afni' or argv[-1] != str(boot_dir):
+            continue
+        cmdl = shlex.join(argv)
 
-            # Warning dialog
-            msgBox = QtWidgets.QMessageBox()
-            msgBox.setIcon(QtWidgets.QMessageBox.Warning)
-            msgBox.setText("Kill existing afni process ?")
-            msgBox.setInformativeText("pid={}: {}".format(pid, cmdl))
-            msgBox.setWindowTitle("Existing afni process")
-            msgBox.setStandardButtons(QtWidgets.QMessageBox.Yes |
-                                      QtWidgets.QMessageBox.Ignore |
-                                      QtWidgets.QMessageBox.Cancel)
-            msgBox.setDefaultButton(QtWidgets.QMessageBox.Cancel)
-            ret = msgBox.exec()
-            if ret == QtWidgets.QMessageBox.Yes:
-                os.kill(pid, 9)
-            elif ret == QtWidgets.QMessageBox.Cancel:
-                return
+        # Warning dialog
+        msgBox = QtWidgets.QMessageBox()
+        msgBox.setIcon(QtWidgets.QMessageBox.Warning)
+        msgBox.setText("Kill the existing AFNI process?")
+        msgBox.setInformativeText(f"pid={pid}: {cmdl}")
+        msgBox.setWindowTitle("Existing AFNI process")
+        msgBox.setStandardButtons(QtWidgets.QMessageBox.Yes |
+                                  QtWidgets.QMessageBox.Ignore |
+                                  QtWidgets.QMessageBox.Cancel)
+        msgBox.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+        ret = msgBox.exec()
+        if ret == QtWidgets.QMessageBox.Yes:
+            os.kill(pid, 9)
+        elif ret == QtWidgets.QMessageBox.Cancel:
+            return
 
-    # Boot afni at boot_dir
+    # Start AFNI in boot_dir, below main_win
+    xpos = 0
     if main_win is not None:
-        xpos = 0
-        ypos = main_win.frameGeometry().height()+25  # 25 => titlebar height
+        ypos = main_win.frameGeometry().height()+25  # 25: title bar height
     else:
-        xpos = 0
         ypos = 0
 
     cmd = 'afni'
@@ -782,6 +875,7 @@ def boot_afni(main_win=None, boot_dir='./', rt=True, TRUSTHOST=None):
 
 # %% excepthook ===============================================================
 def excepthook(exc_type, exc_value, exc_tb):
+    """Exception hook that also appends the traceback to rtpspy.error."""
     with open('rtpspy.error', 'a') as fd:
         traceback.print_exception(exc_type, exc_value, exc_tb, file=fd)
 

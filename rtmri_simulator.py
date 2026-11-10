@@ -3,13 +3,12 @@
 """
 RT-MRI Simulator
 
-A comprehensive GUI-based simulation tool for the RT-MRI system that allows:
-- Interactive selection of DICOM session directories
-- Selection of cardiogram and respiration recording files
-- Series-by-series simulation with real-time controls
-- Integration with the RT-MRI physio monitoring system
-
-Based on rt_physio.py and rtmri_simulator.py
+A GUI tool to simulate real-time MRI data export for testing RTPSpy:
+- Select a DICOM session directory and its series.
+- Copy the DICOM files of a series to the output directory at the original
+  acquisition timing, sending a TTL pulse at each volume.
+- Select cardiogram and respiration files to feed the dummy recorder of the
+  rt_physio process via RPC.
 
 Author: mmisaki@laureateinstitute.org
 """
@@ -41,6 +40,9 @@ except ImportError:
 class RTMRISimulator:
     """GUI-based RT-MRI simulator with series-by-series control"""
 
+    # GUI settings saved at closing and restored at start
+    CONFIG_FILE = Path.home() / ".RTPSpy" / "rtmri_simulator_config.json"
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
@@ -51,7 +53,7 @@ class RTMRISimulator:
         self.root.title("RT-MRI Simulator")
         self.root.geometry("900x850")
 
-        # Configure default fonts for better readability
+        # Default fonts
         self.root.option_add("*Font", ("Arial", 10))
         self.root.option_add("*Label.Font", ("Arial", 10))
         self.root.option_add("*Entry.Font", ("Arial", 10))
@@ -86,7 +88,7 @@ class RTMRISimulator:
         # Initialize logger
         self.logger = logging.getLogger("RTMRISimulator")
 
-        # Configuration
+        # Default directories
         src_data_dir = Path(__file__).parent / "simulation_data"
         if not src_data_dir.exists():
             src_data_dir.mkdir(parents=True)
@@ -104,33 +106,29 @@ class RTMRISimulator:
         self.setup_gui()
         self.load_dicom_sessions()
 
-        # Restore config
+        # Restore the saved settings
         self.load_config()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_gui(self):
-        """Create the main GUI interface"""
-        # Create main frame with scrollbar
+        """Create the main GUI"""
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Create main content area and log area
+        # Session/series panel (left) and simulation control panel (right)
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
 
-        # Left panel for session selection
         left_panel = ttk.Frame(content_frame)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
-        # Right panel for simulation controls (narrower)
         right_panel = ttk.Frame(content_frame)
         right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
 
-        # Bottom physio panel with full width
+        # Physio and log panels at the bottom with full width
         physio_panel = ttk.Frame(main_frame)
         physio_panel.pack(fill=tk.BOTH, expand=False, pady=(5, 0))
 
-        # Bottom log panel with full width
         log_panel = ttk.Frame(main_frame)
         log_panel.pack(fill=tk.BOTH, expand=False, pady=(5, 0))
 
@@ -153,7 +151,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_session_panel(self, parent):
-        """Setup the DICOM session and series selection panels"""
+        """Set up the DICOM session and series selection panels"""
         # region: DICOM Sessions ----------------------------------------------
         session_frame = ttk.LabelFrame(parent, text="DICOM Sessions")
         session_frame.pack(fill=tk.BOTH, pady=(0, 5))
@@ -163,18 +161,10 @@ class RTMRISimulator:
         src_path_frame.pack(fill=tk.X, padx=5, pady=5)
         ttk.Label(src_path_frame, text="Source Root:").pack(side=tk.LEFT)
 
-        # Current source data path (scrollable)
+        # Current source data path (read-only, scrollable)
         self.src_dir_var = tk.StringVar(value=str(self.config["src_data_dir"]))
-        src_path_entry = tk.Entry(
-            src_path_frame,
-            textvariable=self.src_dir_var,
-            font=("Arial", 10),
-            state="readonly",
-            readonlybackground="white",
-            width=40,
-        )
-        src_path_entry.configure(exportselection=True)
-        src_path_entry.pack(side=tk.LEFT, padx=2)
+        self._readonly_entry(src_path_frame, self.src_dir_var, width=40).pack(
+            side=tk.LEFT, padx=2)
 
         ttk.Button(
             src_path_frame,
@@ -224,11 +214,11 @@ class RTMRISimulator:
         series_frame = ttk.LabelFrame(parent, text="Series Information")
         series_frame.pack(fill=tk.BOTH, pady=5)
 
-        # Progress bar for series loading with Rescan button
+        # Progress bar for series loading, and the Rescan button
         self.series_progress_frame = ttk.Frame(series_frame)
         self.series_progress_frame.pack(fill=tk.X, padx=5, pady=2)
 
-        # Create a frame for progress elements (left side)
+        # Progress elements (left side)
         progress_elements_frame = ttk.Frame(self.series_progress_frame)
         progress_elements_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -248,7 +238,7 @@ class RTMRISimulator:
         )
         self.rescan_btn.pack(side=tk.RIGHT, padx=(5, 0))
 
-        # Initially hide the progress bar elements
+        # The progress elements are shown only while loading
         self.series_loading_label.pack_forget()
         self.series_loading_progress.pack_forget()
 
@@ -292,13 +282,13 @@ class RTMRISimulator:
         )
         series_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Bind series selection event to update Simulation panel
+        # Update the simulation panel at series selection
         self.series_tree.bind("<<TreeviewSelect>>", self.on_series_select)
         # endregion: Series information ---------------------------------------
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_simulation_panel(self, parent):
-        """Setup the simulation control panel"""
+        """Set up the simulation control panel"""
         sim_frame = ttk.LabelFrame(parent, text="Simulation Control")
         sim_frame.pack(fill=tk.BOTH, pady=(0, 5))
 
@@ -306,25 +296,17 @@ class RTMRISimulator:
         self.outpath_frame = ttk.Frame(sim_frame)
         self.outpath_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Top row for label, entry, and set button
+        # Top row: label, path, and Set button
         top_row = ttk.Frame(self.outpath_frame)
         top_row.pack(fill=tk.X, pady=(0, 5))
 
         ttk.Label(top_row, text="Output:").pack(side=tk.LEFT, padx=2)
 
-        # Show output path
         self.output_dir_var = tk.StringVar(
             value=str(self.config["simulation_output_dir"])
         )
-        output_path_entry = tk.Entry(
-            top_row,
-            textvariable=self.output_dir_var,
-            font=("Arial", 10),
-            state="readonly",
-            readonlybackground="white",
-        )
-        output_path_entry.configure(exportselection=True)
-        output_path_entry.pack(side=tk.LEFT, padx=2)
+        self._readonly_entry(top_row, self.output_dir_var).pack(
+            side=tk.LEFT, padx=2)
 
         ttk.Button(
             top_row,
@@ -346,7 +328,7 @@ class RTMRISimulator:
         params_frame = ttk.Frame(sim_frame)
         params_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Auto advance setting
+        # Auto-advance setting
         aa_frame = ttk.Frame(params_frame)
         aa_frame.pack(fill=tk.X, padx=5, pady=5)
 
@@ -357,7 +339,7 @@ class RTMRISimulator:
             aa_frame, text="Auto-advance", variable=self.auto_advance_var
         ).pack(side=tk.LEFT, padx=5)
 
-        # Series interval box
+        # Interval (s) between series in auto-advance
         self.series_interval_var = tk.IntVar(
             value=self.config["series_interval"])
         ttk.Label(aa_frame, text="Series Interval:").pack(side=tk.LEFT, padx=5)
@@ -380,7 +362,7 @@ class RTMRISimulator:
         )
         status_label.pack(padx=5, pady=5)
 
-        # Progress bars
+        # Progress bar
         self.series_progress_label = ttk.Label(
             current_frame, text="Series Progress:"
         )
@@ -425,7 +407,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_ttl_physio_panel(self, parent):
-        """Setup the physiological data selection panel"""
+        """Set up the physiological data panel"""
         physio_frame = ttk.LabelFrame(parent, text="Physiological Data")
         physio_frame.pack(fill=tk.X, pady=5)
 
@@ -439,16 +421,8 @@ class RTMRISimulator:
         tk.Label(cardiogram_row, text="Cardiogram File:").pack(side=tk.LEFT)
 
         self.card_file_var = tk.StringVar()
-        card_path_entry = tk.Entry(
-            cardiogram_row,
-            textvariable=self.card_file_var,
-            font=("Arial", 10),
-            state="readonly",
-            readonlybackground="white",
-            width=40,
-        )
-        card_path_entry.configure(exportselection=True)
-        card_path_entry.pack(side=tk.LEFT, padx=2)
+        self._readonly_entry(cardiogram_row, self.card_file_var,
+                             width=40).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
             cardiogram_row,
@@ -462,16 +436,8 @@ class RTMRISimulator:
         tk.Label(respiration_row, text="Respiration File:").pack(side=tk.LEFT)
 
         self.resp_file_var = tk.StringVar()
-        resp_path_entry = tk.Entry(
-            respiration_row,
-            textvariable=self.resp_file_var,
-            font=("Arial", 10),
-            state="readonly",
-            readonlybackground="white",
-            width=40,
-        )
-        resp_path_entry.configure(exportselection=True)
-        resp_path_entry.pack(side=tk.LEFT, padx=2)
+        self._readonly_entry(respiration_row, self.resp_file_var,
+                             width=40).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
             respiration_row,
@@ -479,15 +445,14 @@ class RTMRISimulator:
             command=self.set_respiration_file,
         ).pack(side=tk.LEFT, padx=2)
 
-        button_col = ttk.Frame(physio_frame)
-        button_col.pack(side=tk.LEFT, padx=5, pady=5)
+        # An empty frame kept as a spacer (10 px) in the layout
+        ttk.Frame(physio_frame).pack(side=tk.LEFT, padx=5, pady=5)
         # endregion: File Selection -------------------------------------------
 
         # region: Frequency setting column ------------------------------------
         frequency_col = ttk.Frame(physio_frame)
         frequency_col.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # Frequency setting
         ttk.Label(frequency_col, text="Freq. (Hz)").pack(anchor=tk.W, pady=2)
 
         self.physio_freq_var = tk.StringVar(value="100")
@@ -508,7 +473,7 @@ class RTMRISimulator:
         button_col.grid_columnconfigure(0, weight=1)
         button_col.grid_columnconfigure(1, weight=1)
 
-        # Start Physio feeding button
+        # Start physio feeding
         self.start_physio_btn = ttk.Button(
             button_col,
             text="Set Physio",
@@ -517,7 +482,7 @@ class RTMRISimulator:
         self.start_physio_btn.grid(
             row=0, column=0, padx=5, pady=5, sticky="ew")
 
-        # Stop Physio feeding button
+        # Stop physio feeding
         self.reset_physio_btn = ttk.Button(
             button_col,
             text="Reset Physio",
@@ -526,14 +491,14 @@ class RTMRISimulator:
         self.reset_physio_btn.grid(
             row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        # Check RPC connection button
+        # Check the RPC connection
         ttk.Button(
             button_col,
             text="Check RPC",
             command=self.ping_physio_rpc,
         ).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
 
-        # Send Pulse button
+        # Send a TTL pulse
         self.send_pulse_btn = ttk.Button(
             button_col,
             text="Send Pulse",
@@ -544,7 +509,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_log_panel(self, parent):
-        """Setup the log panel at the bottom"""
+        """Set up the log panel at the bottom"""
         log_frame = ttk.LabelFrame(parent, text="Log")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -552,6 +517,21 @@ class RTMRISimulator:
             log_frame, height=10, wrap=tk.WORD
         )
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _readonly_entry(self, parent, textvariable, width=None):
+        """Make a read-only entry whose text can be selected and copied"""
+        kwargs = {} if width is None else {"width": width}
+        entry = tk.Entry(
+            parent,
+            textvariable=textvariable,
+            font=("Arial", 10),
+            state="readonly",
+            readonlybackground="white",
+            **kwargs,
+        )
+        entry.configure(exportselection=True)
+        return entry
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _find_sessions_recursive(
@@ -564,19 +544,15 @@ class RTMRISimulator:
         if not current_dir.exists() or not current_dir.is_dir():
             return
 
-        # Check if current directory contains DICOM files directly
-        # (quick check)
+        # A session directory has DICOM files directly or in a "dicom"
+        # subdirectory.
         has_direct_dicoms = any(current_dir.glob("*.dcm"))
-
-        # Also check if it has a "dicom" subdirectory with DICOM files
         has_dicom_subdir = False
         dicom_subdir = current_dir / "dicom"
         if dicom_subdir.exists() and dicom_subdir.is_dir():
             has_dicom_subdir = any(dicom_subdir.glob("**/*.dcm"))
 
-        # If this directory has direct DICOM files OR a dicom subdir with files
         if has_direct_dicoms or has_dicom_subdir:
-            # Count all DICOM files (only when we know it's a session)
             all_dicom_files = list(current_dir.glob("**/*.dcm"))
 
             if current_dir == base_dir:
@@ -612,20 +588,18 @@ class RTMRISimulator:
             # Check if this directory has DICOM files anywhere
             all_dicom_files = list(current_dir.glob("**/*.dcm"))
             if all_dicom_files:
-                # Special check: If this directory has both series dirs
-                # AND other non-series subdirectories, it's likely a container
+                # A directory with both series directories and other
+                # subdirectories is likely a container of sessions; explore
+                # deeper instead of treating it as a session.
                 all_subdirs = [d for d in current_dir.iterdir() if d.is_dir()]
                 non_series_dirs = [
                     d for d in all_subdirs if d not in series_dirs
                 ]
-
-                # If we have non-series directories that might be sessions,
-                # don't treat this as a session - explore deeper instead
-                if len(non_series_dirs) > 0 and current_depth < max_depth:
-                    # This looks like a container directory, continue exploring
-                    pass
-                else:
-                    # This looks like session dir with series subdirectories
+                is_container = (
+                    len(non_series_dirs) > 0 and current_depth < max_depth
+                )
+                if not is_container:
+                    # A session directory with series subdirectories
                     if current_dir == base_dir:
                         session_name = current_dir.name
                     else:
@@ -658,7 +632,6 @@ class RTMRISimulator:
         study_description = "Unknown"
         try:
             reader = DicomReader()
-            # Try to read from first few DICOM files
             for dcm_file in dicom_files:
                 try:
                     info = reader.read_dicom_info(dcm_file, timeout=0.1)
@@ -678,55 +651,43 @@ class RTMRISimulator:
             return
 
         if session:
+            # Select the tree item of the session path without triggering
+            # the selection event.
             self.session_tree.unbind("<<TreeviewSelect>>")
-            # Set selection corresponding to the session directory
-            # Find the treeview item that matches the session path
+            src_data_dir = Path(self.config["src_data_dir"])
             for item_id in self.session_tree.get_children():
-                item = self.session_tree.item(item_id)
-                session_name = item["values"][0]
-                # Reconstruct the expected path
-                src_data_dir = Path(self.config["src_data_dir"])
-                if "/" in session_name:
-                    expected_path = src_data_dir / session_name
-                else:
-                    expected_path = src_data_dir / session_name
-                if Path(session) == expected_path:
+                session_name = self.session_tree.item(item_id)["values"][0]
+                if Path(session) == src_data_dir / session_name:
                     self.session_tree.selection_set(item_id)
                     self.session_tree.see(item_id)
                     break
-            selection = self.session_tree.selection()
             self.session_tree.bind("<<TreeviewSelect>>",
                                    self.on_session_select)
             return
-        else:
-            selection = self.session_tree.selection()
-            if not selection:
-                self.current_session_var.set("No session selected")
-                # Disable simulation buttons when no session selected
-                self.start_btn.config(state=tk.DISABLED)
-                self.step_btn.config(state=tk.DISABLED)
-                return
+
+        selection = self.session_tree.selection()
+        if not selection:
+            self.current_session_var.set("No session selected")
+            self.start_btn.config(state=tk.DISABLED)
+            self.step_btn.config(state=tk.DISABLED)
+            return
 
         item = self.session_tree.item(selection[0])
         session_name = item["values"][0]
         study_description = item["values"][2]
 
-        # Find the session path by searching through the loaded sessions
-        # We need to reconstruct the path from the session name
+        # Reconstruct the session path from the session name
         src_data_dir = Path(self.config["src_data_dir"])
-
-        # Try different path constructions based on session name format
         if "/" in session_name:
-            # Session name includes relative path
-            # (e.g., "Subject/Study")
+            # The name is a path relative to src_data_dir
+            # (e.g., "subject/session")
             session_path = src_data_dir / session_name
         else:
-            # Simple session name, look in common locations
+            # Look in src_data_dir and its subdirectories
             possible_paths = [
                 src_data_dir / session_name,
             ]
 
-            # Also check all directories for the session
             for subdir in src_data_dir.glob("*"):
                 if subdir.is_dir():
                     possible_paths.append(subdir / session_name)
@@ -738,7 +699,7 @@ class RTMRISimulator:
                         ):
                             possible_paths.append(study_dir)
 
-            # Find the first existing path
+            # Take the first one that has DICOM files
             session_path = None
             for path in possible_paths:
                 if path.exists() and any(path.glob("**/*.dcm")):
@@ -753,7 +714,6 @@ class RTMRISimulator:
 
         self.current_session_path = session_path
 
-        # Update current session display
         if study_description and study_description != "Unknown":
             session_display = f"{session_name} ({study_description})"
         else:
@@ -762,7 +722,7 @@ class RTMRISimulator:
 
         self.log_message(f"Selected session: {session_path}")
 
-        # Load series information in a separate thread
+        # Load the series information in a worker thread
         loading_thread = threading.Thread(
             target=self._load_series_info_threaded,
             args=(session_path,),
@@ -778,7 +738,6 @@ class RTMRISimulator:
 
         selection = self.series_tree.selection()
         if not selection:
-            # No series selected, disable buttons and clear status
             self.current_series_var.set("No series selected")
             self.start_btn.config(state=tk.DISABLED)
             self.step_btn.config(state=tk.DISABLED)
@@ -789,17 +748,23 @@ class RTMRISimulator:
         series_files = item["values"][1]  # Files column
         series_description = item["values"][-1]  # Description column
 
-        # Update simulation control current status
         series_status = (
             f"{series_name}: {series_description} ({series_files} files)"
         )
         self.current_series_var.set(series_status)
 
         self.current_series_nr = int(series_name.split()[-1])
-        # Reset image number when series selection changes
         self.current_image_nr = 0
+        self._reset_series_progress()
 
-        # Reset series progress bar
+        self.start_btn.config(state=tk.NORMAL)
+        self.step_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(text="Pause")
+        self.pause_btn.config(state=tk.DISABLED)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _reset_series_progress(self):
+        """Reset the series progress bar for self.current_series_nr"""
         num_files = (
             self.dicom_series.SeriesNumber == self.current_series_nr
         ).sum()
@@ -807,12 +772,6 @@ class RTMRISimulator:
         self.series_progress.config({"value": 0})
         self.series_progress_label.config(
             text=f"Series Progress: 0/{num_files}")
-
-        # Enable simulation buttons when a series is selected
-        self.start_btn.config(state=tk.NORMAL)
-        self.step_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(text="Pause")
-        self.pause_btn.config(state=tk.DISABLED)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_series_loading_progress(self, show=True):
@@ -848,12 +807,8 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _populate_series_tree(self):
-        """Populate series tree from loaded cache data"""
-        if (
-            hasattr(self, "dicom_series")
-            and self.dicom_series is not None
-            and len(self.dicom_series) > 0
-        ):
+        """Populate the series tree from self.dicom_series"""
+        if self.dicom_series is not None and len(self.dicom_series) > 0:
             ser_nums = sorted(self.dicom_series.SeriesNumber.unique())
             for ser in ser_nums:
                 ser_rows = self.dicom_series[
@@ -874,14 +829,10 @@ class RTMRISimulator:
         if self.simulation_running:
             return
 
-        if (
-            not hasattr(self, "current_session_path")
-            or not self.current_session_path
-        ):
+        if not self.current_session_path:
             self.err_message("No session selected")
             return
 
-        # Start fresh scan
         self.log_message("Rescanning series information...")
         thread = threading.Thread(
             target=self._load_series_info_threaded,
@@ -892,27 +843,23 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _load_series_info_threaded(self, session_path, rescan=False):
-        """Load series information in a separate thread with progress"""
+        """Load the series information with progress (run in a worker
+        thread). The result is cached in the session directory."""
 
         self._load_series_lock.acquire()
 
-        # Store current session path for refresh functionality
         self.current_session_path = session_path
-
-        # Reset cancellation flag
         self.scanning_cancelled = False
 
-        # Show progress bar on main thread
+        # Tk widgets must be updated in the main thread, via root.after().
         self.root.after(0, self.show_series_loading_progress, True)
         self.root.after(
             0, self.series_loading_label.config, {"text": "Checking cache..."}
         )
 
         try:
-            # Clear existing series on main thread
             self.root.after(0, self._clear_series_tree)
 
-            # Check for cancellation
             if self.scanning_cancelled:
                 self.dicom_series = None
                 self._load_series_lock.release()
@@ -921,7 +868,6 @@ class RTMRISimulator:
             series_df = None
             cache_file = self._get_cache_file_path(session_path)
 
-            # Try to load cache
             if not rescan and cache_file.exists():
                 try:
                     series_df = pd.read_csv(cache_file)
@@ -932,17 +878,15 @@ class RTMRISimulator:
                     series_df = None
 
             if series_df is None:
-                # If no cache, proceed with full scan
+                # No cache; scan all files
                 self.root.after(
                     0,
                     self.series_loading_label.config,
                     {"text": "Finding DICOM files..."},
                 )
 
-                # Find all DICOM files
                 dicom_files = list(session_path.glob("**/*.dcm"))
 
-                # Check for cancellation
                 if self.scanning_cancelled:
                     self.dicom_series = None
                     self._load_series_lock.release()
@@ -958,7 +902,6 @@ class RTMRISimulator:
                     self._load_series_lock.release()
                     return
 
-                # Update progress bar maximum
                 total_files = len(dicom_files)
                 progress_config = {"maximum": total_files}
                 self.root.after(
@@ -973,7 +916,6 @@ class RTMRISimulator:
                     {"text": f"Processing {total_files} DICOM files..."},
                 )
 
-                # Process files with progress updates
                 series_df = self.load_series_info(
                     session_path,
                     progress_callback=self._update_series_progress
@@ -983,11 +925,9 @@ class RTMRISimulator:
 
             if series_df is not None and not self.scanning_cancelled:
                 self.dicom_series = series_df
-                # Schedule tree population on main thread
                 self.root.after(0, self._populate_series_tree)
                 self.log_message("Series information loaded successfully")
             else:
-                # Ensure series data is cleared if cancelled
                 self.dicom_series = None
 
             self.root.after(0, self.show_series_loading_progress, False)
@@ -999,14 +939,13 @@ class RTMRISimulator:
                     0, self.err_message, f"Error loading series info: {errstr}"
                 )
         finally:
-            # Hide progress bar
             self.root.after(0, self.show_series_loading_progress, False)
 
         self._load_series_lock.release()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _clear_series_tree(self):
-        """Clear the series tree (must be called from main thread)"""
+        """Clear the series tree (must be called from the main thread)"""
         for item in self.series_tree.get_children():
             self.series_tree.delete(item)
 
@@ -1023,31 +962,29 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def load_series_info(self, session_path, progress_callback=None):
-        """Load DICOM series information for selected session"""
+        """Read the DICOM information of all files in the session.
+
+        Returns a DataFrame with a row per file (sorted by ContentTime), or
+        None if no file is found, the scan is canceled, or an error occurs.
+        progress_callback(n, message) is called after each file; when it is
+        given (worker thread), log messages are passed to the main thread.
+        """
         if not progress_callback:
             self.log_message("Loading series information...")
 
         try:
-            # Find all DICOM files
             dicom_files = list(session_path.glob("**/*.dcm"))
-
             if not dicom_files:
                 if not progress_callback:
                     self.log_message("No DICOM files found in session")
                 return
 
-            # Group by series if DicomReader is available
             series_dfs = []
-
             reader = DicomReader()
-
-            # Scan sampled files to identify series
             for i, dcm_file in enumerate(dicom_files):
-                # Check for cancellation
                 if progress_callback and self.scanning_cancelled:
                     return
 
-                dcm_file = dicom_files[i]
                 try:
                     info = reader.read_dicom_info(dcm_file, timeout=1)
                     if info:
@@ -1058,7 +995,6 @@ class RTMRISimulator:
                     if not progress_callback:
                         self.log_message(f"Error reading {dcm_file}: {errstr}")
 
-                # Update progress for initial scan
                 if progress_callback:
                     progress_callback(
                         (i + 1),
@@ -1068,7 +1004,6 @@ class RTMRISimulator:
             series_df = pd.concat(series_dfs, ignore_index=True)
             series_df.sort_values("ContentTime", inplace=True)
 
-            # Final progress update
             message = (
                 f"Loaded {len(series_df.SeriesNumber.unique())} series "
                 f"with {len(series_df)} total files"
@@ -1091,7 +1026,8 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_src_dir(self, directory=None):
-        """Set test data root directory and refresh sessions list"""
+        """Set the source data root directory and refresh the session
+        list"""
         if self.simulation_running:
             return
 
@@ -1102,42 +1038,33 @@ class RTMRISimulator:
             )
 
         if directory:
-            # Update test data directory configuration
             self.config["src_data_dir"] = Path(directory)
             self.src_dir_var.set(str(directory))
             self.log_message(
                 f"Source data directory changed to: {directory}"
             )
 
-            # Clear current session selection
+            # Clear the current session and series
             self.current_session_path = None
             self.current_session_var.set("No session selected")
-
-            # Clear series information
-            for item in self.series_tree.get_children():
-                self.series_tree.delete(item)
+            self._clear_series_tree()
             self.dicom_series = []
 
-            # Refresh DICOM sessions list with new test data directory
             self.load_dicom_sessions()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def load_dicom_sessions(self):
-        """Load available DICOM sessions"""
+        """List the DICOM sessions in the source data directory"""
         self.log_message("Loading DICOM sessions...")
 
-        # Disable session tree during loading
         self.disable_session_treeview()
-
         try:
-            # Clear existing items
             for item in self.session_tree.get_children():
                 self.session_tree.delete(item)
 
             src_data_dir = Path(self.config["src_data_dir"])
             sessions = []
 
-            # Strategy: Look for DICOM sessions in various directory structures
             self._find_sessions_recursive(
                 src_data_dir, src_data_dir, sessions, max_depth=3
             )
@@ -1161,10 +1088,8 @@ class RTMRISimulator:
                     ),
                 )
 
-            # Clear series information
             self.dicom_series = []
-            for item in self.series_tree.get_children():
-                self.series_tree.delete(item)
+            self._clear_series_tree()
 
             self.log_message(
                 f"Loaded {len(sessions)} DICOM sessions from {src_data_dir}"
@@ -1175,12 +1100,11 @@ class RTMRISimulator:
             self.err_message(f"Error loading DICOM sessions: {errstr}")
 
         finally:
-            # Always re-enable session tree when finished
             self.enable_session_treeviews()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_output_directory(self, directory=None):
-        """Set the output directory for simulated feeding"""
+        """Set the output directory of the simulated DICOM export"""
         if self.simulation_running:
             return
 
@@ -1190,14 +1114,13 @@ class RTMRISimulator:
                 initialdir=self.config["simulation_output_dir"],
             )
         if directory:
-            # Update output directory configuration
             self.config["simulation_output_dir"] = Path(directory)
             self.output_dir_var.set(str(directory))
             self.log_message(f"Output directory changed to: {directory}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def clear_output_directory(self):
-        """Clear the output directory for simulated feeding"""
+        """Delete all files in the output directory (after confirmation)"""
         if self.simulation_running:
             return
 
@@ -1205,7 +1128,6 @@ class RTMRISimulator:
             self.config["simulation_output_dir"] is not None and
             Path(self.config["simulation_output_dir"]).exists()
         ):
-            # Confirm before clearing
             if messagebox.askyesno(
                 "Confirm Clear",
                 ("Are you sure you want to clear all files "
@@ -1224,7 +1146,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_cardiogram_file(self, filename=None):
-        """Set Cardiogram file"""
+        """Set the cardiogram file"""
         if filename is None:
             filename = filedialog.askopenfilename(
                 title="Select Cardiogram File",
@@ -1237,7 +1159,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_respiration_file(self, filename=None):
-        """Set Respiration file"""
+        """Set the respiration file"""
         if filename is None:
             filename = filedialog.askopenfilename(
                 title="Select Respiration File",
@@ -1250,22 +1172,17 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def validate_simulation_setup(self):
-        """Validate simulation setup"""
+        """Check the session and series, and create the output directory"""
         if not self.current_session_path:
             messagebox.showerror("Error", "Please select a DICOM session")
             return False
 
-        if (
-            not hasattr(self, "dicom_series")
-            or self.dicom_series is None
-            or len(self.dicom_series) == 0
-        ):
+        if self.dicom_series is None or len(self.dicom_series) == 0:
             messagebox.showerror(
                 "Error", "No DICOM series found in selected session"
             )
             return False
 
-        # Create output directory
         try:
             output_dir = Path(self.output_dir_var.get())
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1280,19 +1197,11 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_simulation(self, resume=False):
-        """Start the simulation"""
+        """Start (or resume) the simulation of the selected series"""
         if not self.validate_simulation_setup():
             return
 
-        # Get currently selected series from the treeview
-        selection = self.series_tree.selection()
-        if selection:
-            # Extract series number from the selected item
-            item = self.series_tree.item(selection[0])
-            series_name = item["values"][0]
-            series_number = int(series_name.split()[1])
-            self.current_series_nr = series_number
-        else:
+        if not self._set_selected_series_nr():
             return
 
         if not resume:
@@ -1303,20 +1212,9 @@ class RTMRISimulator:
         self.pause_btn.config(state=tk.NORMAL, text="Pause")
         self.step_btn.config(state=tk.DISABLED)
         self.disable_treeviews()
-
-        # Disable buttons in outpath_frame
-        for widget in self.outpath_frame.winfo_children():
-            if isinstance(widget, ttk.Frame):
-                # Check nested frames for buttons
-                for nested_widget in widget.winfo_children():
-                    if isinstance(nested_widget, ttk.Button):
-                        nested_widget.config(state=tk.DISABLED)
-            elif isinstance(widget, ttk.Button):
-                widget.config(state=tk.DISABLED)
+        self._set_outpath_buttons_state(tk.DISABLED)
 
         self.simulation_running = True
-
-        # Start simulation thread
         self.simulation_thread = threading.Thread(
             target=self.run_simulation, daemon=True
         )
@@ -1324,22 +1222,13 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def step_simulation(self):
-        """Step through simulation one image at a time"""
+        """Copy the next image of the selected series"""
         if not self.validate_simulation_setup():
             return
 
-        # Get currently selected series from the treeview
-        selection = self.series_tree.selection()
-        if selection:
-            # Extract series number from the selected item
-            item = self.series_tree.item(selection[0])
-            series_name = item["values"][0]
-            series_number = int(series_name.split()[1])
-            self.current_series_nr = series_number
-        else:
+        if not self._set_selected_series_nr():
             return
 
-        # Start step simulation thread
         self.simulation_running = True
         step_thread = threading.Thread(
             target=self.run_simulation,
@@ -1349,19 +1238,46 @@ class RTMRISimulator:
         step_thread.start()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_selected_series_nr(self):
+        """Set self.current_series_nr to the series selected in the tree.
+        Returns False if no series is selected."""
+        selection = self.series_tree.selection()
+        if not selection:
+            return False
+
+        series_name = self.series_tree.item(selection[0])["values"][0]
+        self.current_series_nr = int(series_name.split()[1])
+        return True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_outpath_buttons_state(self, state):
+        """Set the state of the buttons in the output path frame"""
+        for widget in self.outpath_frame.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                for nested_widget in widget.winfo_children():
+                    if isinstance(nested_widget, ttk.Button):
+                        nested_widget.config(state=state)
+            elif isinstance(widget, ttk.Button):
+                widget.config(state=state)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_simulation(self, one_step=False):
-        """Main simulation loop"""
+        """Simulation loop (run in a worker thread).
+
+        Copies the files of the current series at their acquisition timing.
+        With auto-advance, continues to the next series after the series
+        interval. With one_step, copies only one file.
+        """
         try:
             output_base_dir = (
                 Path(self.output_dir_var.get()) /
                 self.current_session_path.name
             )
 
-            # Loop until session end if auto-advancing
+            # Loop over the series while auto-advancing
             while (
                 self.current_series_nr <= self.dicom_series.SeriesNumber.max()
             ):
-                # Extract series data
                 series_df = self.dicom_series[
                     self.dicom_series.SeriesNumber == self.current_series_nr
                 ].copy()
@@ -1373,6 +1289,7 @@ class RTMRISimulator:
                 series_df.reset_index(drop=True, inplace=True)
                 total_files = len(series_df)
 
+                # Resume from the current image
                 if self.current_image_nr > 0:
                     series_df = series_df.iloc[self.current_image_nr:]
 
@@ -1385,20 +1302,21 @@ class RTMRISimulator:
                     "FMRI" in series_df.ImageType.values[0] and
                     len(series_df) > 1
                 ):
-                    # Get unique acqusitions
+                    # fMRI: a volume (acquisition) every TR, with
+                    # num_echoes files (echoes) per acquisition
                     AcquisitionNumbers = series_df.AcquisitionNumber
-                    n_echos = [np.sum(AcquisitionNumbers == an)
-                               for an in AcquisitionNumbers.unique()]
-                    num_echos = np.max(n_echos)
+                    n_echoes = [np.sum(AcquisitionNumbers == an)
+                                for an in AcquisitionNumbers.unique()]
+                    num_echoes = np.max(n_echoes)
                     echo_tdiff = np.median(
                         np.diff(series_df["ContentTime"].values))
                     sel_series = series_df.drop_duplicates("AcquisitionNumber")
-                    timings = np.zeros(len(sel_series) * num_echos)
+                    timings = np.zeros(len(sel_series) * num_echoes)
                     TR = np.median(np.diff(sel_series["ContentTime"].values))
                     timings[sel_series.index] = np.arange(
                         0, len(sel_series)*TR, TR)
-                    for ei in range(1, num_echos):
-                        timings[ei::num_echos] = (
+                    for ei in range(1, num_echoes):
+                        timings[ei::num_echoes] = (
                             timings[sel_series.index] + ei * echo_tdiff
                         )
                 else:
@@ -1408,7 +1326,6 @@ class RTMRISimulator:
                     self.current_session_path
                 )
 
-                # Create series output directory
                 series_output_dir = output_base_dir / rel_path.parent
                 if not series_output_dir.exists():
                     series_output_dir.mkdir(parents=True, exist_ok=True)
@@ -1420,7 +1337,8 @@ class RTMRISimulator:
                     {"value": self.current_image_nr},
                 )
 
-                # Append phase images
+                # Phase images ('<description>_Pha' series) are copied with
+                # the magnitude images.
                 ser_desc = series_df.iloc[0].SeriesDescription
                 phase_ser = f"{ser_desc}_Pha"
                 if np.any(
@@ -1433,6 +1351,7 @@ class RTMRISimulator:
                     pha_series_df = None
 
                 # region: Simulate file creation in a series ------------------
+                # Each file is written after its acquisition (TR) ends.
                 timings += TR
                 acqNr = 0
                 for ii, row in series_df.iterrows():
@@ -1447,7 +1366,7 @@ class RTMRISimulator:
                     else:
                         dest_pha_file = None
 
-                    if ii == 0:  # Start scan
+                    if ii == 0:  # Scan start
                         if not dest_file.parent.is_dir():
                             dest_file.parent.mkdir(parents=True, exist_ok=True)
                         self.send_pulse()
@@ -1456,12 +1375,12 @@ class RTMRISimulator:
                     while time.time() - st_time < timings[ii]:
                         if not self.simulation_running:
                             break
-                        # Wait for content timing
-                        time.sleep(0.01)
+                        time.sleep(0.01)  # Wait for the content time
 
                     if not self.simulation_running:
                         break
 
+                    # TTL pulse at each new acquisition (volume)
                     if (
                         row["AcquisitionNumber"] != acqNr and
                         ii < len(series_df) - 1
@@ -1469,11 +1388,9 @@ class RTMRISimulator:
                         self.send_pulse()
                         acqNr = row["AcquisitionNumber"]
 
-                    # Copy file
                     shutil.copy(dicom_file, dest_file)
                     self.current_image_nr = self.current_image_nr + 1
 
-                    # Update progress
                     self.root.after(
                         0,
                         self.series_progress.config,
@@ -1488,7 +1405,6 @@ class RTMRISimulator:
                                  f"{self.current_image_nr}/{total_files}")
                         }
                     )
-                    # Log progress
                     self.root.after(
                         0,
                         self.log_message,
@@ -1525,7 +1441,7 @@ class RTMRISimulator:
                 )
 
                 if self.auto_advance_var.get():
-                    # Move to the next series in the tree selection
+                    # Select the next series in the tree
                     current_selection = self.series_tree.selection()
                     if current_selection:
                         current_item = current_selection[0]
@@ -1545,27 +1461,18 @@ class RTMRISimulator:
                             series_number = int(series_name.split()[1])
                             self.current_series_nr = series_number
 
-                            # Update simulation control current status
                             series_status = (
                                 f"{series_name}: {series_description} "
                                 f"({series_files} files)"
                             )
-                            self.current_series_var.set(series_status)
+                            self.root.after(
+                                0, self.current_series_var.set, series_status
+                            )
 
-                            # Reset image number when series selection changes
                             self.current_image_nr = 0
+                            self.root.after(0, self._reset_series_progress)
 
-                            # Reset series progress bar
-                            num_files = (
-                                self.dicom_series.SeriesNumber ==
-                                self.current_series_nr
-                            ).sum()
-                            self.series_progress.config({"maximum": num_files})
-                            self.series_progress.config({"value": 0})
-                            self.series_progress_label.config(
-                                text=f"Series Progress: 0/{num_files}")
-
-                            # Wait for series interval
+                            # Wait for the series interval
                             series_interval = float(
                                 self.series_interval_var.get())
                             self.root.after(
@@ -1584,14 +1491,15 @@ class RTMRISimulator:
                                     break
                                 time.sleep(0.1)
                         else:
-                            # Clear self.series_tree.focus
-                            self.series_tree.selection_clear()
+                            # The last series is done
+                            self.root.after(
+                                0, self.series_tree.selection_clear
+                            )
                             self.current_series_nr = 0
                             break
                 else:
                     break
 
-            # Simulation completed
             if not self.simulation_running:
                 self.root.after(
                     0, self.log_message, "Simulation stopped by user"
@@ -1624,20 +1532,11 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def simulation_finished(self):
-        """Handle simulation completion"""
+        """Restore the controls when the simulation ends or pauses"""
         self.start_btn.config(state=tk.NORMAL)
         self.step_btn.config(state=tk.NORMAL)
         self.enable_treeviews()
-
-        # Enable buttons in outpath_frame
-        for widget in self.outpath_frame.winfo_children():
-            if isinstance(widget, ttk.Frame):
-                # Check nested frames for buttons
-                for nested_widget in widget.winfo_children():
-                    if isinstance(nested_widget, ttk.Button):
-                        nested_widget.config(state=tk.NORMAL)
-            elif isinstance(widget, ttk.Button):
-                widget.config(state=tk.NORMAL)
+        self._set_outpath_buttons_state(tk.NORMAL)
 
         self.simulation_running = False
 
@@ -1651,7 +1550,7 @@ class RTMRISimulator:
             # Series completed
             self.pause_btn.config(state=tk.DISABLED, text="Pause")
 
-            # Move the selection next
+            # Select the next series
             current_selection = self.series_tree.selection()
             current_item = current_selection[0]
             next_item = self.series_tree.next(current_item)
@@ -1669,7 +1568,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ping_physio_rpc(self, popup=True):
-        """Ping the rt_physio.py process to check if it's responsive"""
+        """Ping the rt_physio process to check that it responds"""
         if self.rpc_physio_com.rpc_ping():
             self.log_message("Physio process ping successful")
             if popup:
@@ -1679,18 +1578,12 @@ class RTMRISimulator:
                 )
             return True
         else:
-            self.err_message("Physio process ping failed")
-            messagebox.showerror(
-                "Physio RPC Status",
-                "Physio process ping failed",
-            )
+            self.err_message("Physio process ping failed")  # Shows a popup
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_physio_feeding(self):
-        """Start physiological feeding with selected files"""
-
-        # First try to connect to existing physiological recording process
+        """Start the dummy physio feeding with the selected files"""
         if not self.ping_physio_rpc(popup=False):
             return
 
@@ -1707,15 +1600,10 @@ class RTMRISimulator:
         )
 
         if not card_file or not resp_file:
-            self.err_message("No physio files selected.")
-            messagebox.showerror(
-                "Physio File Selection",
-                "No physio files selected.",
-            )
+            self.err_message("No physio files selected.")  # Shows a popup
             return
 
         try:
-            # Send RPC command to start feeding with selected files
             command = (
                 "START_DUMMY_FEEDING_WITH_FILES",
                 (card_file, resp_file, self.physio_freq_var.get()),
@@ -1734,8 +1622,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_physio(self):
-        """Stop physiological feeding"""
-        # Stop physio feeding via RPC
+        """Stop the physio feeding by resetting the recording device"""
         self.log_message("Stop physio feeding")
         try:
             self.rpc_physio_com.call_rt_proc(
@@ -1748,7 +1635,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_pulse(self):
-        """Send pulse to physiological recording process"""
+        """Send a TTL pulse to the rt_physio process"""
         self.log_message("Send pulse")
         try:
             self.rpc_physio_com.call_rt_proc("TTL_PULSE")
@@ -1758,50 +1645,53 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def log_message(self, message):
-        """Add message to log"""
+        """Add a message to the log and the status bar"""
+        if threading.current_thread() is not threading.main_thread():
+            # Tk widgets must be updated in the main thread
+            self.root.after(0, self.log_message, message)
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}\n"
 
-        # Update log text
+        # Before the log panel is made, print the message.
         if hasattr(self, 'log_text'):
             self.log_text.insert(tk.END, formatted_message)
             self.log_text.see(tk.END)
-            # Update status
             self.status_var.set(message)
         else:
             print(formatted_message)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def err_message(self, message):
-        """Add message to log"""
+        """Add an error message (red) to the log and show a popup"""
+        if threading.current_thread() is not threading.main_thread():
+            # Tk widgets must be updated in the main thread
+            self.root.after(0, self.err_message, message)
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {message}\n"
 
-        # Update log text
-        self.log_text.config(state=tk.NORMAL)
+        # The log text box stays editable (state NORMAL) so that the
+        # following messages are also shown.
         self.log_text.tag_configure("error", foreground="red")
         self.log_text.insert(tk.END, formatted_message, "error")
-        self.log_text.config(state=tk.DISABLED)
 
-        # Update status
         self.status_var.set(message)
-
-        # Popup error
         messagebox.showerror("Error", message)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def load_config(self):
-        """Load configuration from file"""
-        config_file = Path.home() / ".RTPSpy" / "rtmri_simulator_config.json"
+        """Load the settings from the config file and apply them"""
+        config_file = self.CONFIG_FILE
 
         try:
             if config_file.exists():
-                import json
                 with open(config_file, 'r') as f:
                     saved_config = json.load(f)
 
-                # Update config with saved values, converting string paths
-                # back to Path objects
+                # Update the config, converting paths back to Path
                 for key, value in saved_config.items():
                     if key in [
                         "src_data_dir",
@@ -1810,7 +1700,6 @@ class RTMRISimulator:
                         "selected_card_file",
                         "selected_resp_file"
                     ]:
-                        # Convert string paths back to Path objects
                         self.config[key] = Path(value)
                     else:
                         self.config[key] = value
@@ -1821,7 +1710,7 @@ class RTMRISimulator:
                     "Configuration file not found, using defaults"
                 )
 
-            # Set widget values from loaded config
+            # Set the widgets from the config
             if (
                 "src_data_dir" in self.config and
                 Path(self.config["src_data_dir"]).exists()
@@ -1865,26 +1754,24 @@ class RTMRISimulator:
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
+            # Continue with the default settings
             self.log_message(f"Error loading configuration: {errstr}")
-            # Continue with default config values
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_config(self):
-        """Save current configuration to file"""
-        config_file = Path.home() / ".RTPSpy" / "rtmri_simulator_config.json"
+        """Save the current settings to the config file"""
+        config_file = self.CONFIG_FILE
 
         try:
-            # Create config directory if it doesn't exist
             config_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # Update config with current GUI values before saving
+            # Update the config with the current GUI values
             self.config["src_data_dir"] = Path(self.src_dir_var.get())
             self.config["simulation_output_dir"] = Path(
                 self.output_dir_var.get())
             self.config["auto_advance"] = self.auto_advance_var.get()
             self.config["series_interval"] = self.series_interval_var.get()
 
-            # Save session and card/resp file selections
             if self.current_session_path:
                 self.config["current_session_path"] = self.current_session_path
 
@@ -1894,7 +1781,7 @@ class RTMRISimulator:
             if self.selected_resp_file:
                 self.config["selected_resp_file"] = self.selected_resp_file
 
-            # Convert Path objects to strings for JSON serialization
+            # Path is not JSON serializable
             serializable_config = {}
             for key, value in self.config.items():
                 if isinstance(value, Path):
@@ -1913,86 +1800,56 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def disable_treeviews(self):
-        """Disable both session and series trees, and all related controls"""
-        # Block all user interactions on series tree
-        self.series_tree.bind('<Button-1>', lambda e: 'break')
-        self.series_tree.bind('<Button-3>', lambda e: 'break')
-        self.series_tree.bind('<Double-Button-1>', lambda e: 'break')
-        self.series_tree.bind('<Key>', lambda e: 'break')
-
-        # Block all user interactions on session tree
+        """Disable both session and series trees, and the related controls"""
+        self._block_tree_input(self.series_tree)
         self.disable_session_treeview()
-
-        # Disable rescan button in series frame
         self.rescan_btn.config(state=tk.DISABLED)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def disable_session_treeview(self):
-        """Disable session tree, and all related controls"""
-        # Block all user interactions on session tree
-        self.session_tree.bind('<Button-1>', lambda e: 'break')
-        self.session_tree.bind('<Button-3>', lambda e: 'break')
-        self.session_tree.bind('<Double-Button-1>', lambda e: 'break')
-        self.session_tree.bind('<Key>', lambda e: 'break')
-
-        # Disable all buttons in session frame (recursively)
-        self._disable_buttons_in_frame(self.session_tree.master.master)
+        """Disable the session tree and the buttons in its frame"""
+        self._block_tree_input(self.session_tree)
+        self._set_buttons_state(self.session_tree.master.master, tk.DISABLED)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def enable_treeviews(self):
-        """Re-enable both session and series trees, and all related controls"""
-        # Remove the blocking bindings from series tree
-        self.series_tree.unbind("<Button-1>")
-        self.series_tree.unbind("<Button-3>")
-        self.series_tree.unbind("<Double-Button-1>")
-        self.series_tree.unbind("<Key>")
-
-        # Restore the original selection events
+        """Re-enable both session and series trees, and the related
+        controls"""
+        self._unblock_tree_input(self.series_tree)
         self.session_tree.bind("<<TreeviewSelect>>", self.on_session_select)
-
-        # Re-enable rescan button in series frame
         self.rescan_btn.config(state=tk.NORMAL)
-
-        # Re-enable session tree
         self.enable_session_treeviews()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def enable_session_treeviews(self):
-        # Remove the blocking bindings from session tree
-        self.session_tree.unbind("<Button-1>")
-        self.session_tree.unbind("<Button-3>")
-        self.session_tree.unbind("<Double-Button-1>")
-        self.session_tree.unbind("<Key>")
-
-        # Restore the original selection events
+        """Re-enable the session tree and the buttons in its frame"""
+        self._unblock_tree_input(self.session_tree)
         self.series_tree.bind("<<TreeviewSelect>>", self.on_series_select)
-
-        # Re-enable all buttons in session frame (recursively)
-        self._enable_buttons_in_frame(self.session_tree.master.master)
+        self._set_buttons_state(self.session_tree.master.master, tk.NORMAL)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _disable_buttons_in_frame(self, frame):
-        """Recursively disable all buttons in a frame"""
+    _BLOCKED_EVENTS = ("<Button-1>", "<Button-3>", "<Double-Button-1>",
+                       "<Key>")
+
+    def _block_tree_input(self, tree):
+        """Block mouse and key input on a treeview"""
+        for ev in self._BLOCKED_EVENTS:
+            tree.bind(ev, lambda e: "break")
+
+    def _unblock_tree_input(self, tree):
+        """Remove the input blocking set by _block_tree_input()"""
+        for ev in self._BLOCKED_EVENTS:
+            tree.unbind(ev)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_buttons_state(self, frame, state):
+        """Recursively set the state of all buttons in a frame"""
         try:
             for widget in frame.winfo_children():
                 if isinstance(widget, (ttk.Button, tk.Button)):
-                    widget.config(state=tk.DISABLED)
+                    widget.config(state=state)
                 elif isinstance(widget, (ttk.Frame, tk.Frame, ttk.LabelFrame)):
-                    # Recursively check child frames
-                    self._disable_buttons_in_frame(widget)
-        except Exception:
-            pass
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _enable_buttons_in_frame(self, frame):
-        """Recursively enable all buttons in a frame"""
-        try:
-            for widget in frame.winfo_children():
-                if isinstance(widget, (ttk.Button, tk.Button)):
-                    widget.config(state=tk.NORMAL)
-                elif isinstance(widget, (ttk.Frame, tk.Frame, ttk.LabelFrame)):
-                    # Recursively check child frames
-                    self._enable_buttons_in_frame(widget)
+                    self._set_buttons_state(widget, state)
         except Exception:
             pass
 
@@ -2004,7 +1861,7 @@ class RTMRISimulator:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_closing(self):
-        """Handle window closing"""
+        """Save the settings and close the window"""
         if self.simulation_running:
             if messagebox.askokcancel(
                 "Quit", "Simulation is running. Stop and quit?"
@@ -2017,7 +1874,7 @@ class RTMRISimulator:
         self.root.destroy()
 
 
-# %% ==========================================================================
+# %% __main__ =================================================================
 if __name__ == "__main__":
     app = RTMRISimulator()
     app.run()

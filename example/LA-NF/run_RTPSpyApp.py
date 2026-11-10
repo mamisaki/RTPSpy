@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run left amygdala neurofeedback (LA-NF) application
+Run the left amygdala neurofeedback (LA-NF) application
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -21,8 +21,8 @@ from rtpspy import RtpGUI
 from la_nf import LANF
 
 
-# %% Default parameters
-# External NF application
+# %% Default parameters ======================================================
+# Command to boot the external NF application
 this_dir = Path(__file__).absolute().parent
 if 'Microsoft' in uname().release:
     cmd_path = r'/mnt/c/Program\ Files/PsychoPy3/pythonw.exe '
@@ -103,8 +103,8 @@ if __name__ == '__main__':
         exit_code = -1
 
     # --- End ---
-    # Save parameters
-    # exit with 1 means exit wihtout saving (defined in RtpGUI)
+    # Save the parameters. Exit code 1 means exit without saving (defined
+    # in RtpGUI).
     if exit_code != 1:
         save_parameters(all_rtp_objs)
 

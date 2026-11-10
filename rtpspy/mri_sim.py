@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Real-time MRI simulation: write fMRI volumes (or DICOM files) to a directory
+at the TR timing, and send physio signals to a serial port.
+
 @author: mmisaki@laureateinstitute.org
 """
 
@@ -29,7 +32,7 @@ except Exception:
 # %% MRIFeeder class ==========================================================
 class MRIFeeder(threading.Thread):
     """
-    Class for MRI data feeder thread
+    Thread that writes MRI data files to dst_dir at the acquisition timing.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -69,7 +72,7 @@ class MRIFeeder(threading.Thread):
                     force=False)
                 self.TR = float(dcm[(0x0018, 0x0080)].value) / 1000
                 self.NSlices = dcm[(0x0043, 0x1079)].value
-            elif self.imgType == 'SIemense Mosaic':
+            elif self.imgType == 'Siemens Mosaic':
                 ff = list(self.mri_src.glob('*.dcm'))
                 self._mri_feed_num = len(ff)
                 dcm = pydicom.dcmread(
@@ -81,8 +84,6 @@ class MRIFeeder(threading.Thread):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
-
-        # Run file feed
         num = 0
         self.cmd = ''
         try:
@@ -96,16 +97,18 @@ class MRIFeeder(threading.Thread):
 
             elif self.imgType == 'GE DICOM':
                 dicom_fs = np.array(list(self.mri_src.glob('i*')))
-                sort_idx = np.argsort([int(ff.suffix[1:]) for ff in dicom_fs]).ravel()
+                sort_idx = np.argsort(
+                    [int(ff.suffix[1:]) for ff in dicom_fs]).ravel()
                 src_dicom_fs = dicom_fs[sort_idx]
                 N_files = len(src_dicom_fs)
                 feed_delay = 0.01
                 feed_interval = self.TR / self.NSlices
                 dst_dir = Path(self.dst_dir) / self.mri_src.name
 
-            elif self.imgType =='Siemens Mosaic':
+            elif self.imgType == 'Siemens Mosaic':
                 dicom_fs = np.array(list(self.mri_src.glob('*.dcm')))
-                sort_idx = np.argsort([int(ff.stem) for ff in dicom_fs]).ravel()
+                sort_idx = np.argsort(
+                    [int(ff.stem) for ff in dicom_fs]).ravel()
                 src_dicom_fs = dicom_fs[sort_idx]
                 N_files = len(src_dicom_fs)
                 feed_delay = 0.2
@@ -115,7 +118,7 @@ class MRIFeeder(threading.Thread):
             st = time.time()
             while num < N_files:
                 if time.time() >= st + (num+1)*feed_interval-feed_delay:
-                    # Save a file
+                    # Write a file
                     feed_st = time.time()
 
                     if not dst_dir.is_dir():
@@ -133,76 +136,74 @@ class MRIFeeder(threading.Thread):
                         shutil.copy(src_f, dst_f)
 
                     feed_delay = time.time() - feed_st
-                    if self.parent is not None:
-                        if self.imgType != 'GE DICOM':
-                            self.parent.logmsg(f"Write {dst_f}")
-                        elif (num+1) % self.NSlices == 0:
-                            self.parent.logmsg(f"Write {dst_f}")
-                    else:
-                        print(f"Write {dst_f}")
+                    # GE DICOM is a file per slice; log once per volume.
+                    if self.imgType != 'GE DICOM' or \
+                            (num+1) % self.NSlices == 0:
+                        self._log(f"Write {dst_f}")
 
                     num += 1
                     if num == self._mri_feed_num:
                         break
 
-                if len(self.cmd):
-                    if self.cmd == 'STOP':
-                        if self.parent is not None:
-                            self.parent.logmsg("+++ Stop MRI feeding")
-                        else:
-                            print("+++ Stop MRI feeding")
-                        break
-                        self.cmd = ''
+                if self.cmd == 'STOP':
+                    self._log("+++ Stop MRI feeding")
+                    break
 
                 time.sleep(feed_interval / 100)
 
         finally:
-            if self.parent is not None:
-                self.parent.logmsg(f"+++ Finish feeding: wrote {num} files.")
-            else:
-                print(f"+++ Finish feeding: wrote {num} files.")
+            self._log(f"+++ Finish feeding: wrote {num} files.")
             self.cmd = 'FINISH'
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _log(self, msg):
+        """Log with the parent's logger (an RTP object), if any."""
+        if self.parent is not None and hasattr(self.parent, '_logger'):
+            self.parent._logger.info(msg)
+        else:
+            print(msg)
 
 
 # %% PhysioFeeder class =======================================================
 class PhysioFeeder(threading.Thread):
+    """
+    Thread that sends ECG and respiration signals to a serial port in the
+    packet format of the physio recording device.
+    """
 
     def __init__(self, ecg_f, resp_f, recording_rate_ms=25,
                  samples_to_average=5, sport='/dev/ptmx', OnsetSig=None,
                  parent=None):
         """
-        Options
-        -------
-        ecg_f: string
-            ECG filename
-        resp_f: string
-            Resp filename
-        recording_rate_ms: int
-            Sampling interval of ECG and Resp file data
-        samples_to_average: int
-            Number of samples averaged at making ECG and Resp file data.Thus,
-            the actual signal frequency was
-            1000 * samples_to_average/recording_rate_ms Hz
-        sport: string
-            output serial port device name (default is pseudo serial port
-            /dev/ptmx)
+        Parameters
+        ----------
+        ecg_f : str
+            ECG filename.
+        resp_f : str
+            Respiration filename.
+        recording_rate_ms : int
+            Sampling interval (ms) of the ECG and respiration file data.
+        samples_to_average : int
+            Number of samples averaged to make the ECG and respiration file
+            data. The raw signal frequency is therefore
+            1000 * samples_to_average / recording_rate_ms Hz.
+        sport : str
+            Output serial port device name. The default is the pseudo
+            serial port, /dev/ptmx.
         OnsetSig : OnsetSignal object
-        parent:
+            Sends the scan start signal when the feeding starts.
+        parent : RTP object
+            Its logger is used for logging, if any.
         """
         super().__init__()
 
-        self._cname = self.__class__.__name__
         self.parent = parent
 
-        # -- Read data from file --
         self.read_data_files(ecg_f, resp_f)
 
-        # -- set signal timing --
         self._recording_rate_ms = recording_rate_ms
         self._samples_to_average = samples_to_average
 
-        # -- Set output port --
-        self._sport = sport
         self.set_out_ports(sport)
 
         self.OnsetSig = OnsetSig
@@ -213,49 +214,24 @@ class PhysioFeeder(threading.Thread):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_data_files(self, ecg_f, resp_f):
         """
-        Read ECG, Resp data files
+        Read the ECG and respiration data files.
 
-        Set variables
-        -------------
-        self._ecg: array
-            ECG data vector
-        self._resp: array
-            Resp data vector
-        self._siglen: int
-            data length
+        Sets self._ecg and self._resp (int16 arrays) and self._siglen (data
+        length).
         """
-
-        # -- Initialize --
         ecg = []
         resp = []
         minlen = 0
 
-        # -- Read data --
-        # ECG
         if Path(ecg_f).is_file():
-            # Read text
-            ecg = open(ecg_f).read()
-            # Split text and convert to int
-            ecg = [int(round(float(v))) for v in ecg.rstrip().split('\n')]
-            # Convert to short int array
-            ecg = np.array(ecg, dtype=np.int16)
+            ecg = self._read_int16(ecg_f)
             minlen = len(ecg)
-            log_msg = f"Read {len(ecg)} values from {ecg_f}"
-            self._log(log_msg)
 
-        # Respiration
         if Path(resp_f).is_file():
-            # Read text
-            resp = open(resp_f).read()
-            # Split text and convert to int
-            resp = [int(round(float(v))) for v in resp.rstrip().split('\n')]
-            # Convert to short int array
-            resp = np.array(resp, dtype=np.int16)
+            resp = self._read_int16(resp_f)
             minlen = min([minlen, len(resp)])
-            log_msg = f"Read {len(resp)} values from {resp_f}"
-            self._log(log_msg)
 
-        # -- adjust signal length
+        # -- Adjust the signal lengths
         if minlen > 0:
             adjusted = False
             if len(ecg) > minlen:
@@ -274,15 +250,24 @@ class PhysioFeeder(threading.Thread):
                 log_msg = f"Data length is adjusted to {minlen}"
                 self._log(log_msg)
 
-        # -- Save data as class variable --
         self._ecg = ecg
         self._resp = resp
         self._siglen = minlen
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def set_out_ports(self, sport):
+    def _read_int16(self, fname):
+        """Read a text file of one value per line as an int16 array."""
+        txt = open(fname).read()
+        data = [int(round(float(v))) for v in txt.rstrip().split('\n')]
+        data = np.array(data, dtype=np.int16)
+        self._log(f"Read {len(data)} values from {fname}")
+        return data
 
-        # -- Open a serial port --
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_out_ports(self, sport):
+        """Open the output serial port.
+        For a pseudo terminal, sport is 'name:fd', and fd is written.
+        """
         if 'ptmx' in sport:
             sport, fd = sport.split(':')
             self.sport_fd = int(fd)
@@ -295,8 +280,7 @@ class PhysioFeeder(threading.Thread):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def data_packet(self, seqn, ecg, resp, ecg2, ecg3):
-
-        # packing data into packet
+        """Pack the values into a packet with a checksum."""
         seqn = seqn % (np.iinfo(np.uint16).max+1)
         byte_pack = struct.pack('H', np.array(seqn, dtype=np.uint16))
         byte_pack += struct.pack('h', ecg2)
@@ -304,27 +288,19 @@ class PhysioFeeder(threading.Thread):
         byte_pack += struct.pack('h', resp)
         byte_pack += struct.pack('h', ecg)
 
-        # checksum
+        # Checksum: sum of the 10 bytes above
         chsum = np.array(sum(struct.unpack('B' * 10, byte_pack)),
                          dtype=np.int16)
-
-        # Add error
-        # if seqn > 0 and seqn%1000 == 0:
-        #    chsum += 1
-
         byte_pack += struct.pack('h', chsum)
 
         return byte_pack
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
-
-        # -- Set signal interval --
+        # Interval of the raw (not averaged) samples
         interval_sec = self._recording_rate_ms/self._samples_to_average/1000
 
-        # Start loop for sending signal
-        log_msg = "Start physio signal feeding"
-        self._log(log_msg)
+        self._log("Start physio signal feeding")
 
         t = 0
         self._count = 0
@@ -332,39 +308,35 @@ class PhysioFeeder(threading.Thread):
         if self.OnsetSig is not None:
             self.OnsetSig.send_scan_start()
 
-        t0 = time.time()  # start time
+        t0 = time.time()
         runSend = True
         while runSend:
             # Repeat _samples_to_average times to simulate raw data
             for rep in range(self._samples_to_average):
-                # packet number
-                t = t % 65536
-                ni = self._count % self._siglen
+                t = t % 65536  # Packet number
+                ni = self._count % self._siglen  # Loop over the data
 
-                # Prepare packet
                 byte_pack = self.data_packet(t, self._ecg[ni],
                                              self._resp[ni], 0, 0)
 
-                # wait for feed time
+                # Wait until the feed time
                 feed_sec = (self._count * self._samples_to_average + rep)
                 feed_sec *= interval_sec
 
                 while (time.time() - t0) < feed_sec:
                     time.sleep(interval_sec/10000)
 
-                # Send packet
                 if 'ptmx' in self._ser.name:
                     os.write(self.sport_fd, byte_pack)
                 else:
                     self._ser.write(byte_pack)
-                t += 1  # increment packet number
+                t += 1
 
-                if len(self.cmd):
-                    if self.cmd == 'STOP':
-                        runSend = False
-                        break
+                if self.cmd == 'STOP':
+                    runSend = False
+                    break
 
-            self._count += 1  # increment data index
+            self._count += 1
 
         log_msg = "Finish physio signal feeding."
         n_sent = (self._count + 1) * self._samples_to_average
@@ -373,15 +345,17 @@ class PhysioFeeder(threading.Thread):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _log(self, msg):
-        if self.parent and hasattr(self.parent, 'logmsg'):
-            self.parent.logmsg(msg)
+        """Log with the parent's logger (an RTP object), if any."""
+        if self.parent is not None and hasattr(self.parent, '_logger'):
+            self.parent._logger.info(msg)
         else:
             print(msg)
 
 
 # %% OnsetSignal class ========================================================
 class OnsetSignal():
-    """ Onset signal sender class """
+    """Send the scan onset signal via a USB GPIO module or a UNIX domain
+    socket (onsig_port='0')."""
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, onsig_port, onsig_sock_file='/tmp/rtp_uds_socket',
@@ -403,24 +377,15 @@ class OnsetSignal():
             self._onsig_port_ser.write(b"gpio clear 0\r")
 
         elif onsig_port == '0':
-            # Use UDS socket to send trigger signal
+            # Use a UDS socket to send the trigger signal
             self.onsig_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            try:
-                if self._logfd:
-                    log_msg = "UDS socket {} will be used".format(
-                            self._onsig_sock_file)
-                    log_msg += " for sending scan start signal"
-                    self._log(log_msg)
-
-            except socket.error:
-                if self._logfd:
-                    log_msg = "Cannot connect UDS socket "
-                    log_msg += "{}".format(self._onsig_sock_file)
-                    self._log(log_msg)
+            if self._logfd:
+                self._log(f"UDS socket {self._onsig_sock_file} will be used"
+                          " for sending the scan start signal")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_scan_start(self):
-        """ send pulse to the port """
+        """Send a pulse to the port."""
         if '/dev/ttyACM' in self._onsig_port:
             ont = time.time()
             self._onsig_port_ser.write(b"gpio set 0\r")
@@ -431,9 +396,8 @@ class OnsetSignal():
 
         elif self._onsig_port == '0':
             if not os.path.exists(self._onsig_sock_file):
-                errmsg = 'No UDS file'
-                errmsg += ' {}\n'.format(self._onsig_sock_file)
-                errmsg += 'UDS socket file must be prepared by the receiver.'
+                errmsg = f'No UDS file {self._onsig_sock_file}\n'
+                errmsg += 'The receiver must create the UDS socket file.'
                 if self._logfd:
                     self._log(errmsg)
             else:
@@ -447,17 +411,16 @@ class OnsetSignal():
         self._logfd.write(wmsg)
 
 
-# %% MRISim class =============================================================
+# %% rtMRISim class ===========================================================
 class rtMRISim(RTP):
     """
-    Real-time MRI simulation
+    Real-time MRI simulation: runs MRIFeeder and PhysioFeeder threads.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, mri_src='', dst_dir='', suffix='', onsig_port=None):
-        super().__init__()  # call __init__() in RTP class
+        super().__init__()
 
-        # Initialize variables
         self.mri_src = mri_src
         self.dst_dir = dst_dir
         self.suffix = suffix
@@ -469,7 +432,7 @@ class rtMRISim(RTP):
             self.OnsetSig = None
 
         self.physio_kwargs = {}
-        self.phyio_feeder = None
+        self.physio_feeder = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_physio(self, ecg_src, resp_src, physio_port, recording_rate_ms=25,
@@ -485,14 +448,15 @@ class rtMRISim(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_MRI(self, mode, imgType=None):
-
+        """Start ('start') or stop ('stop') MRI feeding."""
         if mode == 'start':
             if self.mri_feeder is not None and self.mri_feeder.is_alive():
-                # mri_feeder is running
-                return
+                return  # Already running
 
             if not Path(self.dst_dir).is_dir():
-                self.errmsg("Not found destination directory, {self.dst_dir}.")
+                self._logger.error(
+                    f"Destination directory not found: {self.dst_dir}.")
+                return
 
             self.mri_feeder = MRIFeeder(self.mri_src, imgType, self.dst_dir,
                                         suffix=self.suffix, parent=self)
@@ -508,11 +472,11 @@ class rtMRISim(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_Physio(self, mode):
+        """Start ('start') or stop ('stop') physio feeding."""
         if mode == 'start':
-            if self.phyio_feeder is not None \
-                    and self.phyio_feeder.is_alive():
-                # phyio_feeder is running
-                return
+            if self.physio_feeder is not None \
+                    and self.physio_feeder.is_alive():
+                return  # Already running
 
             if not ('ecg_f' in self.physio_kwargs and
                     'resp_f' in self.physio_kwargs and
@@ -520,16 +484,16 @@ class rtMRISim(RTP):
                 sys.stderr.write("!!! Physio parameters have not been set.")
                 return
 
-            self.phyio_feeder = PhysioFeeder(**self.physio_kwargs)
-            self.phyio_feeder.start()
+            self.physio_feeder = PhysioFeeder(**self.physio_kwargs)
+            self.physio_feeder.start()
 
         elif mode == 'stop':
-            if self.phyio_feeder is not None and \
-                    self.phyio_feeder.is_alive():
-                self.phyio_feeder.cmd = 'STOP'
-                self.phyio_feeder.join()
-                del self.phyio_feeder
-                self.phyio_feeder = None
+            if self.physio_feeder is not None and \
+                    self.physio_feeder.is_alive():
+                self.physio_feeder.cmd = 'STOP'
+                self.physio_feeder.join()
+                del self.physio_feeder
+                self.physio_feeder = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -554,13 +518,13 @@ if __name__ == '__main__':
     ecg_src = test_dir / 'ECG.1D'
     resp_src = test_dir / 'Resp.1D'
 
-    # Set Dummy serial port for simulating physio recording
+    # Make a pseudo serial port to simulate the physio recording device
     master, slave = pty.openpty()
     s_name = os.ttyname(slave)
     try:
         m_name = os.ttyname(master)
     except Exception:
-        m_name = 'Psuedo master'
+        m_name = 'Pseudo master'
     physio_port = f"{m_name}:{master}"
     print(s_name)
 
@@ -573,17 +537,15 @@ if __name__ == '__main__':
 
     # Start physio feeding
     mri_sim.run_Physio('start')
-    while mri_sim.phyio_feeder is None or \
-            not mri_sim.phyio_feeder.is_alive():
-        # Wait for physio   start
-        time.sleep(1)
+    while mri_sim.physio_feeder is None or \
+            not mri_sim.physio_feeder.is_alive():
+        time.sleep(1)  # Wait for the physio feeding to start
 
     # Start MRI feeding
-    mri_sim.run_MRI('start')
+    mri_sim.run_MRI('start', imgType='NIfTI')
     while mri_sim.mri_feeder is None or \
             not mri_sim.mri_feeder.is_alive():
-        # Wait for mri_feeder start
-        time.sleep(1)
+        time.sleep(1)  # Wait for the MRI feeding to start
 
     while mri_sim.mri_feeder.is_alive():
         time.sleep(1)

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Watching new file creation for real-time processing
-Support only for Siemens XA30 DICOM
+Watch for new image files and feed them into the real-time processing
+pipeline. DICOM is supported only for Siemens (XA enhanced multi-frame and
+classic mosaic).
 
 @author: mmisaki@libr.net
 """
@@ -38,16 +39,16 @@ except Exception:
 
 # %% class RtpWatch ===========================================================
 class RtpWatch(RTP):
-    """Read the DICOM file in real time, convert to Nifti and feed the data
-    into the RTP pipeline.
+    """Read image files in real time, convert them to NIfTI, and feed the
+    data into the RTP pipeline.
     Procedures:
     - Monitor a directory (self.watch_dir) to which DICOM files are exported
       in real time.
-    - Reads a dicom file and converts it to a nibable.Nifti1Image object. The
-      object is passed to the downsterm process connected to self.next_proc.
-    - The DICOM files in self.watch_dir are moved to another location in the
-      'self.work_dir / dicom' directory by a self.ready_proc() call at the
-      beginning.
+    - Read a DICOM file and convert it to a nibabel.Nifti1Image object. The
+      object is passed to the downstream process connected to
+      self.next_proc.
+    - If self.clean_ready is True, the files in self.watch_dir are moved to
+      'self.work_dir / dicom' by self.ready_proc() at the beginning.
 
     Refer also to the python watchdog package:
     https://pypi.org/project/watchdog/
@@ -57,7 +58,7 @@ class RtpWatch(RTP):
     def __init__(
         self,
         watch_dir=None,
-        watch_file_pattern=r".+\.dcm",
+        watch_file_pattern=r".+\.dcm$",
         file_type="Dicom",
         read_timeout=3,
         polling_observer=False,
@@ -74,17 +75,17 @@ class RtpWatch(RTP):
             (regular expression).
         watch_file_pattern : str (regular expression)
             Regular expression to filter the filename monitored by a watchdog.
-            The default is r'.+\\.dcm'.
+            The default is r'.+\\.dcm$'.
         file_type : str
-            Type of image file. The following types are supproted:
-            'Dicom', 'Nifti', and 'BRIK'.
+            Type of image file. The following types are supported:
+            'Dicom', 'Nifti', and 'AFNI_BRIK'.
         read_timeout : float, optional
-            Timeout (second) for reading a DICOM file.
+            Timeout (seconds) for reading a file.
         polling_observer : bool, optional
-            Flag to use a PollingObserver if the dcm_dir is not on a local
+            Flag to use a PollingObserver if watch_dir is not on a local
             file system. The default is False.
         polling_timeout : float, optional
-            Timeout (second) for polling watch_dir.
+            Timeout (seconds) for polling watch_dir.
         """
         super().__init__(**kwargs)  # call __init__() in RTP base class
 
@@ -93,20 +94,20 @@ class RtpWatch(RTP):
         self.watch_dir = watch_dir
         self.watch_file_pattern = watch_file_pattern
         self.file_type = file_type
-        self._read_timeout = read_timeout
+        self.read_timeout = read_timeout
         self.polling_observer = polling_observer
         self.polling_timeout = polling_timeout
         self.clean_ready = False
 
         self._last_proc_f = ""  # Last processed filename
-        self._done_proc = -1  # Number of the processed volume
+        self._done_proc = -1  # Number of the processed volumes
         self._proc_ready = False
         self.scan_name = None  # Used for saving a physio signal file.
         self.nii_save_filename = None
 
         if self.file_type not in self._supported_file_types:
             errmsg = f"file_type = {self.file_type} is not supported."
-            errmsg += " Reset file_type to 'Nifti'"
+            errmsg += " file_type is reset to 'Nifti'."
             self._logger.error(errmsg)
             self.file_type = "Nifti"
 
@@ -135,18 +136,23 @@ class RtpWatch(RTP):
         """End process and reset process parameters."""
         self._logger.info(f"Reset {self.__class__.__name__} module.")
 
-        # Wait for process in watch thread finish.
+        # Stop the observer, waiting for the running process to finish.
         self.stop_watching()
         super().end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_watching(self):
         """Start watchdog observer monitoring the watch_dir directory."""
-        if self.watch_dir is None or not self.watch_dir.is_dir():
+        if self.watch_dir is None or not Path(self.watch_dir).is_dir():
             errmsg = f"No directory: {self.watch_dir}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             return
+        self.watch_dir = Path(self.watch_dir)
+
+        # Stop the running observer, if any, before starting a new one
+        if hasattr(self, "_observer"):
+            self.stop_watching()
 
         # Start observer
         if self.polling_observer:
@@ -159,7 +165,7 @@ class RtpWatch(RTP):
         )
 
         self._observer.schedule(
-            self._event_handler, self.watch_dir, recursive=True
+            self._event_handler, str(self.watch_dir), recursive=True
         )
         self._observer.start()
         self._logger.info(
@@ -169,7 +175,7 @@ class RtpWatch(RTP):
 
     # /////////////////////////////////////////////////////////////////////////
     class RTPFileHandler(FileSystemEventHandler):
-        """File handling class"""
+        """Call the callback for a new file that matches the pattern."""
 
         def __init__(self, watch_file_pattern, callback):
             """
@@ -178,7 +184,7 @@ class RtpWatch(RTP):
             watch_file_pattern : str
                 Regular expression to filter the file.
             callback : function
-                Applied function to the file.
+                Function to apply to the file.
             """
             super().__init__()
             self.watch_file_pattern = watch_file_pattern
@@ -191,6 +197,14 @@ class RtpWatch(RTP):
             if re.search(self.watch_file_pattern, Path(event.src_path).name):
                 self.callback(event.src_path)
 
+        def on_moved(self, event):
+            # A writer may save to a temporary name and rename it.
+            if event.is_directory:
+                return
+
+            if re.search(self.watch_file_pattern, Path(event.dest_path).name):
+                self.callback(event.dest_path)
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_watching(self):
         if hasattr(self, "_observer"):
@@ -202,7 +216,8 @@ class RtpWatch(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
-        # Remove characters that are not safe for paths
+        # Replace each run of characters that are not safe for paths with
+        # one underscore
         cleaned_string = re.sub(r'[\\/:"*?<>|]+', "_", input_string)
 
         # Replace spaces and other non-alphanumeric characters with underscores
@@ -235,16 +250,22 @@ class RtpWatch(RTP):
             if self._proc_start_idx < 0:
                 self._proc_start_idx = 0  # 0-base index
 
-            # Increment the number of received volume
-            self._vol_num += 1  # 1-base
+            # 1-base number of this volume. self._vol_num is incremented only
+            # when a valid image is made, so that skipped or failed files
+            # do not consume a volume index.
+            vol_num = self._vol_num + 1
 
+            fmri_img = None
             if self.file_type == "Dicom":
-                fmri_img = self.process_Dicom(file_path, self._vol_num)
+                fmri_img = self.process_Dicom(file_path, vol_num)
             elif self.file_type in ("Nifti", "AFNI_BRIK"):
-                fmri_img = self.process_nibabel(file_path, self._vol_num)
+                fmri_img = self.process_nibabel(file_path, vol_num)
 
             if fmri_img is None:
                 return
+
+            # Increment the number of received volumes
+            self._vol_num = vol_num  # 1-base
 
             # Record process time
             tstamp = time.time()
@@ -253,21 +274,21 @@ class RtpWatch(RTP):
             if self.save_delay:
                 self.proc_delay.append(proc_delay)
 
-            # log
-            f = file_path.name
+            # Log message
             if len(self._proc_time) > 1:
                 t_interval = self._proc_time[-1] - self._proc_time[-2]
             else:
                 t_interval = -1
-            msg = f"#{self._vol_num};Read file;{f}"
+            msg = f"#{self._vol_num};Read file;{file_path.name}"
             msg += f";tstamp={tstamp}"
             msg += f";took {proc_delay:.4f}s"
             msg += f";interval {t_interval:.4f}s"
             self._logger.info(msg)
 
             if self.next_proc:
-                # Keep the current processed data
-                self.proc_data = np.asanyarray(fmri_img.dataobj)
+                # Keep a copy of the current processed data, as the next
+                # process may modify the array in place.
+                self.proc_data = np.array(fmri_img.dataobj)
                 save_name = fmri_img.get_filename()
 
                 # Run the next process
@@ -283,10 +304,10 @@ class RtpWatch(RTP):
             # Save processed image
             if self.save_proc:
                 if self.next_proc is not None:
-                    # Recover the processed data in this module
+                    # Restore the data read in this module
                     fmri_img.uncache()
                     fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype = self.proc_data.dtype
+                    fmri_img.set_data_dtype(self.proc_data.dtype)
                     fmri_img.set_filename(save_name)
 
                 self.keep_processed_image(
@@ -299,79 +320,120 @@ class RtpWatch(RTP):
             self._logger.error(errmsg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def process_Dicom(self, file_path, vol_num):
-        # --- Read dicom file--------------------------------------------------
+    def _read_dicom_file(self, file_path):
+        """Read a DICOM file, retrying until the file is completely written.
+
+        Returns the pydicom dataset, or None if the file could not be read
+        within self.read_timeout seconds.
+        """
         st = time.time()
-        dcm = None
-        try:
-            dcm = pydicom.dcmread(file_path)
-            _ = dcm.pixel_array
-        except Exception:
-            pass
-
-        while dcm is None and time.time() - st < self._read_timeout:
-            # Wait until the file is readable.
+        last_size = -1
+        while True:
+            sleep = 0.01
             try:
-                # Check if the file is complete.
                 dcm = pydicom.dcmread(file_path)
-                rows = int(dcm.Rows)
-                cols = int(dcm.Columns)
-                bits_allocated = int(dcm.BitsAllocated)
-                frames = int(dcm.get("NumberOfFrames", 1))
-                pixel_data_size = rows * cols * (bits_allocated // 8) * frames
-                assert len(dcm.PixelData) == pixel_data_size
-                break
+                if "PixelData" in dcm:
+                    # Decoding fails if the pixel data is incomplete.
+                    _ = dcm.pixel_array
+                    return dcm
 
-            except Exception:
-                time.sleep(0.01)
+                # No pixel data: accept it when the file size is stable.
+                fsize = Path(file_path).stat().st_size
+                if fsize == last_size:
+                    return dcm
+                last_size = fsize
+                errmsg = "No pixel data"
+                sleep = 0.05
+            except Exception as e:
+                errmsg = str(e)
 
+            if time.time() - st > self.read_timeout:
+                self._logger.error(
+                    f"Failed to read {file_path} as DICOM: {errmsg}")
+                return None
+            time.sleep(sleep)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def process_Dicom(self, file_path, vol_num):
+        # --- Read DICOM file -------------------------------------------------
+        dcm = self._read_dicom_file(file_path)
         if dcm is None:
-            errmsg = f"Failed to read {file_path} as DICOM"
-            self._logger.error(errmsg)
             return
 
-        manufacturer = dcm.Manufacturer.lower()
-        if "siemens" in manufacturer:
-            if "XA" in dcm.SoftwareVersions.upper():
-                fmri_img = self._proc_SiemensXADicom(file_path, dcm)
-            else:
-                fmri_img = self._proc_SiemensMosaicDicom(file_path, dcm)
-        else:
+        if "PixelData" not in dcm:
+            self._logger.debug(f"{file_path.name} is not an image file.")
+            return
+
+        manufacturer = str(dcm.get("Manufacturer", "")).lower()
+        if "siemens" not in manufacturer:
+            self._logger.debug(f"{file_path.name} is not a Siemens DICOM.")
+            return
+
+        soft_ver = dcm.get("SoftwareVersions", "")
+        if isinstance(soft_ver, pydicom.multival.MultiValue):
+            soft_ver = "\\".join(soft_ver)
+        is_XA = "XA" in str(soft_ver).upper()
+
+        fmri_img = self._proc_SiemensDicom(file_path, dcm, is_XA)
+        if fmri_img is None:
             return
 
         if self.nii_save_filename is None:
-            # Set save_filename
-            patinet = str(dcm.PatientName).split("^")
-            if re.match(r"\w\w\d\d\d", patinet[0]):  # LIBR ID
-                sub = patinet[0]
+            # Set the save filename from the first volume of the series
+            patient = str(dcm.PatientName).split("^")
+            if re.match(r"\w\w\d\d\d", patient[0]):
+                # Subject ID format of two letters and three digits
+                sub = patient[0]
             else:
-                sub = "_".join(patinet)
+                sub = "_".join(patient)
             ser = dcm.SeriesNumber
             serDesc = dcm.SeriesDescription
-            self.nii_save_filename = f"sub-{sub}_ser-{int(ser)}"
+            save_filename = f"sub-{sub}_ser-{int(ser)}"
             if len(serDesc):
-                self.nii_save_filename += f"_desc-{serDesc}"
-            self.nii_save_filename = self._make_path_safe(
-                self.nii_save_filename)
+                save_filename += f"_desc-{serDesc}"
+            self.nii_save_filename = self._make_path_safe(save_filename)
             self.scan_name = f"Ser-{ser}"
 
-        nii_fname = self.nii_save_filename + f"_{vol_num + 1:04d}.nii.gz"
+        nii_fname = self.nii_save_filename + f"_{vol_num:04d}.nii.gz"
         fmri_img.set_filename(nii_fname)
 
         return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _proc_SiemensXADicom(self, file_path, dcm):
-        # --- Read header and check if this file should be processed ----------
+    def _proc_SiemensDicom(self, file_path, dcm, is_XA):
+        """Check whether dcm is an fMRI volume to process, and convert it to
+        a NIfTI image.
+
+        Parameters
+        ----------
+        file_path : Path
+            DICOM file path.
+        dcm : pydicom.dataset.Dataset
+            DICOM dataset read from file_path.
+        is_XA : bool
+            True for XA software (enhanced multi-frame DICOM); False for
+            older software (mosaic DICOM).
+
+        Returns
+        -------
+        nibabel.Nifti1Image or None
+            None if the file is not processed.
+        """
         try:
             imageType = "\\".join(dcm.ImageType)
-            # Ignore non fMRI file
-            if (
-                "FMRI" not in imageType
-                and "ep2d_fid_" not in dcm.ProtocolName
-                and "ep2d_bold_" not in dcm.ProtocolName
-            ):
-                self._logger.debug(f"{file_path.name} is not a fMRI file.")
+            # Ignore non-fMRI file
+            if is_XA:
+                is_fmri = (
+                    "FMRI" in imageType
+                    or "ep2d_fid_" in dcm.ProtocolName
+                    or "ep2d_bold_" in dcm.ProtocolName
+                )
+            else:
+                is_fmri = (
+                    "FMRI" in imageType or "epfid2d" in dcm.SequenceName
+                )
+            if not is_fmri:
+                self._logger.debug(f"{file_path.name} is not an fMRI file.")
                 return
 
             # Ignore derived file
@@ -394,12 +456,15 @@ class RtpWatch(RTP):
                 self._logger.debug(f"{file_path.name} is a MoCo series.")
                 return
 
-            # Ignore Phase image
+            # Ignore phase image
             if seriesDescription.endswith("_Pha"):
-                self._logger.debug(f"{file_path.name} is a Phase series.")
+                self._logger.debug(f"{file_path.name} is a phase series.")
                 return
 
-            fmri_img = self.dcm2nii_SiemensXADicom(dcm, file_path)
+            if is_XA:
+                return self.dcm2nii_SiemensXADicom(dcm, file_path)
+            else:
+                return self.dcm2nii_SiemensMosaicDicom(dcm, file_path)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -407,104 +472,49 @@ class RtpWatch(RTP):
                 exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
             return
-
-        return fmri_img
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _proc_SiemensMosaicDicom(self, file_path, dcm):
-        # --- Read header and check if this file should be processed ----------
-        try:
-            imageType = "\\".join(dcm.ImageType)
-            # Ignore non fMRI file
-            if "FMRI" not in imageType and "epfid2d" not in dcm.SequenceName:
-                self._logger.debug(f"{file_path.name} is not a fMRI file.")
-                return
-
-            # Ignore derived file
-            if "DERIVED" in imageType:
-                self._logger.debug(f"{file_path.name} is a derived file.")
-                return
-
-            seriesDescription = dcm.SeriesDescription
-            # Ignore localizer and scout
-            if "localizer" in seriesDescription:
-                self._logger.debug(f"{file_path.name} is a localizer series.")
-                return
-
-            if "scout" in seriesDescription:
-                self._logger.debug(f"{file_path.name} is a scout series.")
-                return
-
-            # Ignore MoCoSeries
-            if seriesDescription == "MoCoSeries":
-                self._logger.debug(f"{file_path.name} is a MoCo series.")
-                return
-
-            # Ignore Phase image
-            if seriesDescription.endswith("_Pha"):
-                self._logger.debug(f"{file_path.name} is a Phase series.")
-                return
-
-            fmri_img = self.dcm2nii_SiemensMosaicDicom(dcm, file_path)
-
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(traceback.format_exception(
-                exc_type, exc_obj, exc_tb))
-            self._logger.error(errmsg)
-            return
-
-        return fmri_img
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def process_GEDicom(self, file_path, dcm):
-        pass
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def process_nibabel(self, file_path, vol_num):
         file_path = Path(file_path)
-        fsize = file_path.stat().st_size
-        time.sleep(0.001)
+        st = time.time()
+        fsize = -1
         while True:
-            # Wait for completing file creation
-            if file_path.stat().st_size != fsize:
-                fsize = file_path.stat().st_size
-                time.sleep(0.001)
-                continue
-
+            # Wait until the file is completely written: the file size is
+            # stable and the data can be read.
             try:
-                # Load file
-                load_img = nib.load(file_path)
+                if file_path.stat().st_size == fsize:
+                    # Load file
+                    load_img = nib.load(file_path)
 
-                # get_fdata will fail if the file is incomplete.
-                load_img.get_fdata()
-                break
-            except Exception:
-                continue
+                    # get_fdata will fail if the file is incomplete.
+                    load_img.get_fdata()
+                    break
+                fsize = file_path.stat().st_size
+                errmsg = "File size is changing"
+            except Exception as e:
+                errmsg = str(e)
+
+            if time.time() - st > self.read_timeout:
+                self._logger.error(f"Failed to read {file_path}: {errmsg}")
+                return
+            time.sleep(0.001)
 
         try:
-            # Create Nifti1Image
-            dataV = np.asanyarray(load_img.dataobj)
-            if dataV.ndim > 3:
-                dataV = np.squeeze(dataV)
-
             # Set save_filename
             if file_path.suffix == ".gz":
                 save_filename = Path(file_path.stem).stem
             else:
                 save_filename = file_path.stem
             save_filename = re.sub(r"\+orig.*", "", save_filename) + ".nii.gz"
-            self.nii_save_filename = save_filename
-            self.nii_save_filename = self._make_path_safe(
-                self.nii_save_filename)
+            self.nii_save_filename = self._make_path_safe(save_filename)
 
             fmri_img = nib.Nifti1Image(
                 load_img.dataobj, load_img.affine, header=load_img.header
             )
             fmri_img.set_filename(self.nii_save_filename)
 
-            if hasattr(self, "scan_name") and self.scan_name is None:
-                # For LIBR: scan_name is used at saving a physio signal.
+            if self.scan_name is None:
+                # scan_name is used for saving a physio signal file.
                 ma = re.search(r".+scan_\d+__\d+", file_path.stem)
                 if ma:
                     self.scan_name = ma.group()
@@ -519,156 +529,164 @@ class RtpWatch(RTP):
         return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def dcm2nii_SiemensXADicom(self, dcm, file_path=None):
-        """Convert dicom (Siemense XA30) to Nifti
+    def _get_pixel_array(self, dcm, file_path=None):
+        """Get the pixel array, re-reading file_path (with self.read_timeout)
+        if the pixel data in dcm is incomplete."""
+        try:
+            return dcm.pixel_array
+        except Exception:
+            if file_path is None:
+                raise
 
-        Args:
-            dcm (_type_): _description_
+        dcm = self._read_dicom_file(file_path)
+        if dcm is None or "PixelData" not in dcm:
+            raise RuntimeError(f"Failed to read pixel data in {file_path}")
+        return dcm.pixel_array
 
-        Returns:
-            _type_: _description_
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _make_nifti(self, img_array, affine, ori_row, ori_col, TR):
+        """Make a NIfTI image in LPI orientation from a DICOM volume.
+
+        Parameters
+        ----------
+        img_array : 3D array
+            Volume data in the DICOM order (slice, row, column).
+        affine : 4x4 array
+            Affine matrix from the (column, row, slice) voxel index to the
+            RAS+ coordinates (mm), with the translation at the first voxel.
+        ori_row, ori_col : array
+            Direction cosines of the row and the column
+            (ImageOrientationPatient).
+        TR : float or None
+            Repetition time (ms).
+
+        Returns
+        -------
+        nibabel.Nifti1Image
         """
-        # --- Read position and pixel_array data from dcm---
-        assert "PerFrameFunctionalGroupsSequence" in dcm
-
-        # Pixel spacing (should be the same for all slices)
-        img_pix_space = (
-            dcm.PerFrameFunctionalGroupsSequence[0]
-            .PixelMeasuresSequence[0]
-            .PixelSpacing
-        )
-
-        # Get ImageOrientationPatient (should be the same for all slices)
-        # img_ornt_pat: direction cosines of the first row and the first
-        # column with respect to the patient.
-        # These Attributes shall be provide as a pair.
-        # Row value for the x, y, and z axes respectively followed by the
-        # Column value for the x, y, and z axes respectively.
-        img_ornt_pat = (
-            dcm.PerFrameFunctionalGroupsSequence[0]
-            .PlaneOrientationSequence[0]
-            .ImageOrientationPatient
-        )
-
-        # Get slice positions
-        # img_pos: x, y, and z coordinates of the upper left hand corner of
-        # the image; it is the center of the first voxel transmitted.
-        img_pos = []
-        for frame in dcm.PerFrameFunctionalGroupsSequence:
-            img_pos.append(frame.PlanePositionSequence[0].ImagePositionPatient)
-        img_pos = np.concatenate(
-            [np.array(pos)[None, :] for pos in img_pos], axis=0)
-
-        pix_data_len = int(
-            (
-                dcm.Rows
-                * dcm.Columns
-                * dcm.BitsAllocated
-                * dcm.SamplesPerPixel
-                * dcm.NumberOfFrames
-            )
-            / 8
-        )
-        while True:  # Wait for PixelData to be ready
-            try:
-                assert len(dcm.PixelData) == pix_data_len
-                pixel_array = dcm.pixel_array
-                break
-            except Exception as e:
-                if file_path is not None:
-                    dcm = pydicom.dcmread(file_path)
-                else:
-                    raise e
-
-        # --- Affine matrix of image to patient space (LPI) (mm) translation --
-        F = np.reshape(img_ornt_pat, (2, 3)).T
-        dc, dr = [float(v) for v in img_pix_space]
-        T1 = img_pos[0]
-        TN = img_pos[-1]
-        k = (TN - T1) / (len(img_pos) - 1)
-        A = np.concatenate([F * [[dc, dr]], k[:, None], T1[:, None]], axis=1)
-        A = np.concatenate([A, np.array([[0, 0, 0, 1]])], axis=0)
-        A[:2, :] *= -1
-
-        # -> LPI
-        # image_pos = _multiframe_get_image_position(dicoms[0], 0)
-        point = np.array([[0, pixel_array.shape[1] - 1, 0, 1]]).T
-        k = np.dot(A, point)
-        A[:, 1] *= -1
-        A[:, 3] = k.ravel()
+        # Flip the row axis to LPI: move the origin to the last row.
+        point = np.array([[0, img_array.shape[1] - 1, 0, 1]]).T
+        k = np.dot(affine, point)
+        affine[:, 1] *= -1
+        affine[:, 3] = k.ravel()
 
         # Transpose and flip to LPI
-        img_array = np.transpose(pixel_array, (2, 1, 0))
+        img_array = np.transpose(img_array, (2, 1, 0))
         img_array = np.flip(img_array, axis=1)
 
-        nii_img = nib.Nifti1Image(img_array, A)
+        nii_img = nib.Nifti1Image(img_array, affine)
 
-        # Set TR and TE in pixdim and db_name field
-        if "RepetitionTime" in dcm:
-            TR = float(dcm.RepetitionTime)
-        elif "SharedFunctionalGroupsSequence" in dcm:
-            if (
-                "MRTimingAndRelatedParametersSequence"
-                in dcm.SharedFunctionalGroupsSequence[0]
-            ):
-                MRTiming = dcm.SharedFunctionalGroupsSequence[
-                    0
-                ].MRTimingAndRelatedParametersSequence[0]
-                TR = float(MRTiming.RepetitionTime)
-        else:
-            TR = None
+        # Set TR (seconds) in pixdim
         if TR is not None:
             nii_img.header.structarr["pixdim"][4] = TR / 1000.0
 
         nii_img.header.set_slope_inter(1, 0)
-        # set units for xyz (leave t as unknown)
+        # Set units for xyz (leave t as unknown)
         nii_img.header.set_xyzt_units(2)
 
-        # Get slice orientation
-        ori_code = np.round(np.abs(F)).sum(axis=1)
-        if ori_code[0] > 0 and ori_code[1] > 0 and ori_code[2] == 0:
-            # Axial
-            slice = 2  # z is slice
-        elif ori_code[0] == 0 and ori_code[1] > 0 and ori_code[2] > 0:
-            # Saggital
-            slice = 0  # x is slice
-        elif ori_code[0] > 0 and ori_code[1] == 0 and ori_code[2] > 0:
-            # Coronal
-            slice = 1  # y is slice
+        # Slice orientation: the dominant axis of the slice normal
+        # (Axial: z (2), Sagittal: x (0), Coronal: y (1); also for oblique
+        # slices)
+        slice = int(np.argmax(np.abs(np.cross(ori_row, ori_col))))
         nii_img.header.set_dim_info(slice=slice)
 
         return nii_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def dcm2nii_SiemensXADicom(self, dcm, file_path=None):
+        """Convert a Siemens XA (enhanced multi-frame) DICOM to NIfTI.
+
+        Parameters
+        ----------
+        dcm : pydicom.dataset.Dataset
+            DICOM dataset.
+        file_path : Path, optional
+            DICOM file path, used to re-read the file if the pixel data is
+            incomplete.
+
+        Returns
+        -------
+        nibabel.Nifti1Image
+        """
+        # --- Read position and pixel_array data from dcm ---------------------
+        assert "PerFrameFunctionalGroupsSequence" in dcm
+        frames = dcm.PerFrameFunctionalGroupsSequence
+
+        # Pixel spacing (should be the same for all slices)
+        img_pix_space = frames[0].PixelMeasuresSequence[0].PixelSpacing
+
+        # ImageOrientationPatient (should be the same for all slices):
+        # direction cosines of the first row and the first column with
+        # respect to the patient; the row values for the x, y, and z axes,
+        # followed by the column values for the x, y, and z axes.
+        img_ornt_pat = \
+            frames[0].PlaneOrientationSequence[0].ImageOrientationPatient
+
+        # Slice positions: x, y, and z coordinates of the upper left-hand
+        # corner (the center of the first voxel) of each slice.
+        img_pos = np.concatenate(
+            [np.array(frame.PlanePositionSequence[0].ImagePositionPatient)[
+                None, :] for frame in frames], axis=0)
+
+        pixel_array = self._get_pixel_array(dcm, file_path)
+        if pixel_array.ndim == 2:
+            # Single-frame file: pixel_array is (rows, columns)
+            pixel_array = pixel_array[None, :, :]
+
+        # --- Affine matrix from voxel index to RAS+ (mm) ---------------------
+        F = np.reshape(img_ornt_pat, (2, 3)).T
+        # PixelSpacing = [row spacing (between rows), column spacing]
+        dr, dc = [float(v) for v in img_pix_space]
+        T1 = img_pos[0]
+        TN = img_pos[-1]
+        if len(img_pos) > 1:
+            k = (TN - T1) / (len(img_pos) - 1)
+        else:
+            # Single slice: slice normal times the slice spacing
+            pm = frames[0].PixelMeasuresSequence[0]
+            ds = float(getattr(pm, "SpacingBetweenSlices", 0) or
+                       getattr(pm, "SliceThickness", 1) or 1)
+            k = np.cross(F[:, 0], F[:, 1]) * ds
+        A = np.concatenate([F * [[dc, dr]], k[:, None], T1[:, None]], axis=1)
+        A = np.concatenate([A, np.array([[0, 0, 0, 1]])], axis=0)
+        # DICOM patient coordinates are LPS+; flip x and y to RAS+.
+        A[:2, :] *= -1
+
+        # --- TR --------------------------------------------------------------
+        TR = None
+        if "RepetitionTime" in dcm:
+            TR = float(dcm.RepetitionTime)
+        elif "SharedFunctionalGroupsSequence" in dcm and \
+                "MRTimingAndRelatedParametersSequence" in \
+                dcm.SharedFunctionalGroupsSequence[0]:
+            MRTiming = dcm.SharedFunctionalGroupsSequence[
+                0].MRTimingAndRelatedParametersSequence[0]
+            TR = float(MRTiming.RepetitionTime)
+
+        return self._make_nifti(pixel_array, A, F[:, 0], F[:, 1], TR)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dcm2nii_SiemensMosaicDicom(self, dcm, file_path=None):
-        """Convert Siemense MOSAIC DICOM to Nifti
+        """Convert a Siemens mosaic DICOM to NIfTI.
 
-        Args:
-            dcm (_type_): _description_
+        Parameters
+        ----------
+        dcm : pydicom.dataset.Dataset
+            DICOM dataset.
+        file_path : Path, optional
+            DICOM file path, used to re-read the file if the pixel data is
+            incomplete.
 
-        Returns:
-            _type_: _description_
+        Returns
+        -------
+        nibabel.Nifti1Image
 
-        This code is based on the following page;
+        This code is based on
         https://github.com/icometrix/dicom2nifti/blob/main/dicom2nifti/convert_siemens.py
         """
-        # --- Wait for PixelData to be ready ----------------------------------
-        pix_data_len = int(
-            (dcm.Rows * dcm.Columns * dcm.BitsAllocated *
-             dcm.SamplesPerPixel) / 8
-        )
-        while True:  # Wait for PixelData to be ready
-            try:
-                assert len(dcm.PixelData) == pix_data_len
-                pixel_array = dcm.pixel_array
-                break
-            except Exception as e:
-                if file_path is not None:
-                    dcm = pydicom.dcmread(file_path)
-                else:
-                    raise e
+        pixel_array = self._get_pixel_array(dcm, file_path)
 
-        # --- Reshape mosaic to volume ----------------------------------------
+        # --- Read the slice layout from the ASCCONV protocol header ----------
         asconv_headers = re.findall(
             r"### ASCCONV BEGIN(.*)### ASCCONV END ###",
             dcm[(0x0029, 0x1020)].value.decode(encoding="ISO-8859-1"),
@@ -678,8 +696,8 @@ class RtpWatch(RTP):
         size_z = int(
             re.findall(r"sSliceArray\.lSize\s*=\s*(\d+)", asconv_headers)[0])
 
-        # get the locations of the slices
-        slice_location = [None] * size_z
+        # Transverse position of each slice (0 if not given)
+        slice_location = []
         for index in range(size_z):
             axial_result = re.findall(
                 r"sSliceArray\.asSlice\[%s\]\.s"
@@ -688,10 +706,9 @@ class RtpWatch(RTP):
                 asconv_headers,
             )
             if len(axial_result) > 0:
-                axial = float(axial_result[0])
+                slice_location.append(float(axial_result[0]))
             else:
-                axial = 0.0
-            slice_location[index] = axial
+                slice_location.append(0.0)
 
         invert = False
         invert_result = re.findall(
@@ -703,42 +720,28 @@ class RtpWatch(RTP):
             if invert_value >= 0:
                 invert = True
 
-        # return the correct slice types
-        if slice_location[0] <= slice_location[1]:
-            if not invert:
-                MosaicType = "ASCENDING"
-            else:
-                MosaicType = "DESCENDING"
-        else:
-            if not invert:
-                MosaicType = "DESCENDING"
-            else:
-                MosaicType = "ASCENDING"
+        # Slices are stored in ascending order of the location unless the
+        # image numbering is inverted.
+        ascending = (slice_location[0] <= slice_location[1]) != invert
 
-        number_x = number_y = int(np.ceil(np.sqrt(size_z)))
+        # --- Reshape the mosaic to a volume ----------------------------------
+        # Tiles are arranged row by row in a number_x x number_x grid.
+        number_x = int(np.ceil(np.sqrt(size_z)))
         size_x = int(dcm.Columns / number_x)
-        size_y = int(dcm.Rows / number_y)
+        size_y = int(dcm.Rows / number_x)
         img_array = np.zeros([size_z, size_y, size_x], dtype=pixel_array.dtype)
-        z_index = 0
-        for y_index in range(0, number_y):
-            if z_index >= size_z:
-                break
-            for x_index in range(0, number_x):
-                if MosaicType == "ASCENDING":
-                    img_array[z_index, :, :] = pixel_array[
-                        size_y * y_index: size_y * (y_index + 1),
-                        size_x * x_index: size_x * (x_index + 1),
-                    ]
-                else:
-                    img_array[size_z - (z_index + 1), :, :] = pixel_array[
-                        size_y * y_index: size_y * (y_index + 1),
-                        size_x * x_index: size_x * (x_index + 1),
-                    ]
-                z_index += 1
-                if z_index >= size_z:
-                    break
+        for z_index in range(size_z):
+            y_index, x_index = divmod(z_index, number_x)
+            if ascending:
+                dst_z = z_index
+            else:
+                dst_z = size_z - (z_index + 1)
+            img_array[dst_z, :, :] = pixel_array[
+                size_y * y_index: size_y * (y_index + 1),
+                size_x * x_index: size_x * (x_index + 1),
+            ]
 
-        # --- Affine matrix of image to patient space (LPI) (mm) translation --
+        # --- Affine matrix from voxel index to RAS+ (mm) ---------------------
         img_ori1 = np.array(dcm.ImageOrientationPatient)[0:3]
         img_ori2 = np.array(dcm.ImageOrientationPatient)[3:6]
         nrm = np.cross(img_ori1, img_ori2)
@@ -764,53 +767,26 @@ class RtpWatch(RTP):
             ]
         )
 
+        # ImagePositionPatient of a mosaic is for the whole mosaic image.
+        # Shift it to the first voxel of one tile.
         affine[0:3, [3]] += np.dot(
             affine[0:3, 0:2],
             np.array(
                 [[(dcm.Columns - size_x) / 2], [(dcm.Rows - size_y) / 2]]),
         )
 
-        # Transpose and flip to LPI
-        point = np.array([[0, img_array.shape[1] - 1, 0, 1]]).T
-        k = np.dot(affine, point)
-        affine[:, 1] *= -1
-        affine[:, 3] = k.ravel()
-
-        img_array = np.transpose(img_array, (2, 1, 0))
-        img_array = np.flip(img_array, axis=1)
-        nii_img = nib.Nifti1Image(img_array, affine)
-
-        # --- Set Nifti properties --------------------------------------------
-        # Set TR and TE in pixdim and db_name field
+        # --- TR --------------------------------------------------------------
         if "RepetitionTime" in dcm:
             TR = float(dcm.RepetitionTime)
         else:
             TR = None
-        if TR is not None:
-            nii_img.header.structarr["pixdim"][4] = TR / 1000.0
 
-        nii_img.header.set_slope_inter(1, 0)
-        # set units for xyz (leave it as unknown)
-        nii_img.header.set_xyzt_units(2)
-
-        # Get slice orientation
-        F = np.concatenate([img_ori1[:, None], img_ori2[:, None]], axis=1)
-        ori_code = np.round(np.abs(F)).sum(axis=1)
-        if ori_code[0] > 0 and ori_code[1] > 0 and ori_code[2] == 0:
-            # Axial
-            slice = 2  # z is slice
-        elif ori_code[0] == 0 and ori_code[1] > 0 and ori_code[2] > 0:
-            # Saggital
-            slice = 0  # x is slice
-        elif ori_code[0] > 0 and ori_code[1] == 0 and ori_code[2] > 0:
-            # Coronal
-            slice = 1  # y is slice
-        nii_img.header.set_dim_info(slice=slice)
-
-        return nii_img
+        return self._make_nifti(img_array, affine, img_ori1, img_ori2, TR)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def clean_files(self, *args, warning=None):
+        """Move the files matching watch_file_pattern in watch_dir to
+        'work_dir / dicom', keeping the subdirectory structure."""
         if self.watch_dir is None or not Path(self.watch_dir).is_dir():
             return
 
@@ -835,7 +811,7 @@ class RtpWatch(RTP):
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
         """
         When reset_fn is None, set_param is considered to be called from
-        load_parameters function.
+        the load_parameters function.
         """
         self._logger.debug(f"set_param: {attr} = {val}")
 
@@ -920,7 +896,7 @@ class RtpWatch(RTP):
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                errmsg = f"{attr} is unrecognized parameter."
+                errmsg = f"{attr} is an unrecognized parameter."
                 self._logger.error(errmsg)
                 return
 
@@ -993,7 +969,7 @@ class RtpWatch(RTP):
         self.ui_dcmreadTimeout_dSpBx.setSingleStep(0.1)
         self.ui_dcmreadTimeout_dSpBx.setDecimals(3)
         self.ui_dcmreadTimeout_dSpBx.setSuffix(" seconds")
-        self.ui_dcmreadTimeout_dSpBx.setValue(self._read_timeout)
+        self.ui_dcmreadTimeout_dSpBx.setValue(self.read_timeout)
         self.ui_dcmreadTimeout_dSpBx.valueChanged.connect(
             lambda x: self.set_param(
                 "read_timeout", x, self.ui_dcmreadTimeout_dSpBx.setValue
@@ -1033,6 +1009,7 @@ class RtpWatch(RTP):
         self.ui_objs.extend([var_lb, self.ui_pollingTimeout_dSpBx])
 
         # clean_ready
+        # The checkbox is made but not shown in the panel.
         self.ui_cleanReady_chb = QtWidgets.QCheckBox(
             "Clean watch dir at ready"
         )
@@ -1040,7 +1017,6 @@ class RtpWatch(RTP):
         self.ui_cleanReady_chb.stateChanged.connect(
             lambda state: setattr(self, "clean_ready", state > 0)
         )
-        # ui_rows.append((None, self.ui_cleanReady_chb))
         self.ui_objs.append(self.ui_cleanReady_chb)
 
         # --- Checkbox row ----------------------------------------------------
@@ -1077,61 +1053,31 @@ class RtpWatch(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
-        # Kill observer process
-        if hasattr(self, "_observer") and self._observer.isAlive():
+        # Stop the observer thread
+        if hasattr(self, "_observer") and self._observer.is_alive():
             self._observer.stop()
             self._observer.join()
 
 
 # %% __main__ (test) ==========================================================
 if __name__ == "__main__":
+    # Copy DICOM files of a test series to the watch directory one by one,
+    # restarting the watcher every 10 files.
     test_dir = Path(__file__).resolve().parent.parent / "tests"
-
-    # # Parse arguments
-    # parser = argparse.ArgumentParser(description='RtpWatch')
-    # parser.add_argument('src_data', help='Test file/directory')
-    # parser.add_argument('--watch_file_pattern', default=r".+\.nii")
-    # parser.add_argument('--file_type', default='Nifti', help='File type')
-    # parser.add_argument('--test_work_dir', default=str(test_dir))
-    # parser.add_argument('--TR', default=1)
-    # args = parser.parse_args()
-
-    # src_data = args.src_data
-    # watch_file_pattern = args.watch_file_pattern
-    # watch_file_pattern = re.sub(r"'", "", watch_file_pattern)
-    # file_type = args.file_type
-    # test_work_dir = args.test_work_dir
-    # TR = args.TR
-
     src_data = test_dir / "20240916.OrangePhantom.7T2024091600PH"
-    # src_data = (
-    #     Path.home()
-    #     / "Dropbox"
-    #     / "RTPSpyTestsData"
-    #     / "20240916.OrangePhantom.7T2024091600PH"
-    # )
-    # src_data = Path.home() / "Dropbox" / "RTPSpyTestsData" / "P000183"
     watch_file_pattern = r".+\.dcm"
     test_work_dir = test_dir
     file_type = "Dicom"
 
     # --- Prepare the test data -----------------------------------------------
     try:
-        src_data = Path(src_data)
-
-        assert src_data.is_dir() or src_data.is_file()
-        # Read source files
-        if src_data.is_dir():
-            src_files = []
-            for ff in src_data.glob("*09_*"):
-                if re.search(watch_file_pattern, ff.name):
-                    src_files.append(ff)
-            src_files = sorted(src_files)
-        elif src_data.is_file():
-            src_img = nib.load(src_data)
+        assert src_data.is_dir()
+        src_files = sorted(
+            ff for ff in src_data.glob("*09_*")
+            if re.search(watch_file_pattern, ff.name)
+        )
 
         # Set export directory
-        test_work_dir = Path(test_work_dir)
         watch_dir = test_work_dir / "watch"
         if not watch_dir.is_dir():
             watch_dir.mkdir()
@@ -1149,8 +1095,8 @@ if __name__ == "__main__":
         # Create RtpWatch instance
         rtp_watch = RtpWatch(watch_dir, watch_file_pattern)
 
-        rtp_watch.save_proc = True  # save result
-        rtp_watch.online_saving = True  # Onlline saving
+        rtp_watch.save_proc = True  # Save result
+        rtp_watch.online_saving = True  # Online saving
         rtp_watch.save_delay = True
         rtp_watch.work_dir = work_dir
         rtp_watch.file_type = file_type
@@ -1162,45 +1108,21 @@ if __name__ == "__main__":
         sys.exit()
 
     # --- Start simulation ----------------------------------------------------
-    # Start watching
-    # rtp_watch.ready_proc()
+    # Copy test data volume by volume
+    n_copy = 0
+    for src_f in src_files:
+        dst_f = watch_dir / src_f.relative_to(src_data)
+        if not dst_f.parent.is_dir():
+            os.makedirs(dst_f.parent)
 
-    if src_data.is_dir():
-        # Copy test data volume-by-volume
-        n_copy = 0
-        for src_f in src_files:
-            dst_f = watch_dir / src_f.relative_to(src_data)
-            if not dst_f.parent.is_dir():
-                os.makedirs(dst_f.parent)
+        shutil.copy(src_f, dst_f)
+        n_copy += 1
+        time.sleep(1)
 
-            shutil.copy(src_f, dst_f)
-            n_copy += 1
-            time.sleep(1)
-
-            if (n_copy + 1) % 10 == 0:
-                rtp_watch.end_reset()
-                time.sleep(3)
-                rtp_watch.ready_proc()
-
-    # elif src_data.is_file():
-    #     n_vol = src_img.shape[-1]
-    #     vol_data = src_img.get_fdata()
-    #     dst_temp = src_data.stem
-    #     if src_data.suffix == '.gz':
-    #         dst_temp = Path(dst_temp).stem
-    #     ext = re.search(r'\.\w+', str(watch_file_pattern)).group()
-    #     dst_temp = dst_temp+"_{i_vol:04d}"+ext
-    #     for i_vol in range(n_vol):
-    #         simg = nib.Nifti1Image(vol_data[:, :, :, i_vol],
-    #                                affine=src_img.affine)
-    #         dst_f = watch_dir / dst_temp.format(i_vol=i_vol+1)
-    #         nib.save(simg, dst_f)
-    #         rtp_watch.do_proc(dst_f)
-
-    #         time.sleep(TR)
-
-    # End and reset module
-    # rtp_watch.end_reset()
+        if (n_copy + 1) % 10 == 0:
+            rtp_watch.end_reset()
+            time.sleep(3)
+            rtp_watch.ready_proc()
 
     # Clean up watch_dir
     for ff in watch_dir.glob("*"):

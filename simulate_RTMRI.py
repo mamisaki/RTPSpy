@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Prototype GUI to list DICOM series for real-time MRI simulation.
+Running a series is not implemented; see rtmri_simulator.py for the full
+simulator.
+"""
 
 # %% import ===================================================================
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import os
-import threading
-import time
 import re
 from pathlib import Path
 from datetime import datetime
@@ -42,11 +44,10 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def create_widget(self):
-        
         font = ("Arial", 14)
         row_i = 0
 
-        # --- RTMRI export diectory ---
+        # --- RTMRI export directory ---
         RTMRIexport_button = tk.Button(
             self.root_win, text="Set export path", font=font,
             command=self.set_export_dir
@@ -72,7 +73,7 @@ class RTMRISimulator():
             )
         self.imageFilePat_entry.insert(0, self.image_file_pat)
         self.imageFilePat_entry.bind(
-            "<Return>", self.chaeck_imageFilePat)
+            "<Return>", self.check_imageFilePat)
         self.imageFilePat_entry.grid(
             row=row_i, column=1, padx=10, pady=5, sticky='ew')
         row_i += 1
@@ -91,8 +92,7 @@ class RTMRISimulator():
         self.imageSrc_entry.config(state="readonly")
         row_i += 1
 
-        # --- Create a listbox to display series ---
-        # Create a dropdown list of image folders
+        # --- Dropdown list of image folders and listbox of series ---
         imageFolder_label = tk.Label(
             self.root_win, text="Select data folder", font=font)
         imageFolder_label.grid(
@@ -109,7 +109,7 @@ class RTMRISimulator():
         row_i += 1
 
         self.series_label = tk.Label(
-            self.root_win, text="Series list: Doubleclick an item to start",
+            self.root_win, text="Series list: Double-click an item to start",
             font=font)
         self.series_label.grid(
             row=row_i, column=0, columnspan=3, padx=10, pady=0, sticky='sw')
@@ -125,8 +125,7 @@ class RTMRISimulator():
         # Bind double-click event on the listbox
         self.series_listbox.bind("<Double-1>", self.run_series)
 
-        # --- Create mode select buttons ---
-        # Create radio buttons to select a mode
+        # --- Run mode radio buttons ---
         runMode_frame = tk.Frame(self.root_win)
         runMode_frame.grid(
             row=row_i, column=0, columnspan=2, padx=10, pady=5)
@@ -135,42 +134,25 @@ class RTMRISimulator():
             runMode_frame, text="Run Mode:", font=font)
         runMode_label.grid(row=0, column=0, padx=10, pady=5)
 
-        self.seriesMode_radio = tk.Radiobutton(
-            runMode_frame, text="Series", variable=self.run_mode,
-            font=font, value="Series"
-            )
-        self.seriesMode_radio.grid(
-            row=0, column=1, padx=10, pady=5, sticky="ew")
+        for col, mode in enumerate(("Series", "Session", "File"), start=1):
+            mode_radio = tk.Radiobutton(
+                runMode_frame, text=mode, variable=self.run_mode,
+                font=font, value=mode
+                )
+            mode_radio.grid(row=0, column=col, padx=10, pady=5, sticky="ew")
 
-        self.seriesMode_radio = tk.Radiobutton(
-            runMode_frame, text="Session", variable=self.run_mode,
-            font=font, value="Session"
-            )
-        self.seriesMode_radio.grid(
-            row=0, column=2, padx=10, pady=5, sticky="ew")
-
-        self.seriesMode_radio = tk.Radiobutton(
-            runMode_frame, text="File", variable=self.run_mode,
-            font=font, value="File"
-            )
-        self.seriesMode_radio.grid(
-            row=0, column=3, padx=10, pady=5, sticky="ew")
-
-        # Create a button to cancel the ongoing process
+        # Button to cancel the ongoing process
         self.stop_button = tk.Button(
             runMode_frame, text="Stop", font=font,
             command=self.cancel_ongoing_process)
         self.stop_button.grid(row=0, column=4, padx=10, pady=5, sticky="se")
-
-        # --- Create a log field ---
-        # TODO
 
         self.root_win.grid_columnconfigure(1, weight=1)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_export_dir(self):
         dir_path = filedialog.askdirectory()
-        if dir_path is None:
+        if not dir_path:  # Canceled
             return
 
         self.RTMRIexport_entry.config(state="normal")
@@ -180,7 +162,8 @@ class RTMRISimulator():
         self.export_dir = dir_path
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def chaeck_imageFilePat(self, event):
+    def check_imageFilePat(self, event):
+        """Accept the file pattern if it is a valid regular expression."""
         try:
             file_pat = self.imageFilePat_entry.get()
             re.compile(file_pat)
@@ -195,7 +178,7 @@ class RTMRISimulator():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_image_src(self):
         dir_path = filedialog.askdirectory()
-        if dir_path is None:
+        if not dir_path:  # Canceled
             return
 
         # Set imageSrc_entry
@@ -205,16 +188,12 @@ class RTMRISimulator():
         self.image_src = Path(dir_path)
         self.imageSrc_entry.config(state="readonly")
 
-        # --- Open progress bar dialog ---
-        # Create a new Toplevel window for the progress dialog
+        # --- Open a modal progress dialog ---
         progress_dialog = tk.Toplevel(self.root_win)
         progress_dialog.title("Reading data folders")
-
-        # Make the dialog modal
-        progress_dialog.transient(self.root_win)  # Set to be on top of the main window
+        progress_dialog.transient(self.root_win)  # On top of the main window
         progress_dialog.grab_set()  # Block interactions with other windows
 
-        # Create a Progressbar widget inside the progress dialog
         progress_bar = ttk.Progressbar(
             progress_dialog, orient=tk.HORIZONTAL, length=300,
             mode='indeterminate')
@@ -226,15 +205,11 @@ class RTMRISimulator():
             self.image_src, progress_dialog=progress_dialog)
         progress_bar.stop()
 
-        # Format dataframe
-        self.image_files['Path'] = self.image_files['Path'].astype(str)
-        self.image_files['File'] = self.image_files['File'].astype(str)
-        self.image_files['Study'] = self.image_files['Study'].astype(str)
-        self.image_files['Series'] = self.image_files['Series'].astype(float)
-        self.image_files['Desc'] = self.image_files['Desc'].astype(str)
-        self.image_files['Atime'] = self.image_files['Atime'].astype('datetime64[ns]')
-        self.image_files['Ctime'] = self.image_files['Ctime'].astype('datetime64[ns]')
-        self.image_files['Ftime'] = self.image_files['Ftime'].astype(float)
+        # Set the column types
+        self.image_files = self.image_files.astype({
+            'Path': str, 'File': str, 'Study': str, 'Series': float,
+            'Desc': str, 'Atime': 'datetime64[ns]', 'Ctime': 'datetime64[ns]',
+            'Ftime': float})
 
         # Set imageFolder_dropdown
         img_folders = ['Select folder ...']
@@ -247,10 +222,10 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _find_files(self, root_dir, image_files=None, progress_dialog=None):
+        """Recursively list the files matching self.image_file_pat."""
         image_file_pat = self.image_file_pat
 
         if image_files is None:
-            # Initialize the list
             image_files = pd.DataFrame(
                 columns=('Path', 'File', 'Study', 'Series', 'Desc', 'Atime',
                          'Ctime', 'Ftime')
@@ -287,28 +262,24 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_series_list(self, event):
-        
+        """Read the DICOM headers in the selected folder and list the
+        series runs."""
         image_folder = str(self.image_src / self.imageFolder_dropdown.get())
-        try:
-            assert Path(image_folder).is_dir()
-        except Exception:
+        if not Path(image_folder).is_dir():
             return
 
-        # --- Open progress bar dialog ---
-        # Create a new Toplevel window for the progress dialog
+        # --- Open a modal progress dialog ---
         progress_dialog = tk.Toplevel(self.root_win)
         progress_dialog.title("Reading files")
-            
-        # Make the dialog modal
-        progress_dialog.transient(self.root_win)  # Set to be on top of the main window
+        progress_dialog.transient(self.root_win)  # On top of the main window
         progress_dialog.grab_set()  # Block interactions with other windows
 
-        # Create a Progressbar widget inside the progress dialog
         progress_bar = ttk.Progressbar(
-            progress_dialog, orient=tk.HORIZONTAL, length=300, mode='determinate')
+            progress_dialog, orient=tk.HORIZONTAL, length=300,
+            mode='determinate')
         progress_bar.grid(row=0, column=0, padx=20, pady=20)
 
-        # Center the progress dialog in the screen
+        # Place the progress dialog over the main window
         self.root_win.update_idletasks()
         progress_dialog.geometry(
             f"+{self.root_win.winfo_x() + 100}+{self.root_win.winfo_y() + 100}"
@@ -338,7 +309,8 @@ class RTMRISimulator():
                 if hasattr(dcm, 'SeriesDescription'):
                     self.image_files.loc[idx, 'Desc'] = dcm.SeriesDescription
 
-                if hasattr(dcm, 'StudyDate') and hasattr(dcm, 'AcquisitionTime'):
+                if hasattr(dcm, 'StudyDate') and \
+                        hasattr(dcm, 'AcquisitionTime'):
                     date = dcm.StudyDate
                     atime = date + dcm.AcquisitionTime
                     at = datetime.strptime(atime, '%Y%m%d%H%M%S.%f')
@@ -347,7 +319,7 @@ class RTMRISimulator():
 
                 elif hasattr(dcm, 'AcquisitionDateTime'):
                     atime = dcm.AcquisitionDateTime
-                    data = atime[:8]
+                    date = atime[:8]
                     at = datetime.strptime(atime, '%Y%m%d%H%M%S.%f')
                     self.image_files.loc[idx, 'Atime'] = \
                         pd.to_datetime(at, errors='coerce')
@@ -367,9 +339,10 @@ class RTMRISimulator():
         file_list = self.image_files[self.image_files.Path == image_folder]
         self.file_list = file_list.sort_values('Atime').reset_index(drop=True)
 
-        # Find series divisions
+        # Split the files into series runs at acquisition gaps > 3 s
         ser_div = np.argwhere(np.diff(self.file_list.Series) > 0).ravel()
-        td = [d / np.timedelta64(1, 's') for d in np.diff(self.file_list.Atime)]
+        td = [d / np.timedelta64(1, 's')
+              for d in np.diff(self.file_list.Atime)]
         ser_dt = np.array(td)[ser_div]
         ser_dvi = ser_div[ser_dt > 3] + 1
         ser_dvi = np.concatenate([ser_dvi, [len(self.file_list)]])
@@ -378,7 +351,6 @@ class RTMRISimulator():
 
         series_list = []
         sstart = 0
-        ri = 0
         self.file_list['Run_idx'] = -1
         for ri, send in enumerate(ser_dvi):
             sel_idx = np.arange(sstart, send, dtype=int)
@@ -390,7 +362,7 @@ class RTMRISimulator():
             series_list.append(ser_label)
             sstart = send
 
-        # Refresh series_listbox
+        # Refresh the series list
         self.series_listbox.config(height=len(series_list))
         self.series_listbox.delete(0, tk.END)
         for item in series_list:
@@ -400,6 +372,8 @@ class RTMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_series(self, event):
+        """Print the files of the selected series run.
+        Running the series is not implemented yet."""
         sel_row = self.series_listbox.curselection()
         index = sel_row[0]
         item_content = self.series_listbox.get(index)
@@ -408,13 +382,9 @@ class RTMRISimulator():
         run_files = self.file_list[self.file_list['Run_idx'] == index]
         print(run_files)
 
-        run_mode = self.run_mode.get()
-        
-
-
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def cancel_ongoing_process(self):
-        pass
+        pass  # Not implemented yet
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
@@ -424,37 +394,8 @@ class RTMRISimulator():
     def quit_application(self, event=None):
         self.root_win.quit()
 
-# def on_item_double_click(event):
-#     # Get the selected item from the listbox
-#     selected_item_index = listbox.curselection()
-
-#     if selected_item_index:
-#         selected_item = listbox.get(selected_item_index)
-
-#         # Show a confirmation dialog
-#         response = messagebox.askyesno("Confirmation", f"Do you want to start a process with '{selected_item}' in mode {mode.get()}?")
-
-#         if response:
-#             # Start the process in a new thread to simulate a long-running task
-#             global cancel_process
-#             cancel_process = False
-#             threading.Thread(target=start_process, args=(selected_item, mode.get())).start()
-#         else:
-#             messagebox.showinfo("Cancelled", "Process not started.")
-
-# def start_process(item, selected_mode):
-#     global cancel_process
-#     # Example long-running process simulation
-#     for i in range(10):
-#         if cancel_process:
-#             messagebox.showinfo("Process Cancelled", f"Process for '{item}' in {selected_mode} was cancelled.")
-#             return
-#         print(f"Processing '{item}' in {selected_mode}... Step {i+1}/10")
-#         time.sleep(1)  # Simulate a time-consuming task with sleep
-#     messagebox.showinfo("Process Completed", f"Process completed for '{item}' in {selected_mode}")
-
 
 # %% __main__ =================================================================
 if __name__ == '__main__':
-    rtmei_sim = RTMRISimulator()
-    rtmei_sim.run()
+    rtmri_sim = RTMRISimulator()
+    rtmri_sim.run()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run psychopy RTPSpy application
+Run the ROI-NF RTPSpy application with a PsychoPy feedback presentation
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -26,7 +26,7 @@ from roi_nf import ROINF
 
 
 # %% Default parameters =======================================================
-# External NF application
+# Command to boot the external NF application
 this_dir = Path(__file__).absolute().parent
 if 'Microsoft' in uname().release:
     cmd_path = r'/mnt/c/Program\ Files/PsychoPy3/pythonw.exe '
@@ -52,7 +52,6 @@ if __name__ == '__main__':
     dateStr = datetime.now().strftime("%Y%m%dT%H%M%S")
     log_file = Path(f'log/ROI-NF_{dateStr}.log')
 
-    # Parse arguments
     parser = argparse.ArgumentParser(description='ROI NF RTPSpy')
     parser.add_argument('--log_file', default=log_file,
                         help='Log file path')
@@ -63,15 +62,11 @@ if __name__ == '__main__':
     debug = args.debug
 
     # --- Set logging ---------------------------------------------------------
-    # Set log file
     log_dir = Path(log_file).parent
     if not log_dir.is_dir():
         log_dir.mkdir()
 
-    if args.debug:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
+    level = logging.DEBUG if debug else logging.INFO
 
     logging.basicConfig(
         level=level, filename=log_file, filemode='a',
@@ -83,10 +78,8 @@ if __name__ == '__main__':
     if sys.platform == 'darwin':
         app.setStyle("Fusion")
 
-    # Make RtpApp instance
     rtp_app = ROINF(default_rtp_params=rtp_params)
 
-    # Make GUI (RtpGUI) instance
     app_obj = {'ROI-NF': rtp_app}
     rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_file=log_file)
     rtp_app.rtp_gui = rtp_ui
@@ -95,13 +88,13 @@ if __name__ == '__main__':
     all_rtp_objs = rtp_app.rtp_objs
     all_rtp_objs.update(app_obj)
 
-    # Ask if loading the previous settings.
+    # Ask whether to load the previous settings
     load = QtWidgets.QMessageBox.question(
         None, 'Load parameters', 'Load previous settings?',
         QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
     if load == QtWidgets.QMessageBox.Yes:
-        # Load saved parameters: This will override the rtp_params settings
-        props = load_parameters(all_rtp_objs, fname='RTPSpy_ROINF_params.pkl')
+        # The saved parameters override rtp_params
+        load_parameters(all_rtp_objs, fname='RTPSpy_ROINF_params.pkl')
 
     # --- Run the application ---
     sys.excepthook = excepthook
@@ -118,12 +111,12 @@ if __name__ == '__main__':
         exit_code = -1
 
     # --- End ---
-    # Save parameters
-    # exit with 1 means exit wihtout saving (defined in RtpGUI)
+    # Save the parameters. Exit code 1 means exit without saving (defined
+    # in RtpGUI).
     if exit_code != 1:
         save_parameters(all_rtp_objs, fname='RTPSpy_ROINF_params.pkl')
 
-    # Copy log
+    # Copy the log file to the working directory
     work_dir = Path(rtp_app.work_dir)
     log_dir = work_dir / 'log'
     if not log_dir.is_dir():

@@ -1,5 +1,5 @@
 # Compile librtp library
-RTPSpy uses some C library functions from AFNI, compiled into librtp.so (or librtp.dylib on OSX). The file included in the package usually works fine, but if you encounter an error related to this library, you may need to compile it from the source in the ~/RTPSpy/afni_module directory.
+RTPSpy uses some C library functions from AFNI, compiled into librtp.so (or librtp.dylib on macOS). The Linux library (librtp.so) is included in the package. On macOS, or if you encounter an error related to this library, compile it from the source in the ~/RTPSpy/afni_module directory.
 
 1. Clone AFNI source files
    ```

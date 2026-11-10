@@ -17,7 +17,7 @@ import re
 from threading import Lock
 import time
 import os
-from multiprocessing import Pipe, Process
+from multiprocessing import Process
 
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -33,9 +33,6 @@ except Exception:
     from dicom_converter import DicomConverter
     from rpc_socket_server import RPCSocketServer, RPCSocketCom
 
-if "__file__" not in locals():
-    __file__ = "this.py"
-
 
 # %% class RtDcmMonitor =======================================================
 class RtDcmMonitor:
@@ -49,12 +46,11 @@ class RtDcmMonitor:
     - Wait for a scan to complete, and when the scan is complete, copy the
       DICOM files to the study directory and convert them to NIfTI. The
       completion of the scan is determined by the NumberOfTemporalPositions
-      field in the DICOM header, or if no new file is created for
-      'self.series_timeout' seconds.
-    - The conversion process can also be triggered by a remote request issued
-      by a real-time processing process if a scan is aborted before reaching
-      NumberOfTemporalPositions. A TCPServer thread in the class receives such
-      a request via a network socket at 'rpc_port'.
+      field in the DICOM header.
+    - The conversion process can also be triggered by a remote request
+      (CLOSE_SERIES) issued by a real-time processing process if a scan is
+      aborted before reaching NumberOfTemporalPositions. An RPC socket server
+      in the class receives such a request.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -62,7 +58,7 @@ class RtDcmMonitor:
         self,
         watch_dir,
         work_root,
-        watch_file_pattern=r".+\.dcm",
+        watch_file_pattern=r".+\.dcm$",
         study_prefix="P",
         study_ID_field=None,
         series_timeout=60,
@@ -90,7 +86,7 @@ class RtDcmMonitor:
             name is created as '{self.study_prefix}_{%Y%m%d%H%M%S}'.
         watch_file_pattern : str (regular expression)
             Regular expression to filter the filenames monitored by watchdog.
-            The default is r'.+\\.dcm'.
+            The default is r'.+\\.dcm$'.
         study_prefix : str
             Prefix for a study directory name. The study directory name will
             be created as '{self.study_prefix}_{%Y%m%d%H%M%S}', unless the
@@ -99,13 +95,16 @@ class RtDcmMonitor:
         study_ID_field : str
             DICOM header field to be used as Study ID. The default is None.
         series_timeout : float
-            Timeout period to consider as end of series to start conversion.
-            The default is 60.
+            Timeout period (seconds) to consider as the end of a series.
+            Currently it is used only as the TR when the DICOM header has no
+            TR. The default is 60.
         make_brik : bool
             Flag to create both BRIK and NIfTI files during DICOM conversion.
         polling_observer : bool, optional
-            Flag to use a PollingObserver if the dcm_dir is not on a local
+            Flag to use a PollingObserver if watch_dir is not on a local
             file system. The default is False.
+        no_online : bool, optional
+            Do not send each volume to the MRI browser during a scan.
         """
         self._logger = logging.getLogger("RtDicomMonitor")
 
@@ -158,11 +157,7 @@ class RtDcmMonitor:
         self._end_complete = False
         self._save_physio = False
 
-        # Parameters to update MRI browser
-        self._motion_update = False
-
         # --- Start RPC socket server ---
-        self._rpc_pipe, cmd_pipe = Pipe()
         self.socket_srv = RPCSocketServer(
             config_path,
             self.RPC_handler,
@@ -185,38 +180,12 @@ class RtDcmMonitor:
         # Application loop
         while not self._cancel:
             try:
-                # Check if the series ends
-                # if self._TR is not None:
-                #     time_out = self._TR * 2.5
-                # else:
-                #     time_out = self.series_timeout
-
+                # Check if the series has ended: all volumes
+                # (NumberOfTemporalPositions) have been received.
                 if self._isRun_series and self._last_dicom_header:
-                    # Check if the series ends
-                    ser_end = False
-                    if hasattr(
-                        self._last_dicom_header, "NumberOfTemporalPositions"
-                    ):
-                        nt = int(
-                            self._last_dicom_header.NumberOfTemporalPositions
-                        )
-                        if self._NVol == nt:
-                            ser_end = True
-
-                    # Timeout
-                    # # if (
-                    #     not ser_end
-                    #     and self._last_dicom_time is not None
-                    #     and time.time() - self._last_dicom_time > time_out
-                    # ):
-                    #     ser_end = True
-                    #     # No new image for time_out seconds.
-                    #     self._logger.info(
-                    #         f"No new DICOM file for {time_out}s. "
-                    #         "Closing series."
-                    #     )
-
-                    if ser_end:
+                    hdr = self._last_dicom_header
+                    if hasattr(hdr, "NumberOfTemporalPositions") and \
+                            self._NVol == int(hdr.NumberOfTemporalPositions):
                         self.end_series()
 
                 time.sleep(1)
@@ -258,7 +227,7 @@ class RtDcmMonitor:
 
     # /////////////////////////////////////////////////////////////////////////
     class _FileHandler(FileSystemEventHandler):
-        """File handling class."""
+        """Call the callback for a new file that matches the pattern."""
 
         def __init__(self, watch_file_pattern, callback):
             """
@@ -280,6 +249,15 @@ class RtDcmMonitor:
             if re.search(self.watch_file_pattern, Path(event.src_path).name):
                 self.callback(event.src_path)
 
+        def on_moved(self, event):
+            # A writer may save to a temporary name and rename it.
+            if event.is_directory:
+                return
+
+            if re.search(self.watch_file_pattern,
+                         Path(event.dest_path).name):
+                self.callback(event.dest_path)
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_watching(self):
         if hasattr(self, "_observer"):
@@ -291,7 +269,8 @@ class RtDcmMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_path_safe(self, input_string, max_length=255):
-        # Remove characters that are not safe for paths
+        # Replace each run of characters that are not safe for paths with
+        # one underscore
         cleaned_string = re.sub(r'[\\/:"*?<>|]+', "_", input_string)
 
         # Replace spaces and other non-alphanumeric characters with underscores
@@ -305,6 +284,8 @@ class RtDcmMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_study_id(self, dcm, study_prefix=None):
+        """Make a study ID from the study_ID_field of the DICOM header if it
+        starts with study_prefix, or from the study date and time."""
         if study_prefix is None:
             study_prefix = self.study_prefix
 
@@ -330,37 +311,33 @@ class RtDcmMonitor:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, dicom_file):
         """
-        This is called by the self._observer thread.
+        Process a new DICOM file. This is called by the self._observer
+        thread.
         """
+        with self._process_lock:
+            self._process_file(Path(dicom_file))
 
-        # Get lock
-        self._process_lock.acquire()
-
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _process_file(self, dicom_file):
         self._last_dicom_time = time.time()  # Record new file arrival time
-        dicom_file = Path(dicom_file)
-        if self._last_proc_f is not None and self._last_proc_f == dicom_file:
-            self._process_lock.release()
+        if self._last_proc_f == dicom_file:
             return
         self._last_proc_f = dicom_file
 
-        # Read dicom file
+        # Read the DICOM file, retrying until it is readable
         st = time.time()
         dcm = None
-        try:
-            dcm = pydicom.dcmread(dicom_file)
-        except Exception:
-            pass
-
-        while dcm is None and time.time() - st < self._dcmread_timeout:
-            # Wait until the file is readable.
+        while True:
             try:
                 dcm = pydicom.dcmread(dicom_file)
+                break
             except Exception:
+                if time.time() - st >= self._dcmread_timeout:
+                    break
                 time.sleep(0.01)
 
         if dcm is None:
             self._logger.error(f"Failed to read {dicom_file} as DICOM")
-            self._process_lock.release()
             return
 
         imageType = "\\".join(dcm.ImageType)
@@ -368,7 +345,6 @@ class RtDcmMonitor:
         # Ignore derived file
         if "DERIVED" in imageType:
             self._logger.debug(f"{dicom_file.name} is a derived file.")
-            self._process_lock.release()
             return
 
         seriesDescription = dcm.SeriesDescription
@@ -376,31 +352,26 @@ class RtDcmMonitor:
         # Ignore MoCoSeries
         if seriesDescription == "MoCoSeries":
             self._logger.debug(f"{dicom_file.name} is a MoCo series.")
-            self._process_lock.release()
             return
 
-        # Ignore Phase image
+        # Ignore phase image
         if seriesDescription.endswith("_Pha"):
-            self._logger.debug(f"{dicom_file.name} is a Phase series.")
-            self._process_lock.release()
+            self._logger.debug(f"{dicom_file.name} is a phase series.")
             return
 
-        # Ignore replicated files
-        if self._last_dicom_header is not None:
-            if self._last_dicom_header == dcm:
-                # The same dicom contents
-                self._logger.debug(
-                    f"Same DICOM contents. Skipping {dicom_file.name}."
-                )
-                self._process_lock.release()
-                return
+        # Ignore duplicated files
+        if self._last_dicom_header is not None and \
+                self._last_dicom_header == dcm:
+            self._logger.debug(
+                f"Same DICOM contents. Skipping {dicom_file.name}."
+            )
+            return
 
-        # Skip if not a first echo file
+        # Process only the first echo of multi-echo data: the other echoes
+        # have the same acquisition number.
         acqNr = dcm.AcquisitionNumber
         if acqNr == self._acqNr:
-            # Skip multi-echo data of the same acquisition number
             self._logger.debug(f"{dicom_file.name} is not a first echo file.")
-            self._process_lock.release()
             return
         self._acqNr = acqNr
 
@@ -408,31 +379,41 @@ class RtDcmMonitor:
         try:
             self._last_dicom_header = dcm
 
-            # Wait for PixelData to be ready
+            # Wait for PixelData to be complete (uncompressed data size)
             pix_data_len = int(
                 (
                     dcm.Rows
                     * dcm.Columns
                     * dcm.BitsAllocated
                     * dcm.SamplesPerPixel
-                    * dcm.NumberOfFrames
+                    * int(dcm.get("NumberOfFrames", 1))
                 )
                 / 8
             )
-            while len(dcm.PixelData) != pix_data_len:
-                dcm = pydicom.dcmread(dicom_file)
+            st = time.time()
+            while len(dcm.get("PixelData", b"")) < pix_data_len:
+                if time.time() - st >= self._dcmread_timeout:
+                    self._logger.error(
+                        f"Incomplete pixel data in {dicom_file.name}"
+                        " (truncated or compressed). Skipping the file."
+                    )
+                    return
+                time.sleep(0.05)
+                try:
+                    dcm = pydicom.dcmread(dicom_file)
+                except Exception:
+                    pass
 
             # Check if a new series starts
             if not self._isRun_series:
                 if self._current_study != dcm.StudyInstanceUID:
+                    # New study
                     self._current_study = dcm.StudyInstanceUID
                     self._current_series = dcm.SeriesInstanceUID
                     self.init_study(dcm)
                     self.init_series(dcm)
 
-                elif (
-                    self._current_series != dcm.SeriesInstanceUID
-                ):
+                elif self._current_series != dcm.SeriesInstanceUID:
                     # New series
                     self._current_series = dcm.SeriesInstanceUID
                     self.init_series(dcm)
@@ -442,7 +423,6 @@ class RtDcmMonitor:
                 and self._current_series != dcm.SeriesInstanceUID
             ):
                 # New series before closing the previous one
-                # self.end_series()
                 self._current_series = dcm.SeriesInstanceUID
                 self.init_series(dcm)
 
@@ -450,12 +430,11 @@ class RtDcmMonitor:
                 "FMRI" in imageType and self._isRun_series and
                 not self.no_online
             ):
-                # Convert to NIFTI
+                # Convert to NIfTI and send it to the MRI browser
                 nii_img = self.dcm_reader.dcm2nii(dcms=[dcm])
                 assert nii_img is not None
 
                 if self.rt_mrib_com.rpc_ping():
-                    # Send image to MRI browser
                     update_motion_plot = True
                     self.rt_mrib_com.call_rt_proc(
                         ("BROWSER_ADD_VOLUME", nii_img, update_motion_plot),
@@ -472,7 +451,24 @@ class RtDcmMonitor:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
 
-        self._process_lock.release()
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _physio_fname_fmt(self, dcm):
+        """Return the physio signal filename for the series of dcm."""
+        patient = str(dcm.PatientName).split('^')
+        if re.match(r'\w\w\d\d\d', patient[0]):
+            # Subject ID format of two letters and three digits
+            sub = patient[0]
+        else:
+            sub = '_'.join(patient)
+        sub = sub.replace(" ", "_")
+        ses = str(dcm.PatientID).replace(" ", "_")
+        desc = str(dcm.SeriesDescription).replace(" ", "_")
+        return (
+            str(self._study_dir) +
+            f"/sub-{sub}_ses-{ses}"
+            f"_ser-{int(self._series_nr):02d}_desc-{desc}"
+            "_physio.tsv"
+        )
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_study(self, dcm):
@@ -489,8 +485,7 @@ class RtDcmMonitor:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_series(self, dcm):
         if self._study_dir is None:
-            studyID = self.dcm_converter.make_study_id(dcm, self.study_prefix)
-            self.init_study(self, studyID)
+            self.init_study(dcm)
 
         if self.rt_mri_main_com.rpc_ping():
             self.rt_mri_main_com.call_rt_proc("MOVE_BACK_PHYSIO")
@@ -501,7 +496,8 @@ class RtDcmMonitor:
             + "-" * 79
         )
 
-        # Set TR and TE in pixdim and db_name field
+        # Get TR (ms)
+        TR = None
         if "RepetitionTime" in dcm:
             TR = float(dcm.RepetitionTime)
         elif "SharedFunctionalGroupsSequence" in dcm:
@@ -513,16 +509,22 @@ class RtDcmMonitor:
                     0
                 ].MRTimingAndRelatedParametersSequence[0]
                 TR = float(MRTiming.RepetitionTime)
-        else:
-            TR = self.series_timeout
 
-        self._TR = TR / 1000
+        if TR is not None:
+            self._TR = TR / 1000  # seconds
+        else:
+            # No TR in the header: use series_timeout (seconds)
+            self._logger.warning(
+                "No TR in the DICOM header. "
+                f"Using series_timeout ({self.series_timeout} s) as TR."
+            )
+            self._TR = float(self.series_timeout)
         self._series_nr = int(dcm.SeriesNumber)
 
         imageType = "\\".join(dcm.ImageType)
         if "FMRI" in imageType:
             if int(dcm.NumberOfTemporalPositions) > 5:
-                # Enable physio saving if FMRI
+                # Start physio recording for an fMRI scan
                 if self.rt_physio_com.rpc_ping():
                     self.rt_physio_com.call_rt_proc("START_SCAN")
                     self.rt_physio_com.call_rt_proc(
@@ -532,39 +534,22 @@ class RtDcmMonitor:
                     self.rt_physio_com.call_rt_proc("SHOW")
                     self._save_physio = True
 
-                    patient = str(dcm.PatientName).split('^')
-                    if re.match(r'\w\w\d\d\d', patient[0]):  # LIBR ID
-                        sub = patient[0]
-                    else:
-                        sub = '_'.join(patient)
-                    sub = sub.replace(" ", "_")
-                    ses = str(dcm.PatientID).replace(" ", "_")
-                    desc = str(dcm.SeriesDescription).replace(" ", "_")
-                    fname_fmt = (
-                        str(self._study_dir) +
-                        f"/sub-{sub}_ses-{ses}"
-                        f"_ser-{int(self._series_nr):02d}_desc-{desc}"
-                        "_physio.tsv"
-                    )
                     self.rt_physio_com.call_rt_proc(
-                        ("SET_FNAME_FMT", fname_fmt),
+                        ("SET_FNAME_FMT", self._physio_fname_fmt(dcm)),
                         pkl=True,
                     )
 
-            # Send image to MRI browser
+            # Send the first image to the MRI browser
             if self.rt_mrib_com.rpc_ping():
-                # Convert to NIFTI
+                # Convert to NIfTI
                 nii_img = self.dcm_reader.dcm2nii(dcms=[dcm])
                 assert nii_img is not None
                 ser_info = "Online Ser "
                 ser_info += f"{self._series_nr}, "
                 ser_info += f"{dcm.SeriesDescription}"
 
-                # Send image to MRI browser
-                if int(dcm.NumberOfTemporalPositions) > 1:
-                    init_motion_plot = True
-                else:
-                    init_motion_plot = False
+                # Show the motion plot for a time series
+                init_motion_plot = int(dcm.NumberOfTemporalPositions) > 1
                 self.rt_mrib_com.call_rt_proc(
                     ("BROWSER_NEW_VOLUME", nii_img, ser_info,
                      init_motion_plot),
@@ -599,26 +584,11 @@ class RtDcmMonitor:
                     n_vol = dcm.AcquisitionNumber
                     series_duration = n_vol * self._TR
 
-                patient = str(dcm.PatientName).split('^')
-                if re.match(r'\w\w\d\d\d', patient[0]):  # LIBR ID
-                    sub = patient[0]
-                else:
-                    sub = '_'.join(patient)
-                sub = sub.replace(" ", "_")
-                ses = str(dcm.PatientID).replace(" ", "_")
-                desc = str(dcm.SeriesDescription).replace(" ", "_")
-                fname_fmt = (
-                    str(self._study_dir) +
-                    f"/sub-{sub}_ses-{ses}"
-                    f"_ser-{int(self._series_nr):02d}_desc-{desc}"
-                    "_physio.tsv"
-                )
-
                 args = (
                     "SAVE_PHYSIO_DATA",
                     None,
                     series_duration,
-                    fname_fmt,
+                    self._physio_fname_fmt(dcm),
                 )
                 self.rt_physio_com.call_rt_proc(args, pkl=True)
 
@@ -679,18 +649,13 @@ class RtDcmMonitor:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def exit(self):
-        # This can be called multiple times. To avoid multiple exits, keep a
-        # completion record of the exit process.
+        # This can be called more than once (e.g., by run() and __del__).
+        # Run the exit process only once.
         if not self._end_complete:
             self._end_complete = True
 
-            self.stop_watching()
-            if hasattr(self, "_RPCserver"):
-                self._RPCserver._cancel = True
-                self._RPCserver.shutdown()
-                self._RPCserver_thread.join()
-
             try:
+                self.stop_watching()
                 self._logger.info(
                     "\n==== Closed RtDcmMonitor ===="
                     + "\n#"
@@ -699,16 +664,11 @@ class RtDcmMonitor:
                 )
             except Exception:
                 pass
-
-            # Clean empty folders in monitoring directory
-            for root, dirs, files in os.walk(self._watch_dir, topdown=False):
-                for name in dirs:
-                    dir_path = Path(root) / name
-                    if not any(dir_path.iterdir()):
-                        dir_path.rmdir()
-
-            self.socket_srv.shutdown()
-            self._end_complete = True
+            finally:
+                # Folders in watch_dir are created by the scanner export,
+                # not by this monitor, so they are not removed here.
+                if hasattr(self, "socket_srv"):
+                    self.socket_srv.shutdown()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -717,24 +677,21 @@ class RtDcmMonitor:
 
 # %% __main__ =================================================================
 if __name__ == "__main__":
-    RTMRI_DIR = Path("/path/to/export")
-    WORK_DIR = Path("/path/to/data")
-
     dstr = datetime.now().strftime("%Y%m%d")
     LOG_FILE = Path(f"log/RtDcmMonitor_{dstr}.log")
     if not LOG_FILE.parent.is_dir():
         os.makedirs(LOG_FILE.parent)
 
     # Parse arguments
-    parser = argparse.ArgumentParser(description="RTMRI DICOM monitor")
+    parser = argparse.ArgumentParser(description="Real-time DICOM monitor")
     parser.add_argument(
         "--watch_dir",
-        default=RTMRI_DIR,
+        required=True,
         help="Watch directory, where MRI data is exported in real time",
     )
     parser.add_argument(
         "--work_root",
-        default=WORK_DIR,
+        default="./rt_data",
         help="Converted data output directory root",
     )
     parser.add_argument(
@@ -745,7 +702,8 @@ if __name__ == "__main__":
     parser.add_argument("--study_prefix", default="S", help="Study ID prefix")
     parser.add_argument("--study_ID_field", help="Study ID DICOM field")
     parser.add_argument(
-        "--series_timeout", default=10, help="Timeout period to close a series"
+        "--series_timeout", type=float, default=10,
+        help="Timeout period (seconds) to close a series"
     )
     parser.add_argument(
         "--make_brik", action="store_true", help="Make BRIK files"

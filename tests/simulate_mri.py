@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Simulate DICOM file creation and physio signasl feeding
+Simulate real-time DICOM file creation with scan TTL signals
 
 @author: Masaya Misaki, mmisaki@laureateinstitute.org
 """
@@ -31,18 +31,34 @@ if '__file__' not in locals():
 
 # %% RtMRISimulator ===========================================================
 class RtMRISimulator():
+    """Copy saved DICOM files to a destination directory at the original
+    acquisition timing to simulate real-time MRI export."""
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def __init__(self, physio_recording_rate_ms=2):
-        # Setup
+    def __init__(self, physio_recording_rate_ms=2, ttl_port=None):
+        """ttl_port : TTL output port. 'none' for no TTL output. If None,
+        the port is selected interactively."""
         self.dcm_reader = DicomReader()
         self.physio_recording_rate_ms = physio_recording_rate_ms
-        self.set_physio_ports()
+        if ttl_port is None:
+            self.set_physio_ports()
+        elif ttl_port.lower() == 'none':
+            self.sport_ttl = None
+        else:
+            self.sport_ttl = ttl_port
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def read_test_data(self, test_data_dir, dicom_file_pat, overwrite=False):
-        '''recusive call read_dir'''
+        """List the DICOM files under test_data_dir with their times and
+        series numbers. The result is cached in '<test_data_dir>_info.pkl'.
+
+        dicom_file_pat is a list of regular expressions for the directory
+        or file names at each level.
+        """
         # ---------------------------------------------------------------------
         def read_dir(parent_dir, dicom_file_pat, level):
+            # Read the files in parent_dir, or else recurse into the
+            # subdirectories.
             dcm_fs = sorted([ff for ff in parent_dir.glob('**/*')
                              if ff.is_file() and
                              re.match(dicom_file_pat[level], ff.name)])
@@ -52,7 +68,7 @@ class RtMRISimulator():
                 content_times = {}
                 file_times = {}
                 for ii, ff in tqdm(enumerate(dcm_fs), total=len(dcm_fs),
-                                   desc=f'read files in {parent_dir.name}'):
+                                   desc=f'Read files in {parent_dir.name}'):
                     scan_info = self.dcm_reader.read_dicom_info(ff,
                                                                 timeout=0.1)
                     if scan_info is None:
@@ -72,7 +88,7 @@ class RtMRISimulator():
                 if len(ser) == 0:
                     return
 
-                # sort with content_time
+                # Sort by content time
                 t_order = np.argsort(list(content_times.values())).ravel()
                 sidx = np.array(list(content_times.keys()))[list(t_order)]
                 dcm_fs = np.array(dcm_fs)[sidx]
@@ -106,7 +122,6 @@ class RtMRISimulator():
             return read_data, ctimes, ftimes, atimes, series
 
         # ---------------------------------------------------------------------
-        # Read test data
         data_info_f = test_data_dir.parent / (test_data_dir.name + '_info.pkl')
         if data_info_f.is_file() and not overwrite:
             with open(data_info_f, 'rb') as fd:
@@ -117,17 +132,19 @@ class RtMRISimulator():
             atimes = saved_data['atimes']
             series = saved_data['series']
         else:
-            level = 0
-            ret = read_dir(test_data_dir, dicom_file_pat, level)
+            ret = read_dir(test_data_dir, dicom_file_pat, 0)
             if ret is None:
                 return
 
             src_data, ctimes, ftimes, atimes, series = ret
 
-            # Sort by ctimes
+            # Sort by ctimes (the subdirectory results are lists)
             src_data = [f.relative_to(test_data_dir.parent) for f in src_data]
             src_data = np.array(src_data)
             ctimes = np.array(ctimes)
+            ftimes = np.array(ftimes)
+            atimes = np.array(atimes)
+            series = np.array(series)
             sidx = np.argsort(ctimes)
             src_data = src_data[sidx]
             ctimes = ctimes[sidx]
@@ -150,17 +167,13 @@ class RtMRISimulator():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_physio_ports(self):
-        """ Setup Physio recording
-        """
-
-        # --- Set devices -----------------------------------------------------
-        # Select TTL port
+        """Ask the user to select the TTL output port."""
         SUPPORT_DEVS = ['CDC RS-232 Emulation Demo',
                         'Numato Lab 8 Channel USB GPIO',
                         '.*']
         ser_ports = {}
         for pt in comports():
-            if pt.description == 'n/a' and pt.device != '/dev/ttyS4':
+            if pt.description == 'n/a':
                 continue
 
             if np.any([re.match(devpat, pt.description) is not None
@@ -173,8 +186,8 @@ class RtMRISimulator():
         for ii, (sport, lab) in enumerate(ser_ports.items()):
             msg_txt += f"\n{ii+1}){sport} ({lab})"
 
-        msg_txt += f"\n{ii+2})None"
-        none_i = ii+2
+        none_i = len(ser_ports) + 1
+        msg_txt += f"\n{none_i})None"
         msg_txt += f'\n[{default_sport_ttl}]: '
         while True:
             sport_ttl_i = input(msg_txt)
@@ -186,50 +199,20 @@ class RtMRISimulator():
             except Exception:
                 continue
             break
-        if sport_ttl_i == '0':
+        if sport_ttl_i == 0:
             return -1
         elif sport_ttl_i == none_i:
             self.sport_ttl = None
         else:
             self.sport_ttl = list(ser_ports.keys())[sport_ttl_i-1]
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def select_physio_data(self, physio_data_dir):
-        default_phydata_i = '1'
-        phys_fs = [
-            f.name.replace('ECG_', '') for f in physio_data_dir.glob('ECG*.1D')
-            if (physio_data_dir / f.name.replace('ECG', 'Resp')).is_file()]
-
-        msg_txt = '\n' + '=' * 80 + '\n'
-        msg_txt += "Select data\n0)exit"
-        for ii, physf in enumerate(phys_fs):
-            msg_txt += f"\n{ii+1}){physf}"
-        msg_txt += f'\n[{default_phydata_i}]: '
-        while True:
-            phydata_i = input(msg_txt)
-            if phydata_i == '':
-                phydata_i = default_phydata_i
-            try:
-                phydata_i = int(phydata_i)
-                assert phydata_i <= len(phys_fs)
-            except Exception:
-                continue
-            break
-        if phydata_i == '0':
-            sys.exit()
-
-        physf = phys_fs[phydata_i-1]
-        ecg_f = physio_data_dir / ('ECG_' + physf)
-        assert ecg_f.is_file()
-        resp_f = physio_data_dir / ('Resp_' + physf)
-        assert resp_f.is_file()
-
-        return ecg_f, resp_f
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ask_selection(self, sel_list, default_sel='1', indent='',
                       full_automatic=False):
-        # Select data
+        """Ask the user to select an item of sel_list.
+        Returns the 0-based index (None for exit) and the next default.
+        """
         max_len = np.max([len(sel) for sel in sel_list])
         msg_txt = indent + "Select data"
         if max_len > 10:
@@ -261,16 +244,13 @@ class RtMRISimulator():
         if data_i == 0:
             return None, None
 
-        # Update the default to the next or exit
+        # Update the default to the next item, or exit after the last one
         if data_i < len(sel_list):
             default_sel = f"{int(data_i)+1}"
         else:
             default_sel = '0'
 
-        sel_idx = data_i-1
-        indent += '  '
-
-        return sel_idx, default_sel
+        return data_i - 1, default_sel
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self, test_data_dir, dicom_file_pat, dst_root, physio_data_dir,
@@ -278,7 +258,7 @@ class RtMRISimulator():
 
         self.sim_phys = None
 
-        # Read test directory to list the sessions
+        # List the session directories
         session_list = []
         for dd in test_data_dir.glob('*'):
             if not dd.is_dir() or dd.name == 'c' or \
@@ -287,7 +267,7 @@ class RtMRISimulator():
             session_list.append(dd.name)
 
         if len(session_list) == 0:
-            print(f"No data faund in {test_data_dir}")
+            print(f"No data found in {test_data_dir}")
             return
 
         src_data = {}
@@ -328,12 +308,12 @@ class RtMRISimulator():
                 print(f'No source data in {test_data_dir / sel_session}')
                 continue
 
-            # Clean destination
+            # Clean the destination
             dst_dir = dst_root / sel_session
             if dst_dir.is_dir():
                 shutil.rmtree(dst_dir)
 
-            # Find series divisions
+            # Split the files into series runs at acquisition gaps > 3 s
             ser_div = np.argwhere(np.diff(series[sel_session]) > 0).ravel()
             td = [d.total_seconds() for d in np.diff(datimes[sel_session])]
             ser_dt = np.array(td)[ser_div]
@@ -363,7 +343,7 @@ class RtMRISimulator():
 
             if full_automatic:
                 global_st_time = time.time()
-                tshift = dftimes[sel_session][0]
+                tshift = dctimes[sel_session][0]
 
             default_ser = '1'
             CONT_SER_LOOP = True
@@ -380,7 +360,6 @@ class RtMRISimulator():
                 sel_data = src_data[sel_session][sel_idx]
                 sel_dftimes = dctimes[sel_session][sel_idx]
 
-                # Run simulation
                 try:
                     # Select mode (auto/manual)
                     if not full_automatic:
@@ -416,17 +395,17 @@ class RtMRISimulator():
                         global_st_time = None
                         tshift = None
 
-                    # Cleare existing files
+                    # Clear existing files
                     for ff in sel_data:
                         dst_f = dst_root / ff
                         if dst_f.is_file():
                             dst_f.unlink()
 
-                    # Copying file
+                    # Copy the files
                     sim_ttl = SendTTL(self.sport_ttl)
                     self.copy_files(
                         test_data_dir, sel_data, sel_dftimes, dst_root, mode,
-                        global_st_time, tshift, sim_ttl)
+                        global_st_time, tshift, sim_ttl, auto_dir_interval)
 
                 except KeyboardInterrupt:
                     print("\nCancel simulation.\n")
@@ -441,23 +420,22 @@ class RtMRISimulator():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def copy_files(self, test_data_dir, src_data, dtime, dst_root, mode,
                    global_st_time, tshift, sim_ttl=None, auto_dir_interval=3):
+        """Copy the files at the original timing ('auto') or at each return
+        key ('man'), sending a TTL signal with each file."""
         try:
-            if not rtmri_dir.is_dir():
-                os.makedirs(rtmri_dir)
+            if not dst_root.is_dir():
+                os.makedirs(dst_root)
 
             # Get image parameters
             scan_info = self.dcm_reader.read_dicom_info(
                 test_data_dir / src_data[0], root_dir=test_data_dir)
-            print(f"Series De: {scan_info['SeriesDescription']}")
+            print(f"Series description: {scan_info['SeriesDescription']}")
 
             # Prepare the destination directory
             dcm_dir = scan_info['DICOM directory']
             dst_dir = dst_root / dcm_dir
             if not dst_dir.parent.is_dir():
                 os.makedirs(dst_dir.parent)
-
-            # if dst_dir.is_dir():
-            #     shutil.rmtree(dst_dir)
 
             if mode == 'auto':
                 if not dst_dir.is_dir():
@@ -474,8 +452,8 @@ class RtMRISimulator():
                     st = time.time()
                     cp_dtime = dtime - np.min(dtime)
 
-                cp_dtime = [dt.total_seconds() for dt in cp_dtime]
-
+                # Send TTLs at most every 0.5 s (once per volume for
+                # slice-wise DICOM files)
                 ttl_t = 0
                 TR = np.diff(cp_dtime).mean()
                 for ii, src_f in enumerate(src_data):
@@ -486,11 +464,11 @@ class RtMRISimulator():
                     if sim_ttl is not None:
                         if ii == 0:
                             ttl_t = time.time()
-                            sim_ttl.send_singnal()
+                            sim_ttl.send_signal()
                         else:
                             if time.time() - ttl_t > 0.5:
                                 ttl_t = time.time()
-                                sim_ttl.send_singnal()
+                                sim_ttl.send_signal()
                     if ii < len(cp_dtime)-1:
                         while time.time()-st < cp_dtime[ii+1]:
                             time.sleep(0.001)
@@ -518,7 +496,7 @@ class RtMRISimulator():
                     if r == '0':
                         return
                     if sim_ttl is not None:
-                        sim_ttl.send_singnal()
+                        sim_ttl.send_signal()
                     shutil.copy(test_data_dir / src_f, dst_f)
                     print(f"Create {dst_f.name}")
 
@@ -529,28 +507,31 @@ class RtMRISimulator():
 # %% __main__ =================================================================
 if __name__ == '__main__':
 
-    TEST_DATA_ROOT = Path().home() / 'RTPSpy_tests'
-    RTMRI_DIR_SMB = Path('/tmp/RTExport')
-    PHYSIO_DATA_ROOT = Path().home() / 'RTPSpy_tests' / 'Physio'
+    TEST_DATA_ROOT = Path(__file__).resolve().parent / 'test_data'
+    RTMRI_DIR = Path(__file__).resolve().parent / 'watch'
 
     # --- Parse arguments -----------------------------------------------------
     parser = argparse.ArgumentParser(
         description='Simulate MRI DICOM data creation')
     parser.add_argument(
         '--test_data_dir', default=TEST_DATA_ROOT,
-        help=f'Test data ditectory. Default is {TEST_DATA_ROOT}')
+        help=f'Test data directory. Default is {TEST_DATA_ROOT}')
     parser.add_argument(
-        '--rtmri_dir', default=RTMRI_DIR_SMB,
+        '--rtmri_dir', default=RTMRI_DIR,
         help='Copy destination directory to simulate ' +
-        f'real-time MRI. Default is {RTMRI_DIR_SMB} ')
+        f'real-time MRI. Default is {RTMRI_DIR} ')
+    parser.add_argument(
+        '--ttl_port',
+        help="TTL output port (e.g., /dev/ttyACM0, '0' for a UNIX domain"
+        " socket, or 'none'). Selected interactively if not given.")
     parser.add_argument('--keep_dst', action='store_true',
                         help='Keep destination directory data')
-    parser.add_argument('--auto_dir_interval', default=3,
-                        help='Directory creation interval (secodns) in the' +
-                        'autorun mode')
+    parser.add_argument('--auto_dir_interval', default=3, type=float,
+                        help='Directory creation interval (seconds) in the' +
+                        ' auto mode')
     parser.add_argument('--full_automatic', action='store_true',
                         help='Full automatic mode')
-    parser.add_argument('--physio_data', help='physio data ditectory')
+    parser.add_argument('--physio_data', help='Physio data directory')
 
     args = parser.parse_args()
     test_data_dir = Path(args.test_data_dir)
@@ -564,7 +545,9 @@ if __name__ == '__main__':
 
     dicom_file_pat = [r'.+',
                       r'.+']
-    rt_sim = RtMRISimulator()
+    rt_sim = RtMRISimulator(ttl_port=args.ttl_port)
+    if not hasattr(rt_sim, 'sport_ttl'):
+        sys.exit()  # Exit was selected
 
     rt_sim.run(test_data_dir, dicom_file_pat, rtmri_dir, physio_data_dir,
                full_automatic, auto_dir_interval)

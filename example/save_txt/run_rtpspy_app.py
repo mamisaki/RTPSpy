@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run RTPSpy GUI application with simple ROI signal extraction.
-The signal is saved in a file real-time.
+Run the RTPSpy GUI application with simple ROI signal extraction.
+The signal is saved in a file in real time.
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -21,7 +21,7 @@ from rtpspy.rtp_app import RtpApp
 from rtpspy.rtp_gui import RtpGUI
 
 
-# %% Default parameters
+# %% Default parameters ======================================================
 same_dir = Path(__file__).absolute().parent
 
 rtp_params = {'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
@@ -41,7 +41,6 @@ rtp_params = {'TSHIFT': {'method': 'cubic', 'ignore_init': 3, 'ref_time': 0},
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
 
-    # Make RtpApp instance
     rtp_app = RtpApp()
 
     # Set default parameters
@@ -53,21 +52,17 @@ if __name__ == '__main__':
     for attr, val in rtp_params['APP'].items():
         rtp_app.set_param(attr, val)
 
-    # Make RtpGUI instance
     rtp_ui = RtpGUI(rtp_app.rtp_objs, {'ROI-NF': rtp_app}, log_dir='./log')
 
-    # Load saved parameters
+    # Load the parameters saved in the previous session
     all_rtp_objs = rtp_app.rtp_objs
     all_rtp_objs.update({'ROI-NF': rtp_app})
     load_parameters(all_rtp_objs)
 
-    # Ask watch_dir for RTPWatch
-    ui_ret = rtp_ui.set_watchDir()
+    # Ask the watch and working directories
+    rtp_ui.set_watchDir()
+    rtp_ui.set_workDir()
 
-    # Ask work dir
-    ui_ret = rtp_ui.set_workDir()
-
-    # Application exec
     sys.excepthook = excepthook
     try:
         rtp_ui.show()
@@ -80,9 +75,8 @@ if __name__ == '__main__':
         print(str(e))
         exit_code = -1
 
-    # End
-    # Save parameters
-    # exit with 1 means exit wihtout saving (defined in RtpGUI)
+    # Save the parameters. Exit code 1 means exit without saving (defined
+    # in RtpGUI).
     if exit_code != 1:
         save_parameters(all_rtp_objs)
 

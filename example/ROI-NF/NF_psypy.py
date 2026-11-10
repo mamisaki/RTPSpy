@@ -30,8 +30,8 @@ class NFApp():
                  size=(800, 600), pos=None, screen=0, fullscr=False,
                  log_dir='./log', debug=False, **kwargs):
         """
-        Example neurofeedback PyschoPy application.
-        Receive signal via RTP_SERVE object and show the value with psychopy.
+        Example neurofeedback PsychoPy application.
+        Receive the signal via RTP_SERVE and show the value with PsychoPy.
 
         Parameters
         ----------
@@ -39,7 +39,7 @@ class NFApp():
             Allow remote access (connection from other than localhost).
             The default is False.
         request_host : str, optional
-            Host to return the server's address:port.
+            'host:port' to which the server's address:port is sent.
             The default is None.
         size : array or int, optional
             Size of the window in pixels [x, y]. The default is (800, 600).
@@ -49,7 +49,7 @@ class NFApp():
         screen : int, optional
             Screen number for psychopy.visual.Window. The default is 0.
         fullscr : bool, optional
-            Create a window in ‘full-screen’ mode. The default is False.
+            Create a window in full-screen mode. The default is False.
         log_dir : Path or str, optional
             Log directory. The default is './log'.
         debug : bool, optional
@@ -61,11 +61,12 @@ class NFApp():
         self.class_name = self.__class__.__name__
         self.rtpapp_address_str = ''
 
-        self.scan_onset = -1  # scan onset time (second)
+        self.scan_onset = -1  # Scan onset time (s)
+        self.state = 'init'  # Returned to a 'GET_STATE' request
 
         # --- Boot RTP_SERVE --------------------------------------------------
-        # Boot the socketserver.TCPServer in RTP_SERVE to receive a signal from
-        # the RTPSpy App/
+        # Boot the socketserver.TCPServer in RTP_SERVE to receive signals from
+        # RtpApp.
         self.rtp_srv = RTP_SERVE(
             allow_remote_access=allow_remote_access,
             request_host=request_host, verb=self.DEBUG)
@@ -73,9 +74,6 @@ class NFApp():
         # --- Open a log file -------------------------------------------------
         self.log_dir = log_dir
         self._set_log(self.log_dir)
-
-        self.sess_log = None
-        self.sess_log_dir = self.log_dir
 
         # --- Open the window and make visual objects -------------------------
         self.win = self._open_window(size=size, pos=pos, screen=screen,
@@ -90,13 +88,12 @@ class NFApp():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _set_log(self, log_dir):
+        """Open a log file in log_dir (stdout if log_dir is None)"""
         try:
             if hasattr(self, '_log_fd') and self._log_fd != sys.stdout:
                 self._log_fd.close()
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            traceback.print_exception(exc_type, exc_obj, exc_tb)
-            pass
+            traceback.print_exc()
 
         if log_dir is not None:
             if self.DEBUG:
@@ -114,7 +111,7 @@ class NFApp():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _open_window(self, **kwargs):
-        # Open the stimulu window
+        # Open the stimulus window
         if self.DEBUG:
             kwargs['allowGUI'] = True
             kwargs['fullscr'] = False
@@ -137,6 +134,7 @@ class NFApp():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _log(self, event, misc=''):
+        """Write an event with the time from the scan onset"""
         if self._log_fd is None:
             return
 
@@ -153,12 +151,7 @@ class NFApp():
         self._log_fd.write(wstr + '\n')
         self._log_fd.flush()
 
-        if self.sess_log is not None:
-            self.sess_log = self.sess_log.append(
-                {'datetime': tstr, 'time_from_scan_onset': et,
-                 'event': event, 'misc': misc}, ignore_index=True)
-
-        # echo to stdout
+        # Echo to stdout
         if self.DEBUG and self._log_fd != sys.stdout:
             sys.stdout.write(wstr + '\n')
             sys.stdout.flush()
@@ -166,20 +159,20 @@ class NFApp():
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self):
         """
-        Running sessions.
+        Run sessions until 'QUIT' is received or the escape key is pressed.
         """
-        while True:  # loop for running multiple sessions
+        while True:  # Loop for running multiple sessions
             srv_addr, srv_port = self.rtp_srv.server.server_address
             self.sub_txt.setText(f"Server is running at {srv_addr}:{srv_port}")
             self.sub_txt.draw()
             self.win.flip()
 
-            self.rtp_srv.reset_NF_signal()  # Reset NF_signal in rtp_srv
+            self.rtp_srv.reset_NF_signal()
             END = False
+            self.state = 'cmd_loop'
 
-            # --- Wait for receiving READY ------------------------------------
+            # --- Wait for READY ----------------------------------------------
             while True:
-                # Check received data.
                 rcv_data = self.rtp_srv.get_recv_queue(timeout=0.1)
                 if rcv_data is not None and type(rcv_data) == str:
                     if rcv_data == 'READY':
@@ -213,6 +206,7 @@ class NFApp():
             self.msg_txt.draw()
             self.win.flip()
             self._log('Ready')
+            self.state = 'ready'
 
             # --- Wait for the scan start -------------------------------------
             while True:
@@ -229,29 +223,29 @@ class NFApp():
                         self.win.close()
                         return 0
 
-                    # Abort when the escape key is pressed.
-                    if event.getKeys(["escape"]):
-                        self._log('Press:[ESC]')
-                        self.win.close()
-                        return 0
+                # Abort when the escape key is pressed.
+                if event.getKeys(["escape"]):
+                    self._log('Press:[ESC]')
+                    self.win.close()
+                    return 0
 
-                    # Go ahead when the space key is pressed.
-                    if event.getKeys(["space"]):
-                        self.scan_onset = core.getTime()
-                        break
+                # Go ahead when the space key is pressed.
+                if event.getKeys(["space"]):
+                    self.scan_onset = core.getTime()
+                    break
 
             if END:
-                continue  # Retrun to wait for receiving the READY.
+                continue  # Return to waiting for READY
 
             # --- Feedback loop -----------------------------------------------
+            self.state = 'nf_run'
             self.win.flip()
-            timeEND = np.inf  # Continue running unless receiving 'END'
-            last_NF_idx = 0  # Index of the last read self.rtp_srv.NF_signal.
-            last_NF_time = time.time()  # The last NF_signal reading time.
+            timeEND = np.inf  # Continue running until 'END' is received
+            last_NF_idx = 0  # Index of the last read self.rtp_srv.NF_signal
+            last_NF_time = time.time()  # Time of the last NF_signal reading
 
             while core.getTime()-self.scan_onset < timeEND:
                 try:
-                    # Check a message received
                     rcv_data = self.rtp_srv.get_recv_queue(timeout=0.01)
                     if rcv_data is not None and type(rcv_data) == str:
                         if 'GET_STATE' in rcv_data:
@@ -273,19 +267,16 @@ class NFApp():
                     # -- Update the feedback message --
                     if len(self.rtp_srv.NF_signal) > last_NF_idx:
                         if time.time()-last_NF_time < 0.5:
-                            '''
-                            Suppress too frequent updates of the signal.
-                            This could happen when volumes in the RtpRegress's
-                            wait periods are retrospectively processed and sent.
-                            '''
+                            # Suppress too frequent updates of the signal.
+                            # This happens when the volumes in the wait
+                            # period of RtpRegress are processed
+                            # retrospectively and sent at once.
                             continue
 
-                        '''
-                        self.rtp_srv.NF_signal is a pandas DataFrame with
-                        columns=('Time', 'TR', 'Signal'), keeping the NF
-                        signals received from RTPSpy RtpApp.
-                        self.rtp_srv.NF_signal.Signal is a list of NF signals.
-                        '''
+                        # self.rtp_srv.NF_signal is a pandas DataFrame with
+                        # columns=('Time', 'TR', 'Signal'), holding the NF
+                        # signals received from RtpApp. Signal is a list of
+                        # NF signals.
                         last_NF_idx = len(self.rtp_srv.NF_signal)
                         last_NF_time = time.time()
                         TR = self.rtp_srv.NF_signal.TR.values[-1]
@@ -298,11 +289,10 @@ class NFApp():
 
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errmsg = '{}, {}:{}'.format(
-                            exc_type, exc_tb.tb_frame.f_code.co_filename,
-                            exc_tb.tb_lineno)
-                    errmsg += ' ' + str(e)
-                    self._log("!!!Error:{}".format(errmsg))
+                    errmsg = (f"{exc_type}, "
+                              f"{exc_tb.tb_frame.f_code.co_filename}:"
+                              f"{exc_tb.tb_lineno} {e}")
+                    self._log(f"!!!Error:{errmsg}")
 
         if hasattr(self, 'win'):
             self.win.close()
@@ -312,7 +302,7 @@ class NFApp():
 
 # %% main =====================================================================
 if __name__ == '__main__':
-    # --- parse auguments -----------------------------------------------------
+    # --- Parse arguments -----------------------------------------------------
     parser = argparse.ArgumentParser()
     parser.add_argument('--size', type=int, nargs='+', help='window size',
                         default=[800, 600])
@@ -322,15 +312,16 @@ if __name__ == '__main__':
                         help='fullscreen mode')
     parser.add_argument('--log_dir', help='log directory')
     parser.add_argument('--tell_port', action='store_true',
-                        help='Print opened port, folk process to run the app,'
-                        + ' and return immediately.')
+                        help='Print the opened port, fork a process to run'
+                        + ' the app, and return immediately.')
     parser.add_argument("--debug", action='store_true', help="debug mode")
 
-    # WHen booted with boot_RTP_SERVE_app
+    # Options used when booted by boot_RTP_SERVE_app
     parser.add_argument('--allow_remote_access', action='store_true',
                         help='allow remote access')
     parser.add_argument('--request_host',
-                        help="host:port to answer the sever's host:port")
+                        help="host:port to which the server's host:port is"
+                        " sent")
 
     args = parser.parse_args()
     kwargs = args.__dict__
@@ -349,13 +340,8 @@ if __name__ == '__main__':
         addr, pr = boot_RTP_SERVE_app(cmd, remote=args.allow_remote_access,
                                       timeout=None)
     else:
-        kwargs = args.__dict__
-
-        # Make TaskApp instance
         app = NFApp(**kwargs)
         app.run()
-
-        # End
         del app
 
     sys.exit(0)

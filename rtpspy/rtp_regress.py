@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RTP regression
+RTP regression: online GLM denoising of fMRI volumes
 
 @author: mmisaki@laureateinstitute.org
 """
@@ -17,7 +17,7 @@ import logging
 
 import numpy as np
 import nibabel as nib
-from six import string_types
+import psutil
 from PyQt5 import QtWidgets
 import torch
 
@@ -28,53 +28,67 @@ except Exception:
 
 gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
+# Regressor names
+MOT_NAMES = ('roll', 'pitch', 'yaw', 'dS', 'dL', 'dP')
+DMOT_NAMES = ('dtroll', 'dtpitch', 'dtyaw', 'dtdS', 'dtdL', 'dtdP')
+PHYS_REG_NAMES = {
+    'RVT5': ['RVT0', 'RVT1', 'RVT2', 'RVT3', 'RVT4'],
+    'RICOR8': ['Resp0', 'Resp1', 'Resp2', 'Resp3',
+               'Card0', 'Card1', 'Card2', 'Card3'],
+    'RVT+RICOR13': ['RVT0', 'RVT1', 'RVT2', 'RVT3', 'RVT4',
+                    'Resp0', 'Resp1', 'Resp2', 'Resp3',
+                    'Card0', 'Card1', 'Card2', 'Card3']}
+ROI_REGS = ('GS', 'WM', 'Vent')  # Mean signal regressors in ROI masks
+# Regressors standardized in each fit
+NORM_REGS = MOT_NAMES + DMOT_NAMES + ROI_REGS
+
+# UI option lists. The index of an option is its combo box index.
+MOT_REG_OPTS = ('None', 'mot6', 'mot12', 'dmot6')
+PHYS_REG_OPTS = ('None', 'RICOR8', 'RVT5', 'RVT+RICOR13')
+MASK0_TEXT = 'zero-out initial received volume'
+
 
 # %% lstsq_SVDsolver ==========================================================
 def lstsq_SVDsolver(A, B, rcond=None):
     """
-    Solve a linear system Ax = b in least square sense (minimize ||Ax-b||^2)
-    with SVD.
+    Solve a linear system AX = B in the least-squares sense (minimize
+    ||AX - B||^2) with SVD.
 
     Parameters
     ----------
     A : 2D tensor (n x m)
-        n: number of samples (time points), m: nuber of variables (regressors).
-        Number of rows (n) must be > number of columns (m).
+        n: number of samples (time points), m: number of variables
+        (regressors). The number of rows (n) must be larger than the number
+        of columns (m).
     B : 2D tensor (n x k)
-        n: number of sammples, k: number of depedent values (e.g., voxels).
+        n: number of samples, k: number of dependent variables (e.g.,
+        voxels).
     rcond : float, optional
         Cut-off ratio for small singular values. For the purpose of rank
         determination, singular values are treated as zero if they are smaller
         than rcond times the largest singular value.
-        Default will use the machine precision times len(s).
+        The default is the float32 machine precision times min(A.shape).
 
     Returns
     -------
-    x: 2D tensor (n x k)
+    X: 2D tensor (m x k)
+        Minimum-norm least-squares solution. Singular values below the
+        cut-off (including an all-zero A) give zero contribution.
     """
 
     if rcond is None:
         rcond = np.finfo(np.float32).eps * min(A.shape)
 
-    # SVD for A
-    U, S, V = torch.svd(A)
+    # Thin SVD for A: A = U diag(S) Vh
+    U, S, Vh = torch.linalg.svd(A, full_matrices=False)
 
-    # Clip singular values < S[0] * rcond
-    sthresh = S[0] * rcond
-    for ii in range(len(S)):
-        if S[ii] < sthresh:
-            break
-        else:
-            r = ii+1
-    # r is rank of A
+    # Pseudo-inverse of the singular values; values <= S.max() * rcond are
+    # treated as zero (no Python loop, no GPU-host sync).
+    sthresh = S.max() * rcond
+    Sinv = torch.where(S > sthresh, 1.0 / S, torch.zeros_like(S))
 
-    # Diagnal matrix with Sinv: D = diag(1/S)
-    Sinv = torch.zeros(len(S)).to(S.device)
-    Sinv[:r] = 1.0/S[:r]
-    D = torch.diag(Sinv)
-
-    # X = V*D*UT*B
-    X = torch.linalg.multi_dot((V, D, U.transpose(1, 0), B))
+    # X = V diag(Sinv) U^T B
+    X = Vh.T @ (Sinv[:, None] * (U.T @ B))
 
     return X
 
@@ -83,8 +97,9 @@ def lstsq_SVDsolver(A, B, rcond=None):
 class RtpRegress(RTP):
     """
     RTP online regression analysis.
-    Cumulative GLM that recalculates GLM with all available time points is
-    used.
+    A cumulative GLM is used: the GLM is fitted again at each volume with all
+    the available volumes (or the latest ones when the scan is longer than
+    the buffers; see max_scan_length).
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -99,75 +114,82 @@ class RtpRegress(RTP):
         Parameters
         ----------
         max_poly_order : int or np.inf, optional
-            Maximum order of the polynomial regressors. Polynomial regressor is
-            increasing automatically with the scan length. The default is
+            Maximum order of the polynomial regressors. The polynomial order
+            increases automatically with the scan length. The default is
             np.inf.
         TR : float, optional
-            fMRI TR. This is used for calculating the polynomial order as;
-            order = 1 + int(TR*current_number_of_volume/150)
+            fMRI TR (seconds). This is used to set the polynomial order;
+            order = 1 + int(TR * number_of_volumes / 150).
             The default is 2.0.
         mot_reg : str, ['None'|'mot6'|'mot12'|'dmot6'], optional
-            Motion regressors type.
+            Motion regressor type.
             'None': no motion regressor
-            'mot6': six motions; yaw, pitch, roll, dx, dy, dz
-            'mot12': mot6 plus their temporal derivative
-            'dmot6': six motion derivatives
+            'mot6': six motion parameters; yaw, pitch, roll, dx, dy, dz
+            'mot12': mot6 plus their temporal derivatives
+            'dmot6': temporal derivatives of the six motion parameters
             The default is 'None'.
-        volreg : RtpVolreg object instance, optional
-            RtpVolreg instance to read motion parameters. The default is None.
+        volreg : RtpVolreg object, optional
+            RtpVolreg instance to read the motion parameters from. The default
+            is None.
         GS_reg : bool, optional
-            Flag to use the global signal regressor.
-            The default is False.
+            Use the global signal regressor. The default is False.
         GS_mask : str or Path, optional
-            Mask file for the global signal caluculation. The default is None.
+            Mask file for the global signal. The default is None.
         WM_reg : bool, optional
-            Flag to use the mean white matter regressor. The default is False.
+            Use the mean white matter signal regressor. The default is False.
         WM_mask : str or Path, optional
-            Mask file for the white matter region. The default is None.
-        Vent_reg : TYPE, optional
-            Flag to use the mean ventricle regressor. The default is False.
+            Mask file for the white matter. The default is None.
+        Vent_reg : bool, optional
+            Use the mean ventricle signal regressor. The default is False.
         Vent_mask : str or Path, optional
-            Mask file for the ventricle region. The default is None.
-        mask_src_proc : RTP class object, optional
-            Region mask regressors (GS_mask, WM_mask, Vent_mask) should be
-            calculated with unsmoothed signals. If the input to RtpRegress is
-            a smoothed one, this option allows using other RTP module's output
-            for calculating masked signal regressors. The default is None.
-        phys_reg : str, ['None'|'RICOR8'|'RVT5'|'RVT+RICOR13'], optional
+            Mask file for the ventricles. The default is None.
+        mask_src_proc : RTP object, optional
+            RTP module whose output (proc_data) is used to calculate the ROI
+            mean signal regressors (GS, WM, Vent). These regressors should be
+            made from unsmoothed data, so when the input to RtpRegress is
+            smoothed, set this to a module before smoothing (e.g., RtpVolreg).
+            Required when GS_reg, WM_reg, or Vent_reg is True. The default is
+            None.
+        phys_reg : str, ['None'|'RICOR8'], optional
             Physiological signal regressor type.
-            None: no physio regressor
-            RICOR8: four Resp and four Card regressors
-            RVT5: five RVT regressors
-            RVT+RICOR13: both RVT5 and RICOR8
-            RVT is not recomended for RTP (see Misaki and Bodrka, 2021.)
+            'None': no physio regressor
+            'RICOR8': four respiration and four cardiac RETROICOR regressors
+            'RVT5' (five RVT regressors) and 'RVT+RICOR13' (RVT5 + RICOR8)
+            are not supported by the real-time RetroTs. RVT is not recommended
+            for RTP anyway (see Misaki and Bodurka, 2021).
             The default is 'None'.
-        rtp_physio : RtpPyshio object, optional
-            RtpPyshio object to get retrots regressors. The default is None.
+        rtp_physio : RtpTTLPhysio object, optional
+            Object to get the RETROICOR regressors from (get_retrots). The
+            default is None.
         tshift : float, optional
-            Slice timing offset (second) for calculating the restrots
-            regressors. The default is 0.0.
+            Slice timing offset (seconds) for making the RETROICOR regressors.
+            The default is 0.0.
         desMtx : 2D array, optional
-            Additional design matrix other than motion, retrots, and polynomial
-            regressors. The array must include the initial ignored volumes,
-            while those are removed in the regression. The default is None.
+            Additional design matrix other than the motion, physio, and
+            polynomial regressors. The rows must include the initial ignored
+            volumes, which are not used in the regression. The default is
+            None.
         wait_num : int, optional
-            The minimum number of volumes (excluding the ignored volumes) to
-            wait before starting REGRESS. If the value is smaller than the
-            number of regressors, this value is ignored and the regress waits
-            for receiving the number of regressors volumes. The default is 12.
+            Minimum number of volumes (excluding the ignored volumes) to
+            receive before starting the regression. If it is smaller than the
+            number of regressors + 1, the regression waits for that number of
+            volumes instead. The default is 0.
         mask_file : 0 or str (Path), optional
-            Mask for the processing region. 0 means a zero-out mask with the
-            initial volume. The default is 0.
+            Mask of the processing region. 0 means a mask of the non-zero
+            voxels in the first received volume. The default is 0.
         max_scan_length : int, optional
-            Maximum scan length. This is used for pre-allocating memory space
-            for X and Y data. If desMtx is not None max_scan_length is set by
-            the length of desMtx.
+            Maximum scan length (volumes). The X and Y buffers are allocated
+            for this length at the scan start (no reallocation during a scan).
+            If the scan is longer, the buffers are used as ring buffers and
+            the GLM is fitted with the latest max_scan_length volumes. If
+            desMtx is given, max_scan_length is at least the length of desMtx.
+            The default is 800.
         onGPU : bool, optional
-            Run REGRESS on GPU when available. The default is the output of
+            Run the regression on a GPU when available. The default is
             torch.cuda.is_available() or torch.backends.mps.is_available().
         reg_retro_proc : bool, optional
-            Flag to retroactively process the volumes before starting regress.
-            Default is True.
+            Process the volumes received before the regression started
+            retrospectively at the first fit. The default is True.
 
         """
         super(RtpRegress, self).__init__(**kwargs)
@@ -179,7 +201,7 @@ class RtpRegress(RTP):
         # Motion regressors
         self.mot_reg = mot_reg
         self.volreg = volreg
-        # Region mask regressors
+        # ROI mean signal regressors
         self.GS_reg = GS_reg
         self.GS_mask = GS_mask
         self.WM_reg = WM_reg
@@ -191,9 +213,9 @@ class RtpRegress(RTP):
         self.phys_reg = phys_reg
         self.rtp_physio = rtp_physio
         self.tshift = tshift
-        # Other regressors design matrix
+        # Additional design matrix
         self.desMtx_read = desMtx
-        # Operational paramterss
+        # Operational parameters
         self.mask_file = mask_file
         self.max_scan_length = max_scan_length
         self.onGPU = onGPU
@@ -201,89 +223,102 @@ class RtpRegress(RTP):
         self.wait_num = wait_num
 
         # --- Initialize working data ---
-        # Mask matrices
-        self.maskV = None
-        self.GS_maskdata = None
+        # Masks
+        self.maskV = None  # Processing region
+        self.GS_maskdata = None  # ROI masks within maskV
         self.WM_maskdata = None
         self.Vent_maskdata = None
-        # Regressor variables
+        # Regressors
         self.reg_names = []
-        self.col_names_read = []
-        self.desMtx0 = None  # Initial design matrix including ignored volumes.
-        self.desMtx = None
-        # Previous motion parameters for calculating the motion derivatives.
-        self.mot0 = None
-        # Data matrix
-        self.YMtx = None  # Data matrix
-        self.Y_mean = None  # Mean signal for data scaling
+        self.col_names_read = []  # Column names of desMtx_read
+        # Regressor template (without polynomials), including the ignored
+        # volumes. Rows: max_scan_length, or the length of desMtx_read.
+        self.desMtx0 = None
+        self.desMtx = None  # X buffer (tensor)
+        self.mot0 = None  # Previous motion parameters for the derivatives
+        # Data
+        self.YMtx = None  # Y buffer (tensor)
+        self.Y_mean = None  # Mean signal for scaling the data
+        self._ring_warned = False  # Warned that the buffers are ring buffers
+        # Memory budget (bytes) for the X and Y buffers. None: half of the
+        # free GPU (or system) memory.
+        self.max_buffer_bytes = None
 
         # --- Set the number of volumes to wait ---
         self.set_wait_num()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # onGPU getter, setter
     @property
     def onGPU(self):
         return self.device != 'cpu'
 
     @onGPU.setter
-    def onGPU(self, _onGPU):
-        if _onGPU:
+    def onGPU(self, use_gpu):
+        if use_gpu:
             if torch.cuda.is_available():
                 self.device = 'cuda'
             elif torch.backends.mps.is_available():
                 self.device = 'mps'
             else:
-                errmsg = "GPU is not available."
-                self._logger.error(errmsg)
-                self.err_popup(errmsg)
+                self._error("GPU is not available.")
                 self.device = 'cpu'
         else:
             self.device = 'cpu'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _error(self, errmsg):
+        """Log an error message and show it in a popup (GUI only)."""
+        self._logger.error(errmsg)
+        self.err_popup(errmsg)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _to_device(self, arr):
+        """Convert a numpy array to a float32 tensor on self.device."""
+        return torch.from_numpy(arr.astype(np.float32)).to(self.device)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         self._proc_ready = True
 
+        errmsgs = []
         if self.TR is None:
-            errmsg = 'TR is not set.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
-            self._proc_ready = False
+            errmsgs.append('TR is not set.')
 
         if self.mot_reg != 'None' and self.volreg is None:
-            errmsg = 'RtpVolreg object is not set.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
-            self._proc_ready = False
+            errmsgs.append('RtpVolreg object is not set.')
 
-        if self.phys_reg != 'None':
-            if self.rtp_physio is None:
-                errmsg = 'Physio recorder object is not set.'
-                self._logger.error(errmsg)
-                self.err_popup(errmsg)
-                self._proc_ready = False
+        if self.phys_reg not in ('None', 'RICOR8'):
+            # RetroTs makes only the 8 RETROICOR regressors.
+            errmsgs.append(
+                f"Physio regressor '{self.phys_reg}' is not supported."
+                " Use 'RICOR8' or 'None'.")
 
-        if self.desMtx0 is None and self.max_scan_length is None:
-            errmsg = 'Either design matrix or max scanlength must be set.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
+        if self.phys_reg != 'None' and self.rtp_physio is None:
+            errmsgs.append('Physio recorder object is not set.')
+
+        if (self.GS_reg or self.WM_reg or self.Vent_reg) and \
+                self.mask_src_proc is None:
+            errmsgs.append(
+                'mask_src_proc must be set for GS/WM/Vent regressors.')
+
+        if self.desMtx_read is None and not self.max_scan_length:
+            errmsgs.append(
+                'Either the design matrix or max_scan_length must be set.')
+
+        for errmsg in errmsgs:
+            self._error(errmsg)
             self._proc_ready = False
 
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
 
         if self._proc_ready:
-            # Prepare design matrix
             self.setup_regressor_template(self.desMtx_read,
                                           self.max_scan_length,
                                           self.col_names_read)
-            # Set mask
-            if isinstance(self.mask_file, string_types) or \
-                    isinstance(self.mask_file, Path):
+            if isinstance(self.mask_file, (str, Path)):
                 self.set_mask(self.mask_file)
 
-            # Set the number of volumes to wait
             self.set_wait_num()
 
         return self._proc_ready
@@ -291,18 +326,32 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
         """
-        vol_idx: 0-based index of imaging volume from the scan start
-        self._vol_num: Number of volumes received in this module.
+        Regress out the nuisance signals from a volume and pass the residual
+        to the next process.
+
+        The X (self.desMtx) and Y (self.YMtx) buffers have a fixed number of
+        rows (buf_len). The data of volume vol_idx is stored in row
+        vol_idx % buf_len, so the buffers work as ring buffers when the scan
+        is longer than buf_len. Each GLM fit uses the latest
+        min(number of processed volumes, buf_len) volumes.
+
+        Parameters
+        ----------
+        fmri_img : nibabel image object
+            Volume to process. Its data are replaced with the residual.
+        vol_idx : int, optional
+            0-based index of the volume from the scan start. If None,
+            the number of received volumes - 1 is used.
+        pre_proc_time : float, optional
+            Time stamp when the previous module finished.
         """
 
         try:
-            # Increment the number of received volumes
-            self._vol_num += 1  # 1-base number of volumes recieved by this
+            self._vol_num += 1  # Number of volumes received in this module
             if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-base index
+                vol_idx = self._vol_num - 1
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
                 return
 
             if self._proc_start_idx < 0:
@@ -313,126 +362,56 @@ class RtpRegress(RTP):
                 dataV = np.squeeze(dataV)
 
             # --- Initialize --------------------------------------------------
-            # Set maskV (process region mask)
             if self.maskV is None:
-                # Make mask with the first received volume
+                # Make the processing mask from the first received volume
                 self.set_mask(dataV)
-                msg = f"Mask is set with a volume index {vol_idx}."
-                self._logger.info(msg)
+                self._logger.info(
+                    f"Mask is set with the volume index {vol_idx}.")
 
-            # Read global signal mask
-            if self.GS_reg and self.GS_maskdata is None:
-                if Path(self.GS_mask).is_file():
-                    GSimg = nib.load(self.GS_mask)
-                    if not np.all(dataV.shape == GSimg.shape):
-                        errmsg = f"GS mask shape {GSimg.shape} !="
-                        errmsg += " function image shape"
-                        errmsg += f" {dataV.shape}"
-                        self._logger.error(errmsg)
-                        self.err_popup(errmsg)
-                        return
-                    else:
-                        self.GS_maskdata = (GSimg.get_fdata() != 0)[self.maskV]
-                else:
-                    errmsg = f"Not found GS_mask file {self.GS_mask}"
-                    self._logger.error(errmsg)
-                    self._logger.error("GS_reg is reset to False.")
-                    self.err_popup(errmsg)
-                    return
+            # Read the ROI masks. If a mask is not available, the regressor
+            # option is reset to False (only once).
+            for reg in ROI_REGS:
+                if getattr(self, f"{reg}_reg") and \
+                        getattr(self, f"{reg}_maskdata") is None:
+                    self.read_roi_mask(reg, dataV)
 
-            # Read WM mask
-            if self.WM_reg and self.WM_maskdata is None:
-                if Path(self.WM_mask).is_file():
-                    WMimg = nib.load(self.WM_mask)
-                    if not np.all(dataV.shape == WMimg.shape):
-                        errmsg = f"WM mask shape {WMimg.shape} !="
-                        errmsg += " function image shape"
-                        errmsg += f" {dataV.shape}"
-                        self._logger.error(errmsg)
-                        self.err_popup(errmsg)
-                        return
-                    else:
-                        self.WM_maskdata = (WMimg.get_fdata() != 0)[self.maskV]
-                else:
-                    errmsg = f"Not found WM_mask file {self.WM_mask}"
-                    self._logger.error(errmsg)
-                    self.err_popup(errmsg)
-                    return
-
-            # Read ventricle mask
-            if self.Vent_reg and self.Vent_maskdata is None:
-                if Path(self.Vent_mask).is_file():
-                    Ventimg = nib.load(self.Vent_mask)
-                    if not np.all(dataV.shape == Ventimg.shape):
-                        errmsg = f"Vet mask shape {Ventimg.shape} !="
-                        errmsg += " function image shape"
-                        errmsg += f" {dataV.shape}"
-                        self._logger.error(errmsg)
-                        self.err_popup(errmsg)
-                        return
-                    else:
-                        self.Vent_maskdata = \
-                            (Ventimg.get_fdata() != 0)[self.maskV]
-                else:
-                    errmsg = f"Not found Vent_mask file {self.Vent_mask}"
-                    self._logger.error(errmsg)
-                    self.err_popup(errmsg)
-                    return
-
-            # Initialize design matrix
             if self.desMtx is None:
-                # Update self.desMtx0 and self.reg_names
-                self.setup_regressor_template(self.desMtx_read,
-                                              self.max_scan_length,
-                                              self.col_names_read)
-                desMtx = self.desMtx0.copy()
+                self._init_X_buffer()
 
-                # Add maximum number of polynomial regressors
-                nt = desMtx.shape[0]
-                pnum = min(1 + int(nt*self.TR/150), self.max_poly_order)
-                desMtx = np.concatenate(
-                        [desMtx, np.zeros((nt, pnum+1), dtype=np.float32)],
-                        axis=1)
-                self.desMtx = torch.from_numpy(
-                        desMtx.astype(np.float32)).to(self.device)
-
-            # Initialize Y matrix
             if self.YMtx is None:
-                vox_num = np.sum(self.maskV)
-                self.YMtx = torch.empty(
-                        self.desMtx0.shape[0]-self._proc_start_idx, vox_num,
-                        dtype=torch.float32)
-                try:
-                    self.YMtx = self.YMtx.to(self.device)
-                except Exception as e:
-                    self._logger.error(str(e))
-                    if self.device != 'cpu':
-                        errmsg = "Failed to keep GPU memory for Y."
-                        self._logger.error(errmsg)
-                        self.err_popup(errmsg)
-                        self.onGPU = False  # self.device is changed to 'cpu'
-                        self.desMtx = self.desMtx.to(self.device)
-                        self.YMtx = self.YMtx.to(self.device)
-                    else:
-                        errmsg = "Failed to keep memory for Y."
-                        self._logger.error(errmsg)
-                        self.err_popup(errmsg)
-                    raise e
+                self._init_Y_buffer()
 
-            # --- Update data -------------------------------------------------
-            # Y matrix
-            ydata = dataV[self.maskV]
-            ydata = torch.from_numpy(ydata.astype(np.float32)).to(self.device)
+            # --- Store the volume in the buffers -----------------------------
+            buf_len = self.YMtx.shape[0]
+            row = vol_idx % buf_len  # Row of this volume in the buffers
+            reg0_num = self.desMtx0.shape[1]  # Number of template regressors
+            if vol_idx >= buf_len:
+                if not self._ring_warned:
+                    self._logger.warning(
+                        "The scan is longer than max_scan_length "
+                        f"({buf_len}). The GLM is fitted with the latest "
+                        f"{buf_len} volumes.")
+                    self._ring_warned = True
+                # The row is reused: reset its template part (e.g., the
+                # design matrix read from a file) for this volume.
+                if vol_idx < self.desMtx0.shape[0]:
+                    self.desMtx[row, :reg0_num] = torch.from_numpy(
+                        self.desMtx0[vol_idx]).to(self.device)
+                else:
+                    self.desMtx[row, :reg0_num] = 0.0
+
+            # Y. Once Y_mean is set (at the first fit), the data are scaled
+            # to percent of the mean.
+            ydata = self._to_device(dataV[self.maskV])
             if self.Y_mean is not None:
-                # Scaling data
-                ydata[self.Y_mean_mask] = \
-                    ydata[self.Y_mean_mask]/self.Y_mean[self.Y_mean_mask]*100
-                ydata[ydata > 200] = 200
+                ydata = torch.where(self.Y_mean_mask,
+                                    ydata / self.Y_mean * 100,
+                                    torch.zeros_like(ydata))
+                ydata.clamp_(max=200)
 
-            self.YMtx[vol_idx, :] = ydata
+            self.YMtx[row, :] = ydata
 
-            # -- Design matrix --
-            # Append motion parameter
+            # Motion regressors (self.motcols is contiguous)
             if self.mot_reg != 'None':
                 mot = self.volreg._motion[vol_idx, :]
                 if self.mot_reg in ('mot12', 'dmot6'):
@@ -443,242 +422,162 @@ class RtpRegress(RTP):
                     self.mot0 = mot
 
                 if self.mot_reg in ('mot6', 'mot12'):
-                    mot = torch.from_numpy(
-                        mot.astype(np.float32)).to(self.device)
-                if self.mot_reg in ('mot12', 'dmot6'):
-                    dmot = torch.from_numpy(
-                        dmot.astype(np.float32)).to(self.device)
-
-                # Assuming self.motcols is contiguous
-                if self.mot_reg in ('mot6', 'mot12'):
-                    self.desMtx[vol_idx,
-                                self.motcols[0]:self.motcols[0]+6] = mot
+                    col0 = self.motcols[0]
+                    self.desMtx[row, col0:col0+6] = self._to_device(mot)
                     if self.mot_reg == 'mot12':
-                        self.desMtx[vol_idx,
-                                    self.motcols[6]:self.motcols[6]+6] = dmot
+                        col6 = self.motcols[6]
+                        self.desMtx[row, col6:col6+6] = \
+                            self._to_device(dmot)
                 elif self.mot_reg == 'dmot6':
-                    self.desMtx[vol_idx,
-                                self.motcols[0]:self.motcols[0]+6] = dmot
+                    col0 = self.motcols[0]
+                    self.desMtx[row, col0:col0+6] = self._to_device(dmot)
 
-            # Append mask mean signal regressor from mask_src_proc
+            # ROI mean signal regressors from the mask_src_proc output
             if self.GS_reg or self.WM_reg or self.Vent_reg:
-                msk_src_data = self.mask_src_proc.proc_data[self.maskV]
-                if self.GS_reg:
-                    self.desMtx[vol_idx, self.GS_col] =  \
-                        float(msk_src_data[self.GS_maskdata].mean())
+                src_data = self.mask_src_proc.proc_data[self.maskV]
+                for reg in ROI_REGS:
+                    if getattr(self, f"{reg}_reg"):
+                        roi_mask = getattr(self, f"{reg}_maskdata")
+                        self.desMtx[row, getattr(self, f"{reg}_col")] = \
+                            float(src_data[roi_mask].mean())
 
-                if self.WM_reg:
-                    self.desMtx[vol_idx, self.WM_col] =  \
-                        float(msk_src_data[self.WM_maskdata].mean())
-
-                if self.Vent_reg:
-                    self.desMtx[vol_idx, self.Vent_col] = \
-                        float(msk_src_data[self.Vent_maskdata].mean())
-
-            # --- If the number of samples is not enough, return --------------
-            if self._vol_num <= self.wait_num:
-                # Record process time
-                tstamp = time.time()
-                self._proc_time.append(tstamp)
-                if pre_proc_time is not None:
-                    proc_delay = self._proc_time[-1] - pre_proc_time
-                    if self.save_delay:
-                        self.proc_delay.append(proc_delay)
-
-                # log message
-                if fmri_img.get_filename():
-                    fname = Path(fmri_img.get_filename()).name
-                else:
-                    fname = "unknown.nii.gz"
-                wait_idx = self._proc_start_idx+self.wait_num
-                msg = (
+            # --- Wait until enough volumes are received ----------------------
+            # Number of volumes received after the ignored ones
+            n_proc = vol_idx - self._proc_start_idx + 1
+            if n_proc <= self.wait_num:
+                tstamp, proc_delay = self._record_proc_time(pre_proc_time)
+                wait_idx = self._proc_start_idx + self.wait_num
+                self._log_proc(
                     f"#{vol_idx+1};Regression;"
-                    f"Wait until volume #{wait_idx+1};{fname}"
-                    f";tstamp={tstamp}"
-                )
-                msg += f";tstamp={tstamp}"
-                if pre_proc_time is not None:
-                    msg += f";took {proc_delay:.4f}s"
-                self._logger.info(msg)
+                    f"Wait until volume #{wait_idx+1};"
+                    f"{self._img_name(fmri_img)}", tstamp, proc_delay)
                 return
 
-            # --- Update retroicor regressors ---------------------------------
+            # --- Volumes used in the GLM -------------------------------------
+            # The latest n_win volumes (all volumes until the buffer is
+            # full), in time order, and their rows in the buffers.
+            n_win = min(n_proc, buf_len)
+            win_vols = np.arange(vol_idx - n_win + 1, vol_idx + 1)
+            win_rows_np = win_vols % buf_len
+            win_rows = torch.from_numpy(win_rows_np).to(self.device)
+            # The rows are contiguous unless the buffer has wrapped.
+            contiguous = win_rows_np[-1] - win_rows_np[0] == n_win - 1
+
+            # --- Update the RETROICOR regressors -----------------------------
+            retro_ok = True
             if self.phys_reg != 'None' and self.rtp_physio is not None:
-                retrots = self.rtp_physio.get_retrots(
-                    self.TR, vol_idx+1, self.tshift,
-                    timeout=self.TR)
-                if retrots is None:
-                    errmsg = "RETROTS regressors cannot be made."
-                    self._logger.error(errmsg)
-                    return
+                retro_ok = self._update_retroicor(vol_idx, win_vols,
+                                                  win_rows)
 
-                for ii, icol in enumerate(self.retrocols):
-                    self.desMtx[:vol_idx+1, icol] = \
-                            torch.from_numpy(
-                                    retrots[:, ii].astype(np.float32)
-                                    ).to(self.device)
-
-            # --- Run the procress --------------------------------------------
-            # Set Y_mean for scaling data
-            if self.Y_mean is None:
-                # Scaling
-                YMtx = self.YMtx[self._proc_start_idx:vol_idx+1, :]
-                # YMtx is the reference to the original data, self.YMtx
-                self.Y_mean = YMtx.mean(axis=0)
+            # --- Fit the GLM -------------------------------------------------
+            first_fit = self.Y_mean is None
+            if first_fit:
+                # Set Y_mean and scale the data in the window in place
+                Ywin = self.YMtx[win_rows]
+                self.Y_mean = Ywin.mean(axis=0)
                 self.Y_mean_mask = self.Y_mean.abs() > 1e-6
 
-                YMtx[:, self.Y_mean_mask] = \
-                    YMtx[:, self.Y_mean_mask] / \
+                Ywin[:, self.Y_mean_mask] = \
+                    Ywin[:, self.Y_mean_mask] / \
                     self.Y_mean[self.Y_mean_mask] * 100
-                YMtx[YMtx > 200] = 200
-                YMtx[:, ~self.Y_mean_mask] = 0.0
-                # The operation is done on the original data,
-                # so no need to return like below
-                # ydata = self.YMtx[vol_idx, :]
+                Ywin.clamp_(max=200)
+                Ywin[:, ~self.Y_mean_mask] = 0.0
+                self.YMtx[win_rows] = Ywin
+                del Ywin
 
-            # Add polynomials to the design matrix
-            polyreg = self.poly_reg(vol_idx-self._proc_start_idx+1, self.TR)
-            reg0_num = self.desMtx0.shape[1]
+            # Regressors of the window in time order, with the polynomials
+            # for the window length
+            polyreg = self.poly_reg(n_win, self.TR)
             polyreg_num = polyreg.shape[1]
-            self.desMtx[self._proc_start_idx:vol_idx+1,
-                        reg0_num:reg0_num+polyreg_num] = \
+            Xp = self.desMtx[win_rows, :reg0_num+polyreg_num].clone()
+            Xp[:, reg0_num:reg0_num+polyreg_num] = \
                 torch.from_numpy(polyreg).to(self.device)
 
-            # Extract a part of regressors (until the current volume)
-            Xp = self.desMtx[self._proc_start_idx:vol_idx+1,
-                             :reg0_num+polyreg_num].clone()
+            # Standardize the motion and ROI signal regressors
+            norm_cols = [ii for ii, reg_name in enumerate(self.reg_names)
+                         if reg_name in NORM_REGS]
+            if len(norm_cols):
+                reg = Xp[:, norm_cols]
+                reg_mean = reg.mean(axis=0)
+                reg_std = reg.std(axis=0)
+                # A constant regressor (std ~ 0) is zeroed out; the
+                # least-squares solver ignores a zero column.
+                valid = reg_std > 1e-6 * reg_mean.abs().clamp(min=1.0)
+                reg = torch.where(valid, (reg - reg_mean) / reg_std,
+                                  torch.zeros_like(reg))
+                Xp[:, norm_cols] = reg
 
-            # Standardizing regressors of motion, GS, WM, Vent
-            norm_regs = ('roll', 'pitch', 'yaw', 'dS', 'dL', 'dP',
-                         'dtroll', 'dtpitch', 'dtyaw', 'dtdS', 'dtdL', 'dtdP',
-                         'GS', 'WM', 'Vent')
-            for ii, reg_name in enumerate(self.reg_names):
-                if reg_name in norm_regs:
-                    reg = Xp[:, ii]
-                    reg = (reg - reg.mean()) / reg.std()
-                    Xp[:, ii] = reg
+            if not retro_ok:
+                # Exclude the physio regressors from this fit
+                Xp[:, self.retrocols] = 0.0
 
-            # Extract a part of Y (until the current volume)
-            Yp = self.YMtx[self._proc_start_idx:vol_idx+1, :]
+            # Y of the window. Columns out of Y_mean_mask are zero, so their
+            # residuals are 0.
+            # The least-squares solution does not depend on the row order.
+            # When the buffer is full, the whole buffer is used as it is
+            # (no copy of Y), with the regressors placed at the same rows.
+            if n_win == buf_len:
+                Yp = self.YMtx
+                Xfit = torch.empty_like(Xp)
+                Xfit[win_rows] = Xp
+            elif contiguous:
+                Yp = self.YMtx[win_rows_np[0]:win_rows_np[-1]+1]
+                Xfit = Xp
+            else:
+                Yp = self.YMtx[win_rows]
+                Xfit = Xp
 
-            # Calculate Beta with the least sqare error, ||Y - XB||^2
-            Beta = lstsq_SVDsolver(Xp, Yp[:, self.Y_mean_mask])
-            Yh = torch.matmul(Xp, Beta)
+            # Beta minimizing ||Y - XB||^2
+            Beta = lstsq_SVDsolver(Xfit, Yp)
 
-            if self.reg_retro_proc and self._vol_num == self.wait_num+1:
-                # Process (and save) the previous volumes retrospectively.
-                Resids = Yp[:, self.Y_mean_mask] - Yh
-
-                vi0 = vol_idx - (Resids.shape[0]-1)
-                vilast = vol_idx - 1
-                msg = f"Retrospective regression for {vi0}-{vilast}"
-                self._logger.info(msg)
-
-                # Save filename template
-                if fmri_img.get_filename():
-                    fname = Path(fmri_img.get_filename()).name
-                else:
-                    fname = "unknown.nii.gz"
-
-                save_name_temp = 'regRes.' + fname
-                ma = re.search(f"0*{vol_idx+1}", save_name_temp)
-                if ma is not None:
-                    dstr = ma.group()
-                else:
-                    dstr = None
-
-                # Data space
-                vol_data = np.zeros_like(self.maskV, dtype=np.float32)
-                flat_data = np.zeros(np.sum(self.maskV), dtype=np.float32)
-                for ii in range(Resids.shape[0]-1):
-                    vi = vol_idx - (Resids.shape[0]-1) + ii
-                    resid = Resids[ii, :]
-                    flat_data[self.Y_mean_mask.cpu().numpy()] = \
-                        resid.cpu().numpy()
-                    vol_data[self.maskV] = flat_data
-                    # temporary nibabel image for retroactive process
-                    retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
-                                                     header=fmri_img.header)
-                    if dstr is not None:
-                        dstr_i0 = f"{vi+1}"
-                        dstr_i = '0' * (len(dstr)-len(dstr_i0)) + dstr_i0
-                        save_name = save_name_temp.replace(dstr, dstr_i)
-                    else:
-                        save_name = save_name_temp.replace(
-                            '.nii', f"_{vi+1:04d}.nii")
-
-                    retro_fmri_img.set_filename(save_name)
-
-                    # Run the next process
-                    if self.next_proc:
-                        self.next_proc.do_proc(retro_fmri_img, vi, time.time())
-
-                    # Save processed image
-                    if self.save_proc:
-                        self.keep_processed_image(retro_fmri_img, vi)
-
-                    time.sleep(0.005)  # To avoid too busy data send.
-
+            if self.reg_retro_proc and first_fit:
+                # Residuals of all the volumes in the window. The volumes
+                # before the current one are processed retrospectively.
+                Resids = (self.YMtx[win_rows] - torch.matmul(Xp, Beta)
+                          ).cpu().numpy()
+                self._retro_proc(fmri_img, vol_idx, Resids[:-1])
                 Resid = Resids[-1, :]
                 del Resids
             else:
-                # Get only the last (current) volume
-                Resid = ydata[self.Y_mean_mask] - Yh[-1, :]
+                # Residual of the current volume only (the last row of Xp)
+                Resid = (self.YMtx[row] - torch.matmul(Xp[-1, :], Beta)
+                         ).cpu().numpy()
 
             del Beta
-            del Yh
 
-            # Set processed data in fmri_img
+            # Replace the data of fmri_img with the residual
             vol_data = np.zeros_like(self.maskV, dtype=np.float32)
-            flat_data = np.zeros(np.sum(self.maskV), dtype=np.float32)
-            flat_data[self.Y_mean_mask.cpu().numpy()] = Resid.cpu().numpy()
-            vol_data[self.maskV] = flat_data
+            vol_data[self.maskV] = Resid
             fmri_img.uncache()
             fmri_img._dataobj = vol_data
-            fmri_img.set_data_dtype = vol_data.dtype
+            fmri_img.set_data_dtype(np.float32)
 
-            # --- Post procress -----------------------------------------------
-            # Record process time
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
-            if pre_proc_time is not None:
-                proc_delay = self._proc_time[-1] - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
+            # --- Post process ------------------------------------------------
+            tstamp, proc_delay = self._record_proc_time(pre_proc_time)
+            fname = self._img_name(fmri_img)
+            self._log_proc(f"#{vol_idx+1};Regression;{fname}", tstamp,
+                           proc_delay)
 
-            # log message
-            if fmri_img.get_filename():
-                fname = Path(fmri_img.get_filename()).name
-            else:
-                fname = "unknown.nii.gz"
-            msg = f"#{vol_idx+1};Regression;{fname}"
-            msg += f";tstamp={tstamp}"
-            if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s"
-            self._logger.info(msg)
-
-            # Set filename
             fmri_img.set_filename('regRes.' + fname)
 
             if self.next_proc:
-                # Keep the current processed data
+                # Keep the processed data, since the next process can
+                # modify fmri_img.
                 self.proc_data = np.asanyarray(fmri_img.dataobj)
                 save_name = fmri_img.get_filename()
 
-                # Run the next process
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
                                        pre_proc_time=self._proc_time[-1])
 
-            # Save processed image
             if self.save_proc:
                 if self.next_proc is not None:
-                    # Recover the processed data in this module
+                    # Restore the processed data of this module
                     fmri_img.uncache()
                     fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype = self.proc_data.dtype
+                    fmri_img.set_data_dtype(np.float32)
                     fmri_img.set_filename(save_name)
 
-                self.keep_processed_image(fmri_img,
+                self.keep_processed_image(fmri_img, vol_num=vol_idx,
                                           save_temp=self.online_saving)
 
         except Exception:
@@ -689,19 +588,182 @@ class RtpRegress(RTP):
             traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_X_buffer(self):
+        """
+        Allocate the X buffer (self.desMtx) with the template regressors
+        and room for the maximum number of polynomial regressors.
+        """
+        # Update self.desMtx0 and self.reg_names
+        self.setup_regressor_template(self.desMtx_read,
+                                      self.max_scan_length,
+                                      self.col_names_read)
+        # Number of rows of the X and Y buffers: max_scan_length, or fewer
+        # if the memory is not enough (fail-safe; the buffers are then used
+        # as ring buffers).
+        nt = self.desMtx0.shape[0]
+        pnum = min(1 + int(nt*self.TR/150), self.max_poly_order)
+        ncols = self.desMtx0.shape[1] + pnum + 1
+        nt = self._buffer_length(nt, int(np.sum(self.maskV)), ncols)
+
+        desMtx = np.concatenate(
+            [self.desMtx0[:nt], np.zeros((nt, pnum+1), dtype=np.float32)],
+            axis=1)
+        self.desMtx = self._to_device(desMtx)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_Y_buffer(self):
+        """
+        Allocate the Y buffer (self.YMtx) with the same number of rows as
+        the X buffer. If the GPU memory cannot be allocated, the processing
+        falls back to the CPU and the exception is raised again (the current
+        volume is not processed).
+        """
+        vox_num = np.sum(self.maskV)
+        self.YMtx = torch.empty(self.desMtx.shape[0], vox_num,
+                                dtype=torch.float32)
+        try:
+            self.YMtx = self.YMtx.to(self.device)
+        except Exception as e:
+            self._logger.error(str(e))
+            if self.device != 'cpu':
+                self._error("Failed to allocate GPU memory for Y.")
+                self.onGPU = False  # self.device is changed to 'cpu'
+                self.desMtx = self.desMtx.to(self.device)
+                self.YMtx = self.YMtx.to(self.device)
+            else:
+                self._error("Failed to allocate memory for Y.")
+            raise e
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _update_retroicor(self, vol_idx, win_vols, win_rows):
+        """
+        Set the RETROICOR regressors of the volumes in the window.
+
+        Returns
+        -------
+        bool
+            False if the regressors are not available; the current volume is
+            then processed without them.
+        """
+        retrots = self.rtp_physio.get_retrots(
+            self.TR, vol_idx+1, self.tshift, timeout=self.TR)
+        if retrots is not None and (
+                retrots.ndim != 2 or
+                retrots.shape[0] < vol_idx+1 or
+                retrots.shape[1] != len(self.retrocols)):
+            self._logger.error(
+                "RETROTS regressors have an unexpected shape"
+                f" {retrots.shape}.")
+            retrots = None
+
+        if retrots is None:
+            self._logger.warning(
+                "RETROTS regressors cannot be made."
+                f" Volume #{vol_idx+1} is processed without"
+                " physio regressors.")
+            return False
+
+        retro_win = self._to_device(retrots[win_vols, :])
+        for ii, icol in enumerate(self.retrocols):
+            self.desMtx[win_rows, icol] = retro_win[:, ii]
+
+        return True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _retro_proc(self, fmri_img, vol_idx, Resids):
+        """
+        Pass the residuals of the volumes before the current one (rows of
+        Resids, ending at vol_idx - 1) to the next process and keep them for
+        saving.
+        """
+        vi0 = vol_idx - Resids.shape[0]
+        self._logger.info(
+            f"Retrospective regression for {vi0}-{vol_idx - 1}")
+
+        # Filename template. The volume number in the current filename
+        # (with its zero padding) is replaced with that of each volume.
+        save_name_temp = 'regRes.' + self._img_name(fmri_img)
+        ma = re.search(f"0*{vol_idx+1}", save_name_temp)
+        vol_str = ma.group() if ma is not None else None
+
+        for ii in range(Resids.shape[0]):
+            vi = vi0 + ii  # 0-based volume index
+            vol_data = np.zeros_like(self.maskV, dtype=np.float32)
+            vol_data[self.maskV] = Resids[ii, :]
+            retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
+                                             header=fmri_img.header)
+            if vol_str is not None:
+                save_name = save_name_temp.replace(
+                    vol_str, f"{vi+1}".zfill(len(vol_str)))
+            else:
+                save_name = save_name_temp.replace(
+                    '.nii', f"_{vi+1:04d}.nii")
+
+            retro_fmri_img.set_filename(save_name)
+
+            # Keep the volume before the next process, which may change
+            # the data and the filename of retro_fmri_img.
+            if self.save_proc:
+                self.keep_processed_image(retro_fmri_img, vol_num=vi)
+
+            if self.next_proc:
+                self.next_proc.do_proc(retro_fmri_img, vi, time.time())
+
+            time.sleep(0.005)  # Not to send the data too fast
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _record_proc_time(self, pre_proc_time):
+        """
+        Record the time stamp of the end of the processing.
+
+        Returns
+        -------
+        tstamp : float
+            Time stamp.
+        proc_delay : float or None
+            Time from pre_proc_time; None if pre_proc_time is None.
+        """
+        tstamp = time.time()
+        self._proc_time.append(tstamp)
+        proc_delay = None
+        if pre_proc_time is not None:
+            proc_delay = tstamp - pre_proc_time
+            if self.save_delay:
+                self.proc_delay.append(proc_delay)
+
+        return tstamp, proc_delay
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _log_proc(self, msg, tstamp, proc_delay):
+        msg += f";tstamp={tstamp}"
+        if proc_delay is not None:
+            msg += f";took {proc_delay:.4f}s"
+        self._logger.info(msg)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _img_name(fmri_img):
+        """Filename (without the directory) of fmri_img."""
+        if fmri_img.get_filename():
+            return Path(fmri_img.get_filename()).name
+        return "unknown.nii.gz"
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
-        """ End process and reset process parameters. """
+        """End the process and reset the run state."""
 
         self._logger.info(f"Reset {self.__class__.__name__} module.")
 
-        if not isinstance(self.mask_file, string_types) and \
-                not isinstance(self.mask_file, Path):
+        # A mask from a file is kept; a mask made from the first volume is
+        # made again in the next run.
+        if not isinstance(self.mask_file, (str, Path)):
             self.maskV = None
 
         self.desMtx = None
         self.mot0 = None
         self.YMtx = None
         self.Y_mean = None
+        self._ring_warned = False
         self.Y_mean_mask = None
         self.GS_maskdata = None
         self.WM_maskdata = None
@@ -711,16 +773,26 @@ class RtpRegress(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_mask(self, maskdata, sub_i=0, method='zero_out'):
-        if isinstance(maskdata, string_types) or isinstance(maskdata, Path):
+        """
+        Set the processing mask (self.maskV) to the non-zero voxels of
+        maskdata.
+
+        Parameters
+        ----------
+        maskdata : str, Path, or array
+            Mask file or volume data.
+        sub_i : int, optional
+            Sub-volume index of a 4D mask file. The default is 0.
+        method : str, optional
+            Only 'zero_out' is supported. The default is 'zero_out'.
+        """
+        if isinstance(maskdata, (str, Path)):
             if not Path(maskdata).is_file():
-                errmsg = f"Not found mask file: {maskdata}"
-                self._logger.error(errmsg)
-                self.err_popup(errmsg)
+                self._error(f"Mask file is not found: {maskdata}")
                 self.mask_file = 0
                 return
 
-            msg = f"Mask = {maskdata}"
-            self._logger.info(msg)
+            self._logger.info(f"Mask = {maskdata}")
             maskdata = np.squeeze(nib.load(maskdata).get_fdata())
 
             if maskdata.ndim > 3:
@@ -730,102 +802,98 @@ class RtpRegress(RTP):
             self.maskV = maskdata != 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def read_roi_mask(self, reg, dataV):
+        """
+        Read the ROI mask for the mean signal regressor reg ('GS', 'WM', or
+        'Vent'). If the mask is not available or its shape does not match the
+        functional image, the regressor option (e.g., self.GS_reg) is reset to
+        False with an error message.
+        """
+        mask_f = getattr(self, f"{reg}_mask")
+        errmsg = None
+        if mask_f is None or not Path(mask_f).is_file():
+            errmsg = f"{reg}_mask file is not found: {mask_f}"
+        else:
+            mask_img = nib.load(mask_f)
+            if not np.all(dataV.shape == mask_img.shape):
+                errmsg = f"{reg} mask shape {mask_img.shape} !="
+                errmsg += f" functional image shape {dataV.shape}"
+            else:
+                setattr(self, f"{reg}_maskdata",
+                        (mask_img.get_fdata() != 0)[self.maskV])
+
+        if errmsg is not None:
+            self._error(errmsg + f"\n{reg}_reg is reset to False.")
+            setattr(self, f"{reg}_reg", False)
+            # Rebuild the design matrix without the regressor
+            self.desMtx = None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_regressor_template(self, desMtx_read=None, max_scan_length=0,
                                  col_names_read=[]):
+        """
+        Make the regressor template self.desMtx0 (desMtx_read followed by
+        the motion, physio, and ROI signal regressors, without the
+        polynomials) and the regressor names self.reg_names. The column
+        indices of the regressors are set to self.motcols, self.retrocols,
+        and self.<GS|WM|Vent>_col.
+
+        The template has max_scan_length rows, or the length of desMtx_read
+        if it is longer. The nuisance regressor columns are zero; they are
+        filled during the scan.
+        """
         if desMtx_read is None and max_scan_length == 0:
-            errmsg = 'Either desMtx or max_scan_length must be given.'
-            self._logger.error(errmsg)
-            self.err_popup(errmsg)
+            self._error('Either desMtx or max_scan_length must be given.')
             return
 
         col_names = col_names_read.copy()
 
-        # Set provided design matrix
+        # Design matrix given by the user
         if desMtx_read is None:
             desMtx = np.zeros([max_scan_length, 0], dtype=np.float32)
         else:
             if max_scan_length <= desMtx_read.shape[0]:
                 max_scan_length = desMtx_read.shape[0]
+                desMtx = np.asarray(desMtx_read, dtype=np.float32).copy()
             else:
                 desMtx = np.zeros([max_scan_length, desMtx_read.shape[1]],
                                   dtype=np.float32)
                 desMtx[:desMtx_read.shape[0], :] = desMtx_read
 
-            # Adjust col_names and desMtx columns
-            if len(col_names) > desMtx.shape[1]:
-                col_names = col_names[:desMtx.shape[1]]
-            elif len(col_names) < desMtx.shape[1]:
-                while len(col_names) < desMtx.shape[1]:
-                    col_names.append(f"Reg{len(col_names)+2}")
+            # Match the number of column names to the matrix columns
+            ncols = desMtx.shape[1]
+            col_names = col_names[:ncols]
+            col_names += [f"Reg{ii+2}" for ii in range(len(col_names), ncols)]
 
-        # Append nuisunce regressors
+        def append_regs(names):
+            nonlocal desMtx
+            desMtx = np.concatenate(
+                [desMtx, np.zeros([max_scan_length, len(names)])], axis=1)
+            col_names.extend(names)
+
+        # Append the nuisance regressors
         if self.mot_reg != 'None':
+            self.motcols = []
             if self.mot_reg in ('mot6', 'mot12'):
-                # Append 6 motion parameters
-                desMtx = np.concatenate(
-                    [desMtx, np.zeros([max_scan_length, 6])], axis=1)
-                col_names.extend(['roll', 'pitch', 'yaw', 'dS', 'dL', 'dP'])
-                self.motcols = \
-                    [ii for ii, cn in enumerate(col_names)
-                     if cn in ('roll', 'pitch', 'yaw', 'dS', 'dL', 'dP')]
-            else:
-                self.motcols = []
+                append_regs(MOT_NAMES)
+                self.motcols = [ii for ii, cn in enumerate(col_names)
+                                if cn in MOT_NAMES]
 
             if self.mot_reg in ('mot12', 'dmot6'):
-                # Append 6 motion derivative parameters
-                desMtx = np.concatenate(
-                        [desMtx, np.zeros([max_scan_length, 6])], axis=1)
-                col_names.extend(['dtroll', 'dtpitch', 'dtyaw', 'dtdS', 'dtdL',
-                                  'dtdP'])
-                self.motcols.extend(
-                        [ii for ii, cn in enumerate(col_names)
-                         if cn in ('dtroll', 'dtpitch', 'dtyaw', 'dtdS',
-                                   'dtdL', 'dtdP')])
+                append_regs(DMOT_NAMES)
+                self.motcols.extend([ii for ii, cn in enumerate(col_names)
+                                     if cn in DMOT_NAMES])
 
         if self.phys_reg != 'None':
-            # Append RVT, RETROICOR regresors
-            if self.phys_reg == 'RVT5':
-                nreg = 5
-                col_add = ['RVT0', 'RVT1', 'RVT2', 'RVT3', 'RVT4']
-            elif self.phys_reg == 'RICOR8':
-                nreg = 8
-                col_add = ['Resp0', 'Resp1', 'Resp2', 'Resp3',
-                           'Card0', 'Card1', 'Card2', 'Card3']
-            elif self.phys_reg == 'RVT+RICOR13':
-                nreg = 13
-                col_add = ['RVT0', 'RVT1', 'RVT2', 'RVT3', 'RVT4',
-                           'Resp0', 'Resp1', 'Resp2', 'Resp3',
-                           'Card0', 'Card1', 'Card2', 'Card3']
-            desMtx = np.concatenate([desMtx,
-                                     np.zeros([max_scan_length, nreg])],
-                                    axis=1)
-            col_names.extend(col_add)
+            col_add = PHYS_REG_NAMES[self.phys_reg]
+            append_regs(col_add)
             self.retrocols = \
                 [ii for ii, cn in enumerate(col_names) if cn in col_add]
 
-        if self.GS_reg:
-            # Append global signal regressor
-            desMtx = np.concatenate([desMtx,
-                                     np.zeros([max_scan_length, 1])],
-                                    axis=1)
-            col_names.append('GS')
-            self.GS_col = col_names.index('GS')
-
-        if self.WM_reg:
-            # Append mean WM signal regressor
-            desMtx = np.concatenate([desMtx,
-                                     np.zeros([max_scan_length, 1])],
-                                    axis=1)
-            col_names.append('WM')
-            self.WM_col = col_names.index('WM')
-
-        if self.Vent_reg:
-            # Append mean ventricle signal regressor
-            desMtx = np.concatenate([desMtx,
-                                     np.zeros([max_scan_length, 1])],
-                                    axis=1)
-            col_names.append('Vent')
-            self.Vent_col = col_names.index('Vent')
+        for reg in ROI_REGS:
+            if getattr(self, f"{reg}_reg"):
+                append_regs([reg])
+                setattr(self, f"{reg}_col", col_names.index(reg))
 
         self.desMtx0 = desMtx
         self.reg_names = col_names
@@ -833,15 +901,15 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def legendre(self, x, m):
         """
-        Legendre polynomial calculator
-        Copied from misc_math.c in afni src
+        Legendre polynomial of order m, ported from misc_math.c in the AFNI
+        source.
 
         Parameters
         ----------
-        x: 1D array
-            series of -1 .. 1 values
-        m: int
-            polynomial order
+        x : 1D array
+            Values in [-1, 1].
+        m : int
+            Polynomial order.
         """
 
         if m < 0:
@@ -1002,51 +1070,99 @@ class RtpRegress(RTP):
             return pk
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _buffer_length(self, nt, vox_num, ncols):
+        """Number of rows (volumes) of the X and Y buffers.
+
+        nt (max_scan_length) rows are used if the memory allows. Otherwise,
+        as a fail-safe, the rows that fit in half of the free memory are
+        used; the buffers are then ring buffers and the GLM is fitted with
+        the latest volumes.
+        """
+        row_bytes = 4 * (vox_num + ncols)  # float32
+        try:
+            if self.max_buffer_bytes is not None:
+                budget = self.max_buffer_bytes
+            elif str(self.device).startswith('cuda'):
+                free, _ = torch.cuda.mem_get_info(torch.device(self.device))
+                budget = 0.5 * free
+            else:
+                budget = 0.5 * psutil.virtual_memory().available
+        except Exception:
+            return nt
+
+        n_fit = int(budget // row_bytes)
+        if n_fit >= nt:
+            return nt
+
+        # Keep enough rows for the GLM
+        n_fit = max(n_fit, self.wait_num + 10)
+        self._logger.warning(
+            f"Memory is not enough for {nt} volumes (max_scan_length)."
+            f" The GLM is fitted with the latest {n_fit} volumes.")
+        return n_fit
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def poly_reg(self, nt, TR):
         """
-        Make legendre polynomial regressor for nt length data
+        Make the Legendre polynomial regressors for nt volumes. The order is
+        min(1 + int(nt * TR / 150), self.max_poly_order).
 
-        Option
-        ------
-        nt: int
-            data length (must be > 1)
+        Parameters
+        ----------
+        nt : int
+            Number of volumes.
+        TR : float
+            Repetition time (seconds).
 
-        Retrun
-        ------
-        polyreg: nt * x array
-            Matrix of Legendre polynomial regressors
-
+        Returns
+        -------
+        polyreg : 2D array (nt x (order + 1)) or None
+            Legendre polynomial regressors (None if nt < 1).
         """
-
-        # If nt is not enough even for linear trend, return
         if nt < 1:
             return None
 
-        # Set polynomial order
         pnum = min(1 + int(nt*TR/150), self.max_poly_order)
         polyreg = np.ndarray((nt, pnum+1), dtype=np.float32)
-
+        xx = np.linspace(-1.0, 1.0, nt)
         for po in range(pnum+1):
-            xx = np.linspace(-1.0, 1.0, nt)
             polyreg[:, po] = self.legendre(xx, po)
 
         return polyreg
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_reg_num(self):
-        # update self.desMtx0 (regressor template)
+        """
+        Update the regressor template (self.desMtx0) and return the number of
+        regressors including the polynomials at the scan length where the
+        regression can start, i.e., the smallest length n with more volumes
+        than regressors (the polynomial order increases with n as in
+        poly_reg).
+        """
         self.setup_regressor_template(self.desMtx_read,
                                       max_scan_length=self.max_scan_length,
                                       col_names_read=self.col_names_read)
         numReg = self.desMtx0.shape[1]
-        numPolyReg = min(1 + int(numReg*self.TR/150), self.max_poly_order) + 1
 
-        return numReg + numPolyReg
+        def poly_num(nt):
+            return min(1 + int(nt*self.TR/150), self.max_poly_order) + 1
+
+        # The number of regressors increases by at most one per volume
+        # (TR < 150 s), so the first n with n > numReg + poly_num(n) is
+        # found by increasing n.
+        nt = numReg + poly_num(0) + 1
+        while nt <= numReg + poly_num(nt):
+            nt += 1
+
+        return numReg + poly_num(nt)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_wait_num(self, wait_num=None):
-        reg_num = self.get_reg_num()
-        min_wait_num = reg_num+1
+        """
+        Set self.wait_num. It is at least the number of regressors + 1.
+        If wait_num is None, the current self.wait_num is checked.
+        """
+        min_wait_num = self.get_reg_num() + 1
 
         if wait_num is None:
             wait_num = max(self.wait_num, min_wait_num)
@@ -1059,15 +1175,41 @@ class RtpRegress(RTP):
         if wait_num != self.wait_num:
             if hasattr(self, 'ui_waitNum_lb'):
                 self.ui_waitNum_lb.setText(
-                        f"Wait REGRESS until receiving {wait_num} volumes")
+                    f"Wait REGRESS until receiving {wait_num} volumes")
 
             self.wait_num = wait_num
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _update_wait_num(self):
+        """Update wait_num after the number of regressors has changed."""
+        if hasattr(self, 'ui_waitNum_cmbBx'):
+            if 'regressor' in self.ui_waitNum_cmbBx.currentText():
+                self.set_wait_num(self.get_reg_num()+1)
+        else:
+            self.set_wait_num()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _poly_order_text(max_order):
+        """Label text for the maximum polynomial order."""
+        txt = 'Increase the polynomial order with the scan length'
+        if not np.isinf(max_order):
+            txt += f' up to {max_order}'
+        return txt
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_param(self, attr, val=None, reset_fn=None, echo=False):
+        """
+        Set a parameter and update the UI.
+
+        When reset_fn is None, set_param is considered to be called from the
+        load_parameters function (not from the UI). reset_fn is the UI
+        widget's setter used to restore its value when the input is
+        cancelled or invalid.
+        """
         self._logger.debug(f"set_param: {attr} = {val}")
 
-        # -- check value --
+        # -- Check the value --
         if attr == 'enabled':
             if hasattr(self, 'ui_enabled_rdb'):
                 self.ui_enabled_rdb.setChecked(val)
@@ -1092,17 +1234,15 @@ class RtpRegress(RTP):
         elif attr == 'mask_file':
             if type(val) is int and val == 0:
                 if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(
-                        'zero-out initial received volume')
+                    self.ui_mask_lnEd.setText(MASK0_TEXT)
 
             elif type(val) is str and 'initial volume' in val:
                 val = 0
                 if hasattr(self, 'ui_mask_lnEd'):
-                    self.ui_mask_lnEd.setText(
-                        'zero-out initial received volume')
+                    self.ui_mask_lnEd.setText(MASK0_TEXT)
 
             elif type(val) is str and 'external file' in val:
-                fname = self.select_file_dlg('REGRESS: Selct mask volume',
+                fname = self.select_file_dlg('REGRESS: Select mask volume',
                                              self.work_dir, "*.BRIK* *.nii*")
                 if fname[0] == '':
                     if reset_fn:
@@ -1113,10 +1253,10 @@ class RtpRegress(RTP):
                 mask_fname = fname[0]
                 if len(mask_img.shape) > 3 and mask_img.shape[3] > 1:
                     num, okflag = QtWidgets.QInputDialog.getInt(
-                            None, "Select sub volume",
-                            "sub-volume index (0 is first)", 0, 0,
-                            mask_img.shape[3])
-                    if fname[0] == '':
+                        None, "Select sub-volume",
+                        "sub-volume index (0 is first)", 0, 0,
+                        mask_img.shape[3])
+                    if not okflag:
                         if reset_fn:
                             reset_fn(1)
                         return
@@ -1131,6 +1271,7 @@ class RtpRegress(RTP):
                 val = mask_fname
 
             elif type(val) is str or isinstance(val, Path):
+                # Mask file, optionally with a sub-volume index: 'file[n]'
                 val = str(val)
                 ma = re.search(r"\[(\d+)\]", val)
                 if ma:
@@ -1153,12 +1294,11 @@ class RtpRegress(RTP):
         elif attr == 'wait_num':
             if type(val) is int:
                 self.set_wait_num(val)
-                if reset_fn is None:
-                    if hasattr(self, 'ui_waitNum_cmbBx'):
-                        if self.wait_num == self.get_reg_num()+1:
-                            self.ui_waitNum_cmbBx.setCurrentIndex(0)
-                        else:
-                            self.ui_waitNum_cmbBx.setCurrentIndex(1)
+                if reset_fn is None and hasattr(self, 'ui_waitNum_cmbBx'):
+                    if self.wait_num == self.get_reg_num()+1:
+                        self.ui_waitNum_cmbBx.setCurrentIndex(0)
+                    else:
+                        self.ui_waitNum_cmbBx.setCurrentIndex(1)
                 return
 
             elif 'regressor' in val:
@@ -1167,8 +1307,8 @@ class RtpRegress(RTP):
             elif 'set' in val:
                 num0 = self.get_reg_num()+1
                 num1, okflag = QtWidgets.QInputDialog.getInt(
-                        None, "Wait REGRESS until", "volume",
-                        self.wait_num,  num0)
+                    None, "Wait REGRESS until", "volume",
+                    self.wait_num, num0)
                 if not okflag:
                     return
 
@@ -1183,59 +1323,50 @@ class RtpRegress(RTP):
                 if reset_fn:
                     reset_fn(val)
 
+            # The scan must be longer than wait_num for the regression
+            if val <= self.wait_num:
+                val = self.wait_num + 1
+                if reset_fn:
+                    reset_fn(val)
+
             # Update self.desMtx0
             self.setup_regressor_template(self.desMtx_read,
                                           max_scan_length=val,
                                           col_names_read=self.col_names_read)
-            if val < self.wait_num:
-                val = self.wait_num + 1
 
-            if reset_fn is None:
-                if hasattr(self, 'ui_maxLen_spBx'):
-                    self.ui_maxLen_spBx.setValue(val)
+            if reset_fn is None and hasattr(self, 'ui_maxLen_spBx'):
+                self.ui_maxLen_spBx.setValue(val)
 
         elif attr == 'max_poly_order':
             if val == 'auto':
                 if hasattr(self, 'ui_maxPoly_lb'):
-                    self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                               'with the scan length')
+                    self.ui_maxPoly_lb.setText(self._poly_order_text(np.inf))
                 val = np.inf
             elif val == 'set':
                 num, okflag = QtWidgets.QInputDialog.getInt(
-                        None, "Maximum polynomial order", "enter value")
+                    None, "Maximum polynomial order", "enter value")
                 if not okflag:
-                    if np.isinf(self.max_poly_order):
-                        if reset_fn:
-                            reset_fn(0)
+                    if np.isinf(self.max_poly_order) and reset_fn:
+                        reset_fn(0)
                     return
 
                 if hasattr(self, 'ui_maxPoly_lb'):
-                    self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                               'with the scan length' +
-                                               f' up to {num}')
+                    self.ui_maxPoly_lb.setText(self._poly_order_text(num))
                 val = num
             elif np.isinf(val) and reset_fn is None:
                 if hasattr(self, 'ui_maxPoly_cmbBx'):
                     self.ui_maxPoly_cmbBx.setCurrentIndex(0)
-                    self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                               'with the scan length')
+                    self.ui_maxPoly_lb.setText(self._poly_order_text(val))
             elif type(val) is int and reset_fn is None:
                 if hasattr(self, 'ui_maxPoly_cmbBx'):
                     self.ui_maxPoly_cmbBx.setCurrentIndex(1)
-                    self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                               'with the scan length' +
-                                               f' up to {val}')
+                    self.ui_maxPoly_lb.setText(self._poly_order_text(val))
 
             setattr(self, attr, val)
-
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
+            self._update_wait_num()
 
         elif attr == 'mot_reg':
+            # Convert a UI text to the option value
             if val.lower() == 'none':
                 val = 'None'
             elif val.startswith('6 motions'):
@@ -1245,137 +1376,50 @@ class RtpRegress(RTP):
             elif val.startswith('6 motion derivatives'):
                 val = 'dmot6'
 
-            if reset_fn is None and hasattr(self, 'ui_motReg_cmbBx'):
-                if val == 'None':
-                    self.ui_motReg_cmbBx.setCurrentIndex(0)
-                elif val == 'mot6':
-                    self.ui_motReg_cmbBx.setCurrentIndex(1)
-                elif val == 'mot12':
-                    self.ui_motReg_cmbBx.setCurrentIndex(2)
-                elif val == 'dmot6':
-                    self.ui_motReg_cmbBx.setCurrentIndex(3)
+            if reset_fn is None and hasattr(self, 'ui_motReg_cmbBx') and \
+                    val in MOT_REG_OPTS:
+                self.ui_motReg_cmbBx.setCurrentIndex(MOT_REG_OPTS.index(val))
 
             setattr(self, attr, val)
+            self._update_wait_num()
 
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
-
-        elif attr == 'GS_reg':
+        elif attr in ('GS_reg', 'WM_reg', 'Vent_reg'):
             setattr(self, attr, val)
-            if hasattr(self, 'ui_GS_reg_chb'):
-                self.ui_GS_reg_chb.setChecked(self.GS_reg)
+            if hasattr(self, f"ui_{attr}_chb"):
+                getattr(self, f"ui_{attr}_chb").setChecked(val)
 
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
+            self._update_wait_num()
 
-        elif attr == 'GS_mask':
+        elif attr in ('GS_mask', 'WM_mask', 'Vent_mask'):
             if reset_fn is not None:
+                # Called from the UI: select the file with a dialog that
+                # opens at val (the directory of the current file).
                 if str(val) != '.' and Path(val).is_dir():
                     startdir = val
                 else:
                     startdir = self.work_dir
 
-                dlgMdg = "REGRESS: Select global signal mask"
-                fname = self.select_file_dlg(dlgMdg, startdir,
-                                             "*.BRIK* *.nii*")
+                roi_name = {'GS_mask': 'global signal',
+                            'WM_mask': 'white matter',
+                            'Vent_mask': 'ventricle'}[attr]
+                fname = self.select_file_dlg(
+                    f"REGRESS: Select {roi_name} mask", startdir,
+                    "*.BRIK* *.nii*")
                 if fname[0] == '':
                     return -1
 
                 val = fname[0]
-                if reset_fn:
-                    reset_fn(str(val))
+                reset_fn(str(val))
 
             elif type(val) is str or isinstance(val, Path):
                 if not Path(val).is_file():
                     val = ''
 
                 if hasattr(self, f"ui_{attr}_lnEd"):
-                    obj = getattr(self, f"ui_{attr}_lnEd")
-                    obj.setText(str(val))
-
-        elif attr == 'WM_reg':
-            setattr(self, attr, val)
-            if hasattr(self, 'ui_WM_reg_chb'):
-                self.ui_WM_reg_chb.setChecked(self.WM_reg)
-
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
-
-        elif attr == 'WM_mask':
-            if reset_fn is not None:
-                if str(val) != '.' and Path(val).is_dir():
-                    startdir = val
-                else:
-                    startdir = self.work_dir
-
-                dlgMdg = "REGRESS: Select white matter mask"
-                fname = self.select_file_dlg(dlgMdg, startdir,
-                                             "*.BRIK* *.nii*")
-                if fname[0] == '':
-                    return -1
-
-                val = fname[0]
-                if reset_fn:
-                    reset_fn(str(val))
-
-            elif type(val) is str or isinstance(val, Path):
-                if not Path(val).is_file():
-                    val = ''
-
-                if hasattr(self, f"ui_{attr}_lnEd"):
-                    obj = getattr(self, f"ui_{attr}_lnEd")
-                    obj.setText(str(val))
-
-        elif attr == 'Vent_reg':
-            setattr(self, attr, val)
-            if hasattr(self, 'ui_Vent_reg_chb'):
-                self.ui_Vent_reg_chb.setChecked(self.Vent_reg)
-
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
-
-        elif attr == 'Vent_mask':
-            if reset_fn is not None:
-                if str(val) != '.' and Path(val).is_dir():
-                    startdir = val
-                else:
-                    startdir = self.work_dir
-
-                dlgMdg = "REGRESS: Select ventricle mask"
-                fname = self.select_file_dlg(dlgMdg, startdir,
-                                             "*.BRIK* *.nii*")
-                if fname[0] == '':
-                    return -1
-
-                val = fname[0]
-                if reset_fn:
-                    reset_fn(str(val))
-
-            elif type(val) is str or isinstance(val, Path):
-                if not Path(val).is_file():
-                    val = ''
-
-                if hasattr(self, f"ui_{attr}_lnEd"):
-                    obj = getattr(self, f"ui_{attr}_lnEd")
-                    obj.setText(str(val))
+                    getattr(self, f"ui_{attr}_lnEd").setText(str(val))
 
         elif attr == 'phys_reg':
+            # Convert a UI text to the option value
             if val.lower() == 'none':
                 val = 'None'
             elif val.startswith('8 RICOR'):
@@ -1385,38 +1429,36 @@ class RtpRegress(RTP):
             elif val.startswith('13 RVT+RICOR'):
                 val = 'RVT+RICOR13'
 
+            if val not in ('None', 'RICOR8'):
+                # RetroTs makes only the 8 RETROICOR regressors.
+                self._error(
+                    f"Physio regressor '{val}' is not supported."
+                    f" phys_reg is kept as '{self.phys_reg}'.")
+                if reset_fn:
+                    reset_fn({'None': 0, 'RICOR8': 1}.get(self.phys_reg, 0))
+                return
+
             if reset_fn is None and hasattr(self, 'ui_physReg_cmbBx'):
-                if val == 'None':
-                    self.ui_physReg_cmbBx.setCurrentIndex(0)
-                elif val == 'RICOR8':
-                    self.ui_physReg_cmbBx.setCurrentIndex(1)
-                elif val == 'RVT5':
-                    self.ui_physReg_cmbBx.setCurrentIndex(2)
-                elif val == 'RVT+RICOR13':
-                    self.ui_physReg_cmbBx.setCurrentIndex(3)
+                self.ui_physReg_cmbBx.setCurrentIndex(
+                    PHYS_REG_OPTS.index(val))
 
             setattr(self, attr, val)
-
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
-
+            self._update_wait_num()
             return
 
         elif attr == 'desMtx_f':
             if val is None:
                 return
 
-            elif (val == 'set' and
-                  'Unset' not in self.ui_loadDesMtx_btn.text()) or \
-                    Path(val).is_file():
+            # 'set' from the button toggles loading and unsetting
+            btn_unset = hasattr(self, 'ui_loadDesMtx_btn') and \
+                'Unset' in self.ui_loadDesMtx_btn.text()
+            if (val == 'set' and not btn_unset) or Path(val).is_file():
+                # Load a design matrix
                 if val == 'set':
                     fname = self.select_file_dlg(
-                            'REGRESS: Selct design matrix file',
-                            self.work_dir, "*.csv")
+                        'REGRESS: Select design matrix file',
+                        self.work_dir, "*.csv")
                     if fname[0] == '':
                         return -1
                     fname = fname[0]
@@ -1425,14 +1467,16 @@ class RtpRegress(RTP):
 
                 self.desMtx_f = fname
 
-                # Have a header?
-                ll = open(fname, 'r').readline()
-                if np.any([isinstance(cc, string_types)
-                           for cc in ll.split(',')]):
-                    self.col_names_read = ll.split()
-                    skiprows = 1
-                else:
+                # A non-numeric first line is a header of column names
+                with open(fname, 'r') as fd:
+                    ll = fd.readline()
+                cells = [cc.strip() for cc in ll.split(',')]
+                try:
+                    [float(cc) for cc in cells]
                     skiprows = 0
+                except ValueError:
+                    self.col_names_read = cells
+                    skiprows = 1
 
                 self.desMtx_read = np.loadtxt(fname, delimiter=',',
                                               skiprows=skiprows)
@@ -1449,8 +1493,8 @@ class RtpRegress(RTP):
                 if hasattr(self, 'ui_loadDesMtx_btn'):
                     self.ui_loadDesMtx_btn.setText('Unset')
 
-            elif val == 'unset' or (val == 'set' and
-                                    'Unset' in self.ui_loadDesMtx_btn.text()):
+            elif val == 'unset' or (val == 'set' and btn_unset):
+                # Unset the design matrix
                 self.desMtx_read = None
                 self.desMtx_f = None
                 self.col_names_read = []
@@ -1463,16 +1507,10 @@ class RtpRegress(RTP):
             # Update self.desMtx0
             if self.desMtx_read is not None or self.max_scan_length > 0:
                 self.setup_regressor_template(
-                        self.desMtx_read, max_scan_length=self.max_scan_length,
-                        col_names_read=self.col_names_read)
+                    self.desMtx_read, max_scan_length=self.max_scan_length,
+                    col_names_read=self.col_names_read)
 
-            # Update wait_num
-            if hasattr(self, 'ui_waitNum_cmbBx'):
-                if 'regressor' in self.ui_waitNum_cmbBx.currentText():
-                    self.set_wait_num(self.get_reg_num()+1)
-            else:
-                self.set_wait_num()
-
+            self._update_wait_num()
             return
 
         elif attr == 'showDesMtx':
@@ -1500,11 +1538,10 @@ class RtpRegress(RTP):
         elif reset_fn is None:
             # Ignore an unrecognized parameter
             if not hasattr(self, attr):
-                errmsg = f"{attr} is unrecognized parameter."
-                self._logger.error(errmsg)
+                self._logger.error(f"{attr} is not a recognized parameter.")
                 return
 
-        # -- Set value --
+        # -- Set the value --
         setattr(self, attr, val)
         if echo:
             print(f"{self.__class__.__name__}." + attr, '=',
@@ -1513,8 +1550,8 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
         """
-        When reset_fn is None, set_param is considered to be called from
-        load_parameters function.
+        Return the UI rows for setting the parameters. The UI widgets call
+        set_param with their setter as reset_fn.
         """
 
         ui_rows = []
@@ -1524,8 +1561,8 @@ class RtpRegress(RTP):
         self.ui_enabled_rdb = QtWidgets.QRadioButton("Enable")
         self.ui_enabled_rdb.setChecked(self.enabled)
         self.ui_enabled_rdb.toggled.connect(
-                lambda checked: self.set_param('enabled', checked,
-                                               self.ui_enabled_rdb.setChecked))
+            lambda checked: self.set_param('enabled', checked,
+                                           self.ui_enabled_rdb.setChecked))
         ui_rows.append((self.ui_enabled_rdb, None))
 
         # mask_file
@@ -1534,21 +1571,20 @@ class RtpRegress(RTP):
         self.ui_mask_cmbBx.addItems(['external file',
                                      'initial volume of internal run'])
         self.ui_mask_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('mask_file',
-                               self.ui_mask_cmbBx.currentText(),
-                               self.ui_mask_cmbBx.setCurrentIndex))
+            lambda idx:
+            self.set_param('mask_file',
+                           self.ui_mask_cmbBx.currentText(),
+                           self.ui_mask_cmbBx.setCurrentIndex))
 
         self.ui_mask_lnEd = QtWidgets.QLineEdit()
         self.ui_mask_lnEd.setReadOnly(True)
-        self.ui_mask_lnEd.setStyleSheet(
-            'border: 0px none;')
+        self.ui_mask_lnEd.setStyleSheet('border: 0px none;')
         self.ui_objs.extend([var_lb, self.ui_mask_cmbBx,
                              self.ui_mask_lnEd])
 
         if self.mask_file == 0:
             self.ui_mask_cmbBx.setCurrentIndex(1)
-            self.ui_mask_lnEd.setText('zero-out initial received volume')
+            self.ui_mask_lnEd.setText(MASK0_TEXT)
         else:
             self.ui_mask_cmbBx.setCurrentIndex(0)
             self.ui_mask_lnEd.setText(str(self.mask_file))
@@ -1563,15 +1599,15 @@ class RtpRegress(RTP):
         self.ui_waitNum_cmbBx = QtWidgets.QComboBox()
         self.ui_waitNum_cmbBx.addItems(['number of regressors', 'set value'])
         self.ui_waitNum_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('wait_num',
-                               self.ui_waitNum_cmbBx.currentText(),
-                               self.ui_waitNum_cmbBx.setCurrentIndex))
+            lambda idx:
+            self.set_param('wait_num',
+                           self.ui_waitNum_cmbBx.currentText(),
+                           self.ui_waitNum_cmbBx.setCurrentIndex))
 
         self.ui_waitNum_lb = QtWidgets.QLabel()
-        regNum = self.get_reg_num()
+        self.set_wait_num()
         self.ui_waitNum_lb.setText(
-                f'Wait REGRESS until receiving {regNum} volumes')
+            f'Wait REGRESS until receiving {self.wait_num} volumes')
         self.ui_objs.extend([var_lb, self.ui_waitNum_cmbBx,
                              self.ui_waitNum_lb])
 
@@ -1587,9 +1623,9 @@ class RtpRegress(RTP):
         self.ui_maxLen_spBx.setMaximum(9999)
         self.ui_maxLen_spBx.setValue(self.max_scan_length)
         self.ui_maxLen_spBx.editingFinished.connect(
-                lambda: self.set_param('max_scan_length',
-                                       self.ui_maxLen_spBx.value(),
-                                       self.ui_maxLen_spBx.setValue))
+            lambda: self.set_param('max_scan_length',
+                                   self.ui_maxLen_spBx.value(),
+                                   self.ui_maxLen_spBx.setValue))
         ui_rows.append((var_lb, self.ui_maxLen_spBx))
         self.ui_objs.extend([var_lb, self.ui_maxLen_spBx])
 
@@ -1599,139 +1635,60 @@ class RtpRegress(RTP):
         self.ui_maxPoly_cmbBx = QtWidgets.QComboBox()
         self.ui_maxPoly_cmbBx.addItems(['auto', 'set'])
         self.ui_maxPoly_cmbBx.activated.connect(
-                lambda idx:
-                self.set_param('max_poly_order',
-                               self.ui_maxPoly_cmbBx.currentText(),
-                               self.ui_maxPoly_cmbBx.setCurrentIndex))
+            lambda idx:
+            self.set_param('max_poly_order',
+                           self.ui_maxPoly_cmbBx.currentText(),
+                           self.ui_maxPoly_cmbBx.setCurrentIndex))
 
         self.ui_maxPoly_lb = QtWidgets.QLabel()
         self.ui_objs.extend([var_lb, self.ui_maxPoly_cmbBx,
                              self.ui_maxPoly_lb])
         if np.isinf(self.max_poly_order):
             self.ui_maxPoly_cmbBx.setCurrentIndex(0)
-            self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                       'with the scan length')
         else:
             self.ui_maxPoly_cmbBx.setCurrentIndex(1)
-            self.ui_maxPoly_lb.setText('Increase polynomial order ' +
-                                       'with the scan length' +
-                                       f' up to {self.max_poly_order}')
+        self.ui_maxPoly_lb.setText(
+            self._poly_order_text(self.max_poly_order))
 
         maxPoly_hLayout = QtWidgets.QHBoxLayout()
         maxPoly_hLayout.addWidget(self.ui_maxPoly_cmbBx)
         maxPoly_hLayout.addWidget(self.ui_maxPoly_lb)
         ui_rows.append((var_lb, maxPoly_hLayout))
 
-        # mot_reg
+        # mot_reg (the item order follows MOT_REG_OPTS)
         var_lb = QtWidgets.QLabel("Motion regressor :")
         self.ui_motReg_cmbBx = QtWidgets.QComboBox()
         self.ui_motReg_cmbBx.addItems(
-                ['None', '6 motions (yaw, pitch, roll, dS, dL, dP)',
-                 '12 motions (6 motions and their temporal derivatives)',
-                 '6 motion derivatives'])
-        ci = {'None': 0, 'mot6': 1, 'mot12': 2, 'dmot6': 3}[self.mot_reg]
-        self.ui_motReg_cmbBx.setCurrentIndex(ci)
+            ['None', '6 motions (yaw, pitch, roll, dS, dL, dP)',
+             '12 motions (6 motions and their temporal derivatives)',
+             '6 motion derivatives'])
+        self.ui_motReg_cmbBx.setCurrentIndex(
+            MOT_REG_OPTS.index(self.mot_reg))
         self.ui_motReg_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('mot_reg',
-                               self.ui_motReg_cmbBx.currentText(),
-                               self.ui_motReg_cmbBx.setCurrentIndex))
+            lambda idx:
+            self.set_param('mot_reg',
+                           self.ui_motReg_cmbBx.currentText(),
+                           self.ui_motReg_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, self.ui_motReg_cmbBx))
         self.ui_objs.extend([var_lb, self.ui_motReg_cmbBx])
 
-        # GS ROI regressor
-        self.ui_GS_reg_chb = QtWidgets.QCheckBox("Regress global signal :")
-        self.ui_GS_reg_chb.setChecked(self.GS_reg)
-        self.ui_GS_reg_chb.stateChanged.connect(
-                lambda state: self.set_param('GS_reg', state > 0))
+        # ROI mean signal regressors
+        ui_rows.append(self._ui_roi_reg_row('GS', "Regress global signal :"))
+        ui_rows.append(self._ui_roi_reg_row('WM', "Regress WM signal :"))
+        ui_rows.append(self._ui_roi_reg_row('Vent', "Regress Vent signal :"))
 
-        GSmask_hBLayout = QtWidgets.QHBoxLayout()
-        self.ui_GS_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_GS_mask_lnEd.setText(str(self.GS_mask))
-        self.ui_GS_mask_lnEd.setReadOnly(True)
-        self.ui_GS_mask_lnEd.setStyleSheet(
-            'border: 0px none;')
-        GSmask_hBLayout.addWidget(self.ui_GS_mask_lnEd)
-
-        self.ui_GSmask_btn = QtWidgets.QPushButton('Set')
-        self.ui_GSmask_btn.clicked.connect(
-                lambda: self.set_param(
-                        'GS_mask',
-                        Path(self.ui_GS_mask_lnEd.text()).parent,
-                        self.ui_GS_mask_lnEd.setText))
-        GSmask_hBLayout.addWidget(self.ui_GSmask_btn)
-
-        self.ui_objs.extend([self.ui_GS_reg_chb, self.ui_GS_mask_lnEd,
-                             self.ui_GSmask_btn])
-        ui_rows.append((self.ui_GS_reg_chb, GSmask_hBLayout))
-
-        # WM ROI regressor
-        self.ui_WM_reg_chb = QtWidgets.QCheckBox("Regress WM signal :")
-        self.ui_WM_reg_chb.setChecked(self.WM_reg)
-        self.ui_WM_reg_chb.stateChanged.connect(
-                lambda state: self.set_param('WM_reg', state > 0))
-
-        WMmask_hBLayout = QtWidgets.QHBoxLayout()
-        self.ui_WM_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_WM_mask_lnEd.setText(str(self.WM_mask))
-        self.ui_WM_mask_lnEd.setReadOnly(True)
-        self.ui_WM_mask_lnEd.setStyleSheet(
-            'border: 0px none;')
-        WMmask_hBLayout.addWidget(self.ui_WM_mask_lnEd)
-
-        self.ui_WMmask_btn = QtWidgets.QPushButton('Set')
-        self.ui_WMmask_btn.clicked.connect(
-                lambda: self.set_param(
-                        'WM_mask',
-                        Path(self.ui_WM_mask_lnEd.text()).parent,
-                        self.ui_WM_mask_lnEd.setText))
-        WMmask_hBLayout.addWidget(self.ui_WMmask_btn)
-
-        self.ui_objs.extend([self.ui_WM_reg_chb, self.ui_WM_mask_lnEd,
-                             self.ui_WMmask_btn])
-        ui_rows.append((self.ui_WM_reg_chb, WMmask_hBLayout))
-
-        # Vent ROI regressor
-        self.ui_Vent_reg_chb = QtWidgets.QCheckBox("Regress Vent signal :")
-        self.ui_Vent_reg_chb.setChecked(self.Vent_reg)
-        self.ui_Vent_reg_chb.stateChanged.connect(
-                lambda state: self.set_param('Vent_reg', state > 0))
-
-        Ventmask_hBLayout = QtWidgets.QHBoxLayout()
-
-        self.ui_Vent_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_Vent_mask_lnEd.setText(str(self.Vent_mask))
-        self.ui_Vent_mask_lnEd.setReadOnly(True)
-        self.ui_Vent_mask_lnEd.setStyleSheet(
-            'border: 0px none;')
-        Ventmask_hBLayout.addWidget(self.ui_Vent_mask_lnEd)
-
-        self.ui_Ventmask_btn = QtWidgets.QPushButton('Set')
-        self.ui_Ventmask_btn.clicked.connect(
-                lambda: self.set_param(
-                        'Vent_mask',
-                        Path(self.ui_Vent_mask_lnEd.text()).parent,
-                        self.ui_Vent_mask_lnEd.setText))
-        Ventmask_hBLayout.addWidget(self.ui_Ventmask_btn)
-
-        self.ui_objs.extend([self.ui_Vent_reg_chb, self.ui_Vent_mask_lnEd,
-                             self.ui_Ventmask_btn])
-        ui_rows.append((self.ui_Vent_reg_chb, Ventmask_hBLayout))
-
-        # phys_reg
+        # phys_reg (the item order follows PHYS_REG_OPTS; RVT is not
+        # supported)
         var_lb = QtWidgets.QLabel("RICOR regressor :")
         self.ui_physReg_cmbBx = QtWidgets.QComboBox()
-        self.ui_physReg_cmbBx.addItems(
-                ['None', '8 RICOR (4 Resp and 4 Card)']
-                )
-        ci = {'None': 0, 'RICOR8': 1, 'RVT5': 2,
-              'RVT+RICOR13': 3}[self.phys_reg]
-        self.ui_physReg_cmbBx.setCurrentIndex(ci)
+        self.ui_physReg_cmbBx.addItems(['None', '8 RICOR (4 Resp and 4 Card)'])
+        self.ui_physReg_cmbBx.setCurrentIndex(
+            PHYS_REG_OPTS.index(self.phys_reg))
         self.ui_physReg_cmbBx.currentIndexChanged.connect(
-                lambda idx:
-                self.set_param('phys_reg',
-                               self.ui_physReg_cmbBx.currentText(),
-                               self.ui_physReg_cmbBx.setCurrentIndex))
+            lambda idx:
+            self.set_param('phys_reg',
+                           self.ui_physReg_cmbBx.currentText(),
+                           self.ui_physReg_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, self.ui_physReg_cmbBx))
         self.ui_objs.extend([var_lb, self.ui_physReg_cmbBx])
 
@@ -1739,38 +1696,36 @@ class RtpRegress(RTP):
         var_lb = QtWidgets.QLabel("Design matrix :")
 
         desMtx_hBLayout = QtWidgets.QHBoxLayout()
-        self.ui_loadDesMtx_btn = QtWidgets.QPushButton('Set')
+        self.ui_loadDesMtx_btn = QtWidgets.QPushButton(
+            'Set' if self.desMtx_read is None else 'Unset')
         self.ui_loadDesMtx_btn.clicked.connect(
-                lambda: self.set_param('desMtx_f', 'set'))
+            lambda: self.set_param('desMtx_f', 'set'))
         desMtx_hBLayout.addWidget(self.ui_loadDesMtx_btn)
 
         self.ui_showDesMtx_btn = QtWidgets.QPushButton()
         self.ui_showDesMtx_btn.clicked.connect(
-                lambda: self.set_param('showDesMtx'))
+            lambda: self.set_param('showDesMtx'))
         desMtx_hBLayout.addWidget(self.ui_showDesMtx_btn)
 
         self.ui_objs.extend([var_lb, self.ui_loadDesMtx_btn,
                              self.ui_showDesMtx_btn])
         ui_rows.append((var_lb, desMtx_hBLayout))
-        self.ui_showDesMtx_btn.setText('Show desing matrix')
-        if self.desMtx_read is None:
-            self.ui_showDesMtx_btn.setEnabled(False)
-        else:
-            self.ui_showDesMtx_btn.setEnabled(True)
+        self.ui_showDesMtx_btn.setText('Show design matrix')
+        self.ui_showDesMtx_btn.setEnabled(self.desMtx_read is not None)
 
         # --- Checkbox row ----------------------------------------------------
-        # Restrocpective process
+        # Retrospective process
         self.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
         self.ui_retroProc_chb.setChecked(self.reg_retro_proc)
         self.ui_retroProc_chb.stateChanged.connect(
-                lambda state: setattr(self, 'reg_retro_proc', state > 0))
+            lambda state: setattr(self, 'reg_retro_proc', state > 0))
         self.ui_objs.append(self.ui_retroProc_chb)
 
         # Save
         self.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
         self.ui_saveProc_chb.setChecked(self.save_proc)
         self.ui_saveProc_chb.stateChanged.connect(
-                lambda state: setattr(self, 'save_proc', state > 0))
+            lambda state: setattr(self, 'save_proc', state > 0))
         self.ui_objs.append(self.ui_saveProc_chb)
 
         chb_hLayout = QtWidgets.QHBoxLayout()
@@ -1781,23 +1736,50 @@ class RtpRegress(RTP):
         return ui_rows
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ui_roi_reg_row(self, reg, label):
+        """
+        Make the UI row for the ROI mean signal regressor reg ('GS', 'WM', or
+        'Vent'): a check box for <reg>_reg, and the <reg>_mask file with a
+        button to select it. The widgets are set to self.ui_<reg>_reg_chb,
+        self.ui_<reg>_mask_lnEd, and self.ui_<reg>mask_btn.
+        """
+        reg_chb = QtWidgets.QCheckBox(label)
+        reg_chb.setChecked(getattr(self, f"{reg}_reg"))
+        reg_chb.stateChanged.connect(
+            lambda state: self.set_param(f"{reg}_reg", state > 0))
+        setattr(self, f"ui_{reg}_reg_chb", reg_chb)
+
+        mask_hBLayout = QtWidgets.QHBoxLayout()
+        mask_lnEd = QtWidgets.QLineEdit()
+        mask_lnEd.setText(str(getattr(self, f"{reg}_mask")))
+        mask_lnEd.setReadOnly(True)
+        mask_lnEd.setStyleSheet('border: 0px none;')
+        mask_hBLayout.addWidget(mask_lnEd)
+        setattr(self, f"ui_{reg}_mask_lnEd", mask_lnEd)
+
+        mask_btn = QtWidgets.QPushButton('Set')
+        mask_btn.clicked.connect(
+            lambda: self.set_param(f"{reg}_mask",
+                                   Path(mask_lnEd.text()).parent,
+                                   mask_lnEd.setText))
+        mask_hBLayout.addWidget(mask_btn)
+        setattr(self, f"ui_{reg}mask_btn", mask_btn)
+
+        self.ui_objs.extend([reg_chb, mask_lnEd, mask_btn])
+        return (reg_chb, mask_hBLayout)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         all_opts = super().get_params()
-        excld_opts = ('desMtx0', 'mot0', 'tshift',
-                      'mask_byte', 'retrocols', 'volreg', 'YMtx', 'TR',
-                      'desMtx', 'maskV', 'motcols', 'rtp_retrots',
-                      'col_names_read', 'Y_mean', 'Y_mean_mask', 'GS_maskdata',
-                      'WM_maskdata', 'Vent_maskdata', 'GS_col', 'WM_col',
-                      'Vent_col', 'desMtx_read', 'mask_src_proc', 'work_dir')
-        sel_opts = {}
-        for k, v in all_opts.items():
-            if k in excld_opts:
-                continue
-            if isinstance(v, Path):
-                v = str(v)
-            sel_opts[k] = v
-
-        return sel_opts
+        # Run-time data, regressor buffers, and objects are not saved
+        excluded_opts = ('desMtx0', 'mot0', 'tshift', 'retrocols', 'volreg',
+                         'YMtx', 'TR', 'desMtx', 'maskV', 'motcols',
+                         'col_names_read', 'Y_mean', 'Y_mean_mask',
+                         'GS_maskdata', 'WM_maskdata', 'Vent_maskdata',
+                         'GS_col', 'WM_col', 'Vent_col', 'desMtx_read',
+                         'mask_src_proc', 'work_dir')
+        # Path values are already converted to str by RTP.get_params
+        return {k: v for k, v in all_opts.items() if k not in excluded_opts}
 
 
 # %% __main__ (test) ==========================================================
@@ -1810,7 +1792,7 @@ if __name__ == '__main__':
         datefmt='%Y-%m-%dT%H:%M:%S')
 
     # --- Test ---
-    # test data directory
+    # Test data directory
     test_dir = Path(__file__).absolute().parent.parent / 'tests'
 
     # Set test data files
@@ -1823,7 +1805,6 @@ if __name__ == '__main__':
     assert testdata_f.is_file()
     img = nib.load(testdata_f)
     img_data = np.asanyarray(img.dataobj)
-    N_vols = img.shape[-1]
 
     work_dir = test_dir / 'work'
     if not work_dir.is_dir():
@@ -1851,7 +1832,7 @@ if __name__ == '__main__':
     rtp_smooth = RtpSmooth(blur_fwhm=6)
     rtp_smooth.set_param('mask_file', mask_data_f)
 
-    # Set RtpTTLPhysio
+    # Physio recorder (RtTTLPhysio socket server)
     rtp_physio = RPCSocketCom(
         ["localhost", None, "RtTTLPhysioSocketServer"],
         Path.home() / ".RTPSpy" / "rtmri_config.json"
@@ -1892,13 +1873,13 @@ if __name__ == '__main__':
     rtp_regress.save_proc = True
     rtp_regress.save_delay = True
 
-    # Chain RTPS: tshift -> volreg -> smooth -> regress
+    # Chain the modules: tshift -> volreg -> smooth -> regress
     rtp_tshift.next_proc = rtp_volreg
     rtp_volreg.next_proc = rtp_smooth
     rtp_smooth.next_proc = rtp_regress
     rtp_tshift.end_reset()
 
-    # Wait for the rtp_physio to start recording
+    # Wait for rtp_physio to start recording
     while rtp_regress.rtp_physio.scan_onset < 0:
         time.sleep(0.1)
 
@@ -1915,11 +1896,11 @@ if __name__ == '__main__':
         time.sleep(TR)
 
     proc_delay = rtp_regress.proc_delay
-    rtp_tshift.end_reset()  # Reset propagetes to the chained processes
+    rtp_tshift.end_reset()  # The reset propagates to the chained modules
 
     # --- Plot ---
     import matplotlib.pyplot as plt
 
     plt.figure()
     plt.hist(proc_delay[1:], bins='auto')
-    np.median(proc_delay[1:])
+    print(f"Median processing delay: {np.median(proc_delay[1:]):.4f} s")

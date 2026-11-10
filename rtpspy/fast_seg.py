@@ -20,10 +20,7 @@ import numpy as np
 import torch
 import ants
 
-# Debug
-if '__file__' not in locals():
-    __file__ = 'this.py'
-
+# Device for FastSurfer inference
 if torch.cuda.is_available():
     DEVICE = 'cuda'
 elif torch.backends.mps.is_available():
@@ -32,8 +29,17 @@ else:
     DEVICE = 'cpu'
 
 
-# %%
+# %% FastSeg =================================================================
 class FastSeg:
+    """
+    Segment an anatomical image with FastSurfer (segmentation only) and make
+    brain, white matter, ventricle, and other masks from the segmentation.
+    """
+
+    # Segmentation labels of each mask (FreeSurfer aseg/DKT atlas IDs).
+    # A positive ID adds the label, a negative ID removes it, and a string is
+    # a condition on the label value (e.g., '>0': all labels). None (aseg)
+    # means the label image itself.
     aseg_mask_IDs = {'aseg': None,
                      'Brain': ['>0'],
                      'GM': ['>0', -2, -7, -41, -46, -192, -251, -252, -253,
@@ -133,6 +139,13 @@ class FastSeg:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, fastsurfer_dir=None):
+        """
+        Parameters
+        ----------
+        fastsurfer_dir : str or Path, optional
+            FastSurfer directory. The default is the FastSurfer directory
+            next to this file.
+        """
         if fastsurfer_dir is None:
             fastsurfer_dir = Path(__file__).absolute().parent / 'FastSurfer'
 
@@ -141,19 +154,20 @@ class FastSeg:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self, in_f, bias_correction=False, prefix=None, batch_size=1,
-            segs=['aseg', 'Brain', 'WM', 'Vent'], overwrite=False):
+            segs=['aseg', 'Brain', 'WM', 'Vent']):
+        """
+        Run all the steps: prep_files, run_seg_only, and make_seg_images.
+        The output images are prefix + f'_{seg}.nii.gz' for each seg in
+        segs.
+        """
         src_f = Path(in_f).absolute()
 
-        # --- Prepare files ---
         in_f, prefix = self.prep_files(src_f, bias_correction, prefix)
-
-        # --- Run FastSurferCNN ---
         fsSeg_mgz = self.run_seg_only(in_f, prefix, batch_size)
-
-        # --- Get segmentation ---
         out_fs = self.make_seg_images(in_f, fsSeg_mgz, prefix, segs)
 
         # --- Clean intermediate files ---
+        # FastSurfer subject directory
         if Path(prefix).is_dir():
             shutil.rmtree(prefix)
 
@@ -163,27 +177,60 @@ class FastSeg:
             in_f.unlink()
 
         out_fs_str = '\n  '.join([str(p) for p in out_fs])
-        print(f"Output images: \n  {out_fs_str}")
+        print(f"Output images:\n  {out_fs_str}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _run_cmd(cmd, cwd, show_proc_progress=None, ETA=None, env=None):
+        """
+        Run a command. With show_proc_progress, the command is spawned and
+        show_proc_progress(proc, ETA) waits for it and shows the progress.
+
+        Returns
+        -------
+        bool
+            True if the command succeeded.
+        """
+        if show_proc_progress is None:
+            subprocess.check_call(cmd, cwd=cwd, env=env)
+            return True
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, cwd=cwd, env=env)
+        return show_proc_progress(proc, ETA) == 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def prep_files(self, in_f, bias_correction=False, prefix=None,
                    show_proc_progress=None, ETA=None):
-        """ Convert BRIK to NIfTI
+        """
+        Prepare the input file for FastSurfer: convert an AFNI BRIK file to
+        NIfTI and optionally apply N4 bias field correction.
+
         Parameters
         ----------
-        opts : argparse,Namespace
-            opts.in_f : input file name
-            opts.prefix : output prefix
+        in_f : Path
+            Input anatomical image file.
+        bias_correction : bool, optional
+            Apply N4 bias field correction. The default is False.
+        prefix : str or Path, optional
+            Output prefix. The default is in_f without extensions +
+            '_fastSeg', in the directory of in_f.
+        show_proc_progress : function, optional
+            Function to wait for a spawned process while showing its
+            progress; called as show_proc_progress(proc, ETA) and returns 0
+            on success. If None, the command is run with check_call.
+        ETA : float, optional
+            Expected time (seconds) passed to show_proc_progress.
 
         Returns
         -------
         in_f : Path
-            input file path for FastSurferCNN
+            Input file for FastSurfer. (None, None) is returned on failure.
         prefix : Path
-            output file prefix
+            Output prefix.
         """
 
-        # --- Get input file type ---
+        # Image space (e.g., ORIG, TLRC) to set on the output files
         cmd = f"3dinfo -space {in_f}"
         img_space = subprocess.check_output(
             shlex.split(cmd)).decode().rstrip()
@@ -194,7 +241,7 @@ class FastSeg:
         else:
             ftype = exts[-1]
 
-        # --- Set prefix ---
+        # --- Set the prefix ---
         if prefix is None:
             out_d = in_f.absolute().parent
             prefix = out_d / (in_f.name.replace(''.join(exts[-2:]), '')
@@ -218,22 +265,11 @@ class FastSeg:
             in_f = in_f.parent / in_f.name.replace('.nii', '_N4BCOR.nii')
             ants.image_write(in_img_bc, str(in_f))
 
+            # ANTs does not keep the AFNI space; set it again.
             cmd = f"3drefit -space {img_space} {in_f}"
-            if show_proc_progress is not None:
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=prefix.parent)
-                assert proc.returncode is None or proc.returncode == 0, \
-                    'Failed at n4_bias_field_correction.\n'
-                ret = show_proc_progress(proc, ETA)
-                if ret != 0:
-                    return (None, None)
-            else:
-                subprocess.check_call(
-                    shlex.split(cmd),
-                    cwd=prefix.parent
-                    )
+            if not self._run_cmd(shlex.split(cmd), prefix.parent,
+                                 show_proc_progress, ETA):
+                return (None, None)
 
         return (in_f, prefix)
 
@@ -241,25 +277,30 @@ class FastSeg:
     def run_seg_only(self, in_f, prefix, batch_size=1, seg_cereb=False,
                      show_proc_progress=None, ETA=None):
         """
-        run_FastSurferCNN
+        Run the FastSurfer segmentation (--seg_only).
+
         Parameters
         ----------
         in_f : Path
-            input file.
+            Input file.
         prefix : Path
-            output prefix.
+            Output prefix. The FastSurfer subject directory is made at this
+            path.
         batch_size : int
-            batch size for inference.
+            Batch size for inference.
         seg_cereb : bool
-            Run cerebellum segmentation
+            Run the cerebellum segmentation.
+        show_proc_progress : function, optional
+            See prep_files.
+        ETA : float, optional
+            Expected time (seconds) passed to show_proc_progress.
 
         Returns
         -------
-        out_mgz : Path
-            FastSurferCNN segmentation .mgz image.
+        fsSeg_mgz : Path
+            FastSurfer segmentation .mgz image. None on failure.
         """
 
-        # Run
         # FastSurfer requires absolute paths for --t1 and --sd.
         in_f = Path(in_f).absolute()
         prefix = Path(prefix).absolute()
@@ -277,21 +318,11 @@ class FastSeg:
         env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
         env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
-        if show_proc_progress is not None:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=self.fastsurfer_dir,
-                env=env)
-            assert proc.returncode is None or proc.returncode == 0, \
-                'Failed at run_seg_only.\n'
-            ret = show_proc_progress(proc, ETA)
-            if ret != 0:
-                return None
-        else:
-            subprocess.check_call(cmd, cwd=self.fastsurfer_dir, env=env)
+        if not self._run_cmd(cmd, self.fastsurfer_dir, show_proc_progress,
+                             ETA, env=env):
+            return None
 
-        fsSeg_mgz = Path(prefix) / 'mri' / 'aparc.DKTatlas+aseg.deep.mgz'
+        fsSeg_mgz = prefix / 'mri' / 'aparc.DKTatlas+aseg.deep.mgz'
 
         return fsSeg_mgz
 
@@ -299,10 +330,35 @@ class FastSeg:
     def make_seg_images(self, in_f, fsSeg_mgz, prefix,
                         segs=['aseg', 'Brain', 'WM', 'Vent'],
                         show_proc_progress=None, ETA=None):
+        """
+        Make mask images in the in_f space from the FastSurfer segmentation.
 
+        Parameters
+        ----------
+        in_f : Path
+            Input file of FastSurfer.
+        fsSeg_mgz : Path
+            FastSurfer segmentation image (output of run_seg_only).
+        prefix : Path
+            Output prefix. The output files are prefix + f'_{seg}.nii.gz'.
+        segs : list of str, optional
+            Mask names (keys of FastSeg.aseg_mask_IDs). 'Brain' is the
+            skull-stripped in_f image.
+        show_proc_progress : function, optional
+            See prep_files.
+        ETA : float, optional
+            Expected time (seconds) passed to show_proc_progress.
+
+        Returns
+        -------
+        out_fs : list of Path
+            Output files. None on failure.
+        """
+
+        # FastSurfer conforms the input to orig.mgz. Register orig.mgz to
+        # in_f to bring the segmentation back to the in_f space.
         orig_mgz = fsSeg_mgz.parent / 'orig.mgz'
 
-        # Register orig to in_f
         orig_img = ants.image_read(str(orig_mgz))
         in_img = ants.image_read(str(in_f))
         reg = ants.registration(in_img, orig_img, 'Translation')
@@ -310,7 +366,7 @@ class FastSeg:
         aseg_img = ants.image_read(str(fsSeg_mgz))
         aseg_V = aseg_img.numpy()
 
-        # Get space of input file for AFNI
+        # Image space (e.g., ORIG, TLRC) to set on the output files
         cmd = f"3dinfo -space {in_f}"
         img_space = subprocess.check_output(
             shlex.split(cmd)).decode().rstrip()
@@ -325,6 +381,7 @@ class FastSeg:
                     )
 
             elif seg_name == 'Brain':
+                # Skull-stripped in_f
                 mask_img = ants.image_read(str(fsSeg_mgz.parent / 'mask.mgz'))
                 mask_in = ants.apply_transforms(
                     in_img, mask_img, reg['fwdtransforms'], 'nearestNeighbor'
@@ -336,6 +393,7 @@ class FastSeg:
                 seg_V = np.zeros_like(aseg_V)
                 for idx in seg_idx:
                     if type(idx) is str:
+                        # Condition on the label value, e.g., '>0'
                         seg_V += eval(f"aseg_V {idx}")
                     elif idx < 0:
                         seg_V -= aseg_V == -idx
@@ -351,20 +409,8 @@ class FastSeg:
             out_fs.append(Path(out_f))
 
             cmd = f"3drefit -space {img_space} {out_f}"
-            if show_proc_progress is not None:
-                proc = subprocess.Popen(
-                    shlex.split(cmd), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=prefix.parent)
-                assert proc.returncode is None or proc.returncode == 0, \
-                    'Failed at run_seg_only.\n'
-                ret = show_proc_progress(proc, ETA)
-                if ret != 0:
-                    return None
-            else:
-                subprocess.check_call(
-                    shlex.split(cmd),
-                    cwd=prefix.parent
-                    )
+            if not self._run_cmd(shlex.split(cmd), prefix.parent,
+                                 show_proc_progress, ETA):
+                return None
 
         return out_fs

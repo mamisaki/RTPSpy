@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Interactive test cells for the LA-NF feedback application, NF_psypy.py (run
+cell by cell in an IDE in this directory). The cells send the messages that
+LANF (la_nf.py) sends via RtpApp.send_extApp.
+
 @author: mmisaki@laureateinstitute.org
 """
 
@@ -12,13 +16,13 @@ from datetime import datetime
 import numpy as np
 from scipy.stats import norm
 import time
-from rtpspy.rtp_appserv import boot_RtpAppSERV_app, pack_data
+from rtp_serve import boot_RTP_SERVE_app, pack_data
 
 
 # %% Boot
 def boot_connect_app():
-    cmd = './NF_APP.py --position 1920 0 --size 1280 1024 --log_dir ./'
-    addr, proc = boot_RtpAppSERV_app(cmd)
+    cmd = './NF_psypy.py --pos 0 0 --size 800 600 --log_dir ./'
+    addr, proc = boot_RTP_SERVE_app(cmd)
     if addr is None:
         sys.stderr.write(proc+'\n')
         return None, None, None
@@ -33,7 +37,7 @@ def boot_connect_app():
 # %% isAlive_extApp
 def isAlive_extApp(sock):
     sock.settimeout(3)
-    sock.sendall('Is alive?;'.encode('utf-8'))
+    sock.sendall('IsAlive?;'.encode('utf-8'))
     try:
         sock.recv(1024)
         return True
@@ -41,37 +45,36 @@ def isAlive_extApp(sock):
         return False
 
 
+# %% Wait for the end of the session
+def wait_end_session(sock):
+    sock.settimeout(None)
+    print(time.ctime(), sock.recv(1024).decode())
+    sock.settimeout(3)
+    time.sleep(3)
+
+
+# %% Prepare a session and start the scan
+def prep_and_start(sock, prep_cmd, task_param):
+    # Prepare the session: the command followed by the pickled parameters
+    sock.sendall(prep_cmd.encode('utf-8'))
+    sock.sendall(pack_data(task_param))
+    print(time.ctime(), sock.recv(1024).decode())  # 'PREPED;'
+
+    # Send 'READY' and wait for 'READY'
+    sock.sendall('READY;'.encode('utf-8'))
+    print(time.ctime(), sock.recv(1024).decode())
+    time.sleep(3)
+
+    # Send the scan start
+    scan_onset = time.time()
+    onset_str = datetime.fromtimestamp(scan_onset).isoformat()
+    sock.sendall(f'SCAN_START {onset_str};'.encode('utf-8'))
+
+    return scan_onset
+
+
 # %% boot app and open socket
 sock, serv_addr, proc = boot_connect_app()
-
-
-# %% Debug
-addr = ('localhost', 34851)
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(addr)
-sock.settimeout(3)
-
-isAlive_extApp(sock)
-
-# Prepare the session
-task_param = {'session': 'Rest1', 'total_duration': 480}
-
-isAlive_extApp(sock)
-sock.sendall('PREP REST;'.encode('utf-8'))
-
-isAlive_extApp(sock)
-sock.sendall(pack_data(task_param))
-
-isAlive_extApp(sock)
-sock.sendall('QUIT;'.encode('utf-8'))
-sock.recv(1024).decode()
-
-isAlive_extApp(sock)
-sock.sendall('PREP REST;'.encode('utf-8'))
-
-isAlive_extApp(sock)
-sock.sendall(pack_data(task_param))
 
 
 # %% Rest session
@@ -82,30 +85,9 @@ if run:
         sock.close()
         sock, serv_addr, proc = boot_connect_app()
 
-    # Prepare the session
-    task_param = {'session': 'Rest1', 'total_duration': 480}
-    sock.sendall('PREP REST;'.encode('utf-8'))
-    sock.sendall(pack_data(task_param))
-    time.sleep(3)
-
-    # Send 'READY'
-    sock.sendall('READY;'.encode('utf-8'))
-    # Wati for 'READY'
-    print(time.ctime(), sock.recv(1024).decode())
-    time.sleep(3)
-
-    # Send 'SCAN_ONSET'
-    scan_onset_time = datetime.now().isoformat()
-    sock.sendall(f'SCAN_START:{scan_onset_time}'.encode('utf-8'))
-
-    # Send 'QUIT'
-    # sock.sendall('QUIT;'.encode('utf-8'))
-
-    # Wati for 'END_SESSION'
-    sock.settimeout(None)
-    print(time.ctime(), sock.recv(1024).decode())
-    sock.settimeout(3)
-    time.sleep(3)
+    task_param = {'session': 'Rest', 'total_duration': 480}
+    prep_and_start(sock, 'PREP_Rest;', task_param)
+    wait_end_session(sock)
 
 
 # %% Baseline
@@ -116,26 +98,10 @@ if run:
         sock.close()
         sock, serv_addr, proc = boot_connect_app()
 
-    # Prepare
     task_param = {'session': 'Baseline', 'TR': 2,
-                  'timings': [96, 40, 40, 40, 4], 'target_level': 1}
-    sock.sendall('PREP NoNF;'.encode('utf-8')+pack_data(task_param))
-    time.sleep(3)
-
-    # Send 'READY'
-    sock.sendall('READY;'.encode('utf-8'))
-    print(time.ctime(), sock.recv(1024).decode())
-    time.sleep(3)
-
-    # Send 'SCAN_ONSET'
-    scan_onset_time = datetime.now().isoformat()
-    sock.sendall(f'SCAN_START {scan_onset_time}'.encode('utf-8'))
-
-    # Wati for 'END_SESSION'
-    sock.settimeout(None)
-    print(time.ctime(), sock.recv(1024).decode())
-    sock.settimeout(3)
-    time.sleep(3)
+                  'timings': [96, 40, 40, 40, 4], 'nofb': True}
+    prep_and_start(sock, 'PREP_Task;', task_param)
+    wait_end_session(sock)
 
 
 # %% NF
@@ -146,20 +112,10 @@ for nr in range(N_Run):
         sock.close()
         sock, serv_addr, proc = boot_connect_app()
 
-    # Prepare
     task_param = {'session': f'NF{nr+1}', 'TR': 2,
-                  'timings': [96, 40, 40, 40, 4], 'target_level': 1}
-    sock.sendall('PREP NoNF;'.encode('utf-8')+pack_data(task_param))
-    time.sleep(3)
-
-    # Send 'READY'
-    sock.sendall('READY;'.encode('utf-8'))
-    print(time.ctime(), sock.recv(1024).decode())
-    time.sleep(3)
-
-    # Send 'SCAN_ONSET'
-    scan_onset_time = datetime.now().isoformat()
-    sock.sendall(f'SCAN_START {scan_onset_time}'.encode('utf-8'))
+                  'timings': [96, 40, 40, 40, 4], 'nofb': False,
+                  'target_level': 1}
+    scan_onset = prep_and_start(sock, 'PREP_Task;', task_param)
 
     # simulate RTP
     TR = task_param['TR']
@@ -168,24 +124,21 @@ for nr in range(N_Run):
     NrVol = tlen / TR
 
     send_t = np.arange(NrVol) * TR + TR + 0.5  # Delay 1 TR + 0.5s (RTP time)
-    st = time.time()
     for vi in range(int(NrVol)):
         if vi < 3:
             continue
 
         # Wait for send time
-        while time.time()-st < send_t[vi]:
+        while time.time() - scan_onset < send_t[vi]:
             time.sleep(0.01)
 
-        # Send a volume
+        # Send a volume signal: "NF {time},{volume_index},{signal_value};"
         val = norm.rvs()
-        sock.sendall(f'NF {vi}:{val}'.encode('utf-8'))
+        sock.sendall(
+            f'NF {time.time() - scan_onset:.4f},{vi},{val:.6f};'.encode(
+                'utf-8'))
 
-    # Wati for 'END_SESSION'
-    sock.settimeout(None)
-    print(time.ctime(), sock.recv(1024).decode())
-    sock.settimeout(3)
-    time.sleep(3)
+    wait_end_session(sock)
 
 
 # %% Transfer
@@ -196,26 +149,10 @@ if run:
         sock.close()
         sock, serv_addr, proc = boot_connect_app()
 
-    # Prepare
     task_param = {'session': 'Transfer', 'TR': 2,
-                  'timings': [96, 40, 40, 40, 4], 'target_level': 1}
-    sock.sendall('PREP NoNF;'.encode('utf-8')+pack_data(task_param))
-    time.sleep(3)
+                  'timings': [96, 40, 40, 40, 4], 'nofb': True}
+    prep_and_start(sock, 'PREP_Task;', task_param)
+    wait_end_session(sock)
 
-    # Send 'READY'
-    sock.sendall('READY;'.encode('utf-8'))
-    print(time.ctime(), sock.recv(1024).decode())
-    time.sleep(3)
-
-    # Send 'SCAN_ONSET'
-    scan_onset_time = datetime.now().isoformat()
-    sock.sendall(f'SCAN_START {scan_onset_time}'.encode('utf-8'))
-
-    # Wati for 'END_SESSION'
-    sock.settimeout(None)
-    print(time.ctime(), sock.recv(1024).decode())
-    sock.settimeout(3)
-    time.sleep(3)
-
-sock.sendall('END_APP;'.encode('utf-8'))
-proc.kill()
+sock.sendall('QUIT;'.encode('utf-8'))
+proc.wait(timeout=10)

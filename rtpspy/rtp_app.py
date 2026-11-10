@@ -22,6 +22,7 @@ import signal
 import shutil
 import json
 import logging
+import tempfile
 
 import numpy as np
 import nibabel as nib
@@ -32,7 +33,6 @@ from PyQt5 import QtWidgets, QtCore
 import matplotlib.pyplot as plt
 
 try:
-    # Load modules from the same directory
     from .rtp_common import (
         RTP,
         boot_afni,
@@ -51,28 +51,118 @@ try:
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
     from .rtp_ttl_physio import RtpTTLPhysio
 
-except Exception:
-    # # For DEBUG environment
-    # from rtpspy import (
-    #     RtpWatch,
-    #     RtpTshift,
-    #     RtpVolreg,
-    #     RtpSmooth,
-    #     RtpRegress,
-    #     RtpImgProc,
-    #     RtpTTLPhysio
-    # )
-    # from rtpspy.rtp_common import (
-    #     RTP,
-    #     boot_afni,
-    #     MatplotlibWindow,
-    #     DlgProgressBar,
-    #     excepthook,
-    #     load_parameters,
-    #     save_parameters,
-    # )
-    # from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
-    pass
+except ImportError:
+    # Run as a script (no parent package)
+    from rtpspy.rtp_common import (
+        RTP,
+        boot_afni,
+        MatplotlibWindow,
+        DlgProgressBar,
+        excepthook,
+        load_parameters,
+        save_parameters,
+    )
+    from rtpspy.rtp_watch import RtpWatch
+    from rtpspy.rtp_volreg import RtpVolreg
+    from rtpspy.rtp_tshift import RtpTshift
+    from rtpspy.rtp_smooth import RtpSmooth
+    from rtpspy.rtp_regress import RtpRegress
+    from rtpspy.rtp_imgproc import RtpImgProc
+    from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
+    from rtpspy.rtp_ttl_physio import RtpTTLPhysio
+
+
+# %% Constants and helper functions ===========================================
+# Labels of the image file parameters, used in the file selection dialog
+_FILE_PARAM_LABELS = {
+    "anat_orig": "anatomy image in original space",
+    "func_orig": "function image in original space",
+    "func_param_ref": "fMRI parameter reference image",
+    "template": "template image",
+    "ROI_template": "ROI mask on template",
+    "WM_template": "white matter mask on template",
+    "Vent_template": "ventricle mask on template",
+    "sdc_invwarp": "distortion correction inverse warp",
+    "func_orig_sdc": "distortion-corrected functional image",
+    "alAnat": "aligned anatomy image in original space",
+    "brain_anat_orig": "skull-stripped brain image in original space",
+    "ROI_orig": "ROI mask in original space",
+    "WM_orig": "white matter mask in original space",
+    "Vent_orig": "ventricle mask in original space",
+    "aseg_orig": "aseg in original space",
+    "RTP_mask": "mask for real-time processing",
+    "GSR_mask": "mask for global signal regression",
+    "fieldmap_posi": "fieldmap with same phase encoding",
+    "fieldmap_nega": "fieldmap with opposite phase encoding",
+}
+
+# Set button color in the UI
+_SET_BTN_STYLE = "background-color: rgb(151,217,235);"
+
+
+def _strip_subbrick_selector(fpath):
+    """Return the file path without an AFNI sub-brick selector.
+
+    e.g., func.nii.gz'[0]' -> func.nii.gz
+    """
+    fpath = Path(fpath)
+    fname = re.sub("'", "", re.sub(r"\'*\[\d+\]\'*$", "", fpath.name))
+    return fpath.parent / fname
+
+
+def _send_scan_start(sock, onset):
+    """Send the scan start time to an external application."""
+    onset_str = datetime.fromtimestamp(onset).isoformat()
+    try:
+        sock.send(f"SCAN_START {onset_str};".encode())
+    except BrokenPipeError:
+        pass
+
+
+def _own_process_tree():
+    """Return the PIDs of this process and its ancestors."""
+    pids = set()
+    pid = os.getpid()
+    while pid > 0 and pid not in pids:
+        pids.add(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as fd:
+                # The command name (field 2) can contain spaces. The parent
+                # PID is the second field after the closing parenthesis.
+                pid = int(fd.read().rsplit(")", 1)[1].split()[1])
+        except Exception:
+            break
+    return pids
+
+
+def _find_processes(prog, args=()):
+    """Return the PIDs of this user's processes running prog.
+
+    A process matches when the base name of its argv[0] equals prog and its
+    argv[1:] contains every element of args exactly. The argv is read from
+    /proc/<pid>/cmdline, so a shell whose command line merely contains prog
+    as text does not match. This process and its ancestors are excluded.
+    """
+    own_tree = _own_process_tree()
+    pids = []
+    for proc_d in Path("/proc").glob("[0-9]*"):
+        pid = int(proc_d.name)
+        if pid in own_tree:
+            continue
+        try:
+            if proc_d.stat().st_uid != os.getuid():
+                continue
+            argv = (proc_d / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue  # The process ended or is not accessible
+
+        argv = [arg.decode(errors="replace") for arg in argv if len(arg)]
+        if len(argv) == 0 or Path(argv[0]).name != prog:
+            continue
+        if all(arg in argv[1:] for arg in args):
+            pids.append(pid)
+
+    return pids
 
 
 # %% RtpApp class ============================================================
@@ -90,11 +180,21 @@ class RtpApp(RTP):
         **kwargs
     ):
         """
-        Parameters:
-            default_rtp_params : dictionary, optional
-                Parameter dictionary. Defaults to None.
-            work_dir : Path or str
-                Working directory.
+        Parameters
+        ----------
+        default_rtp_params : dict, optional
+            Default parameters: {module name: {parameter: value}}. The
+            module name is a key of self.rtp_objs or "APP" for this object.
+            The default is None.
+        work_dir : Path or str, optional
+            Working directory. The default is "".
+        physio_log_file : Path or str, optional
+            Physio log file passed to RtpTTLPhysio. The default is None.
+        rt_physio_address_name : list, optional
+            Address and socket name of the rt_physio process, passed to
+            RtpTTLPhysio.
+        config_path : Path, optional
+            Configuration file passed to RtpTTLPhysio.
         """
         super(RtpApp, self).__init__(**kwargs)
 
@@ -118,7 +218,7 @@ class RtpApp(RTP):
         self.WM_orig = ""
         self.Vent_orig = ""
         self.ROI_orig = ""
-        self.aseg_oirg = ""
+        self.aseg_orig = ""
         self.ROI_mask = ""
 
         self.RTP_mask = ""
@@ -136,17 +236,14 @@ class RtpApp(RTP):
         self._isRunning_end_run_proc = False
         self._isReadyRun = False
 
-        # Mask creation parameters
-        if torch.cuda.is_available() or torch.backends.mps.is_available():
-            self.no_FastSeg = False
-            self.fastSeg_batch_size = 1
-            # total_memory = torch.cuda.get_device_properties(0).total_memory
-            # self.fastSeg_batch_size = int((total_memory-1e9) // (6 * 1e8))
-        else:
-            self.no_FastSeg = True
-            self.fastSeg_batch_size = 1
+        # Mask creation parameters. FastSeg needs a GPU.
+        self.no_FastSeg = not (
+            torch.cuda.is_available() or torch.backends.mps.is_available()
+        )
+        self.fastSeg_batch_size = 1
 
-        # Default processing times for proc_anat progress bar (seconds)
+        # Default processing times (seconds) for the progress bar of
+        # make_masks
         self.proc_times = {
             "FastSeg": 100,
             "SkullStrip": 100,
@@ -161,7 +258,7 @@ class RtpApp(RTP):
         self.prtime_keys = list(self.proc_times.keys())
 
         # Interpolation option for antsApplyTransforms when resampling the
-        # warped ROI: ['linear'|'nearestNeighbor'|'bSpline']
+        # warped ROI
         self.ROI_resample_opts = ["nearestNeighbor", "linear", "bSpline"]
         self.ROI_resample = "nearestNeighbor"
 
@@ -170,7 +267,7 @@ class RtpApp(RTP):
         self._scanning = False
         self.scan_onset = 0.0
 
-        # Prepare the timer to check the running status
+        # Timer to check the running status
         self.chk_run_timer = QtCore.QTimer()
         self.chk_run_timer.setSingleShot(True)
         self.chk_run_timer.timeout.connect(self.chkRunTimerEvent)
@@ -179,11 +276,12 @@ class RtpApp(RTP):
         # endregion
 
         # region: External application ----------------------------------------
-        # Define an external application that receives the RTP signal
+        # An external application that receives the RTP signal
         self.run_extApp = False
         self.extApp_cmd = ""
         self.extApp_addr = None
         self.extApp_proc = None
+        self._extApp_pgid = None  # process group ID of extApp_proc
         self.extApp_sock = None
         self.extApp_sock_timeout = 3
 
@@ -195,46 +293,48 @@ class RtpApp(RTP):
         self.roi_labels = ["ROI"]
         self._plt_xi = []
 
-        self._roi_sig = []
-        for ii in range(self.num_ROIs):
-            self._roi_sig.append(list([]))
+        self._roi_sig = [[] for _ in range(self.num_ROIs)]
         # endregion
 
         # region: RTP module instances ----------------------------------------
-        rtp_objs = dict()
-        rtp_objs["WATCH"] = RtpWatch()
-        rtp_objs["VOLREG"] = RtpVolreg()
-        rtp_objs["TSHIFT"] = RtpTshift()
-        rtp_objs["SMOOTH"] = RtpSmooth()
-        rtp_objs["TTLPHYSIO"] = RtpTTLPhysio(
+        self.rtp_objs = {}
+        self.rtp_objs["WATCH"] = RtpWatch()
+        self.rtp_objs["VOLREG"] = RtpVolreg()
+        self.rtp_objs["TSHIFT"] = RtpTshift()
+        self.rtp_objs["SMOOTH"] = RtpSmooth()
+        self.rtp_objs["TTLPHYSIO"] = RtpTTLPhysio(
             physio_log_file=physio_log_file,
             rt_physio_address_name=rt_physio_address_name,
             config_path=config_path
         )
-        rtp_objs["REGRESS"] = RtpRegress(
-            volreg=rtp_objs["VOLREG"],
-            rtp_physio=rtp_objs["TTLPHYSIO"]
+        self.rtp_objs["REGRESS"] = RtpRegress(
+            volreg=self.rtp_objs["VOLREG"],
+            rtp_physio=self.rtp_objs["TTLPHYSIO"]
         )
-
-        self.rtp_objs = rtp_objs
         self.rtp_gui = None
-
         # endregion
 
         # region: Clean temporary DICOM files ---------------------------------
-        tmp_dcm = list(Path("/tmp").glob("**/*.dcm"))
-        for rmf in tmp_dcm:
-            if rmf.is_file():
-                shutil.rmtree(rmf.parent)
+        # Remove only the temporary directories that DicomConverter made and
+        # left (e.g., after a crash): owned by this user and not modified for
+        # an hour (another RTPSpy process may be using a newer one).
+        tmp_root = Path(tempfile.gettempdir())
+        for tmp_d in tmp_root.glob("dicom_converter_*"):
+            try:
+                st = tmp_d.lstat()
+                if (
+                    tmp_d.is_dir() and not tmp_d.is_symlink()
+                    and st.st_uid == os.getuid()
+                    and time.time() - st.st_mtime > 3600
+                ):
+                    shutil.rmtree(tmp_d)
+            except Exception as e:
+                self._logger.warning(f"Failed to remove {tmp_d}: {e}")
         # endregion
 
         # region: Set the default RTP parameters ------------------------------
         if default_rtp_params is not None:
-            # Set default parameters
-            for proc, params in default_rtp_params.items():
-                if proc in self.rtp_objs:
-                    for attr, val in params.items():
-                        self.rtp_objs[proc].set_param(attr, val)
+            self._set_module_params(default_rtp_params)
 
             if "APP" in default_rtp_params:
                 for attr, val in default_rtp_params["APP"].items():
@@ -243,24 +343,32 @@ class RtpApp(RTP):
         self._logger.debug("### Complete RtpApp initialization ###")
         # endregion
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _set_module_params(self, rtp_params):
+        """Set parameters of the RTP modules.
+
+        rtp_params : {module name: {parameter: value}}. Keys that are not in
+        self.rtp_objs are ignored.
+        """
+        for proc, params in rtp_params.items():
+            if proc in self.rtp_objs:
+                for attr, val in params.items():
+                    self.rtp_objs[proc].set_param(attr, val)
+
     # --- Override these functions for a custom application -------------------
     # ready_proc, do_proc, end_reset, end_proc
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         """Prepare the process."""
-
-        self._proc_ready = True
-
-        if not Path(self.ROI_orig).is_file():
+        self.ROI_mask = None
+        if Path(self.ROI_orig).is_file():
+            self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
+            self._proc_ready = True
+        else:
             errmsg = f"ROI mask in original space not found: {self.ROI_orig}."
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             self._proc_ready = False
-        self.ROI_mask = None
-
-        if self._proc_ready and self.ROI_mask is None:
-            # Load ROI mask
-            self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
 
         # Reset plot values
         self._plt_xi[:] = []
@@ -282,7 +390,6 @@ class RtpApp(RTP):
                 vol_idx = self._vol_num - 1  # 0-based index
 
             if vol_idx < self.ignore_init:
-                # Skip ignore_init volumes
                 return
 
             if self._proc_start_idx < 0:
@@ -292,11 +399,10 @@ class RtpApp(RTP):
 
             # --- Initialize --------------------------------------------------
             if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
-                # Load ROI mask
                 self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
 
             # --- Run the process ---------------------------------------------
-            # Get mean signal in the ROI
+            # Mean signal in the ROI, excluding voxels with zero signal
             roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
             mean_sig = np.nanmean(dataV[roimask])
 
@@ -309,13 +415,8 @@ class RtpApp(RTP):
                     msg = f"NF {val_str};"
                     self.send_extApp(msg.encode())
                     self._logger.info(f"Sent '{msg}' to an external app")
-
                 except Exception as e:
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    errmsg = "".join(
-                        traceback.format_exception(exc_type, exc_obj, exc_tb)
-                    )
-                    self._logger.error(str(e) + "\n" + errmsg)
+                    self._logger.error(str(e) + "\n" + traceback.format_exc())
 
             else:
                 # Save data to a file in real-time
@@ -323,7 +424,7 @@ class RtpApp(RTP):
                     print(val_str, file=save_fd)
                 self._logger.info(f"Saved ROI data '{val_str}'")
 
-            # --- Post-process -----------------------------------------------
+            # --- Post-process ------------------------------------------------
             tstamp = time.time()
             self._proc_time.append(tstamp)
             if pre_proc_time is not None:
@@ -347,18 +448,12 @@ class RtpApp(RTP):
             self._roi_sig[0].append(mean_sig)
 
         except Exception as e:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
-            )
-            self._logger.error(str(e) + "\n" + errmsg)
+            self._logger.error(str(e) + "\n" + traceback.format_exc())
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
         """End process and reset process parameters."""
         self._logger.info(f"Reset {self.__class__.__name__} module.")
-
-        # Reset ROI_mask
         self.ROI_mask = None
 
         return super(RtpApp, self).end_reset()
@@ -366,6 +461,7 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_proc(self):
         """Placeholder for a custom end process.
+
         This is called at the beginning of end_run().
         """
         pass
@@ -383,13 +479,10 @@ class RtpApp(RTP):
             return
 
         out_dir = Path(self.work_dir).absolute()
-        if out_dir == "":
-            out_dir = "./"
-
         cmd = "dcm2niix -f sub-%n_ses-%t_ser-%s_desc-%d"
         cmd += f" -i n -z o -w 0 -o {out_dir} {dcm_dir}"
         try:
-            # Progress dialog
+            # Progress dialog without buttons
             msgBox = QtWidgets.QMessageBox(self.main_win)
             msgBox.setWindowTitle("dcm2niix")
             msgBox.setText("Converting DICOM to NIfTI ...")
@@ -411,19 +504,10 @@ class RtpApp(RTP):
             stdout, stderr = proc.communicate()
             ostr = "\n".join([stdout.decode(), stderr.decode()])
 
-            # Copy DICOMs
-            src_dir = dcm_dir
+            # Copy DICOMs to the working directory
             dst_dir = out_dir / "dicom"
-            cmd = f"rsync -auvz {src_dir}/ {dst_dir}/"
+            cmd = f"rsync -auvz {dcm_dir}/ {dst_dir}/"
             subprocess.check_call(shlex.split(cmd), stdout=subprocess.DEVNULL)
-
-            # # sanitize filename
-            # for fpath in out_dir.glob('*'):
-            #     fname = fpath.name
-            #     sanitized = re.sub(
-            #         r'[\^|\s|<>:"/\\|?*\x00-\x1F]', '_', fname)
-            #     if sanitized != fname:
-            #         fpath.rename(out_dir / sanitized)
 
             msgBox.accept()
             QtWidgets.QMessageBox.information(
@@ -438,9 +522,6 @@ class RtpApp(RTP):
             errmsg = f"Error during dcm2niix: {e}"
             self._logger.error(errmsg)
             self.err_popup(errmsg)
-            ostr = errmsg.encode()
-
-        return
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_masks(
@@ -457,31 +538,40 @@ class RtpApp(RTP):
         progress_dlg=False,
     ):
         """
-        Make mask images for RTP
+        Make mask images for RTP.
 
         Parameters
         ----------
         func_orig : str or Path, optional
-            Reference function image file. The default is None.
+            Reference function image file. An AFNI sub-brick selector (e.g.,
+            func.nii.gz'[0]') can be added. The default is None.
         anat_orig : str or Path, optional
             Anatomy image file. The default is None.
         template : str or Path, optional
             Template image file. The default is None.
         ROI_template : str or Path, optional
             ROI mask image on template. The default is None.
-        no_FastSeg : bool, oprional
-            Not using FastSeg. Use 3dSkullStrip and templete WM, Vent masks
-            warped into a subject brain.
+        no_FastSeg : bool, optional
+            Do not use FastSeg. Use 3dSkullStrip and the template WM and Vent
+            masks warped into the subject brain. The default is False.
+        WM_template : str or Path, optional
+            White matter mask on template. Used only with no_FastSeg.
+            The default is None.
+        Vent_template : str or Path, optional
+            Ventricle mask on template. Used only with no_FastSeg.
+            The default is None.
         ask_cmd : bool, optional
-            Flag to ask editing the processing command line.
+            Ask the user to edit the processing command lines.
             The default is False.
-        overwrite : boolr, optional
-            Falg to overwrite existing files. The default is False.
-        progress_dlg : DlgProgressBar object, optional
-            Progress dialog. The default is False.
+        overwrite : bool, optional
+            Overwrite existing files. The default is False.
+        progress_dlg : bool, optional
+            Show a progress dialog. The default is False.
 
+        Returns
+        -------
+        -1 if a required input is missing, otherwise None.
         """
-        # Check work_dir
         if type(self.work_dir) is str and self.work_dir == "":
             errmsg = "Working directory is not set."
             self._logger.error(errmsg)
@@ -494,36 +584,22 @@ class RtpApp(RTP):
         else:
             func_orig = self.func_orig
 
-        if anat_orig is not None:
-            self.set_param("anat_orig", anat_orig)
-        else:
-            anat_orig = self.anat_orig
-
-        if template is not None:
-            self.set_param("template", template)
-        else:
-            template = self.template
-
-        if ROI_template is not None:
-            self.set_param("ROI_template", ROI_template)
-        else:
-            if self.ROI_template == "":
-                ROI_template = None
-            else:
-                ROI_template = self.ROI_template
-
+        input_files = {
+            "anat_orig": anat_orig,
+            "template": template,
+            "ROI_template": ROI_template,
+        }
         if no_FastSeg:
-            if WM_template is not None:
-                self.set_param("WM_template", WM_template)
-            else:
-                WM_template = self.WM_template
+            input_files["WM_template"] = WM_template
+            input_files["Vent_template"] = Vent_template
+        for attr, val in input_files.items():
+            if val is not None:
+                self.set_param(attr, val)
 
-            if Vent_template is not None:
-                self.set_param("Vent_template", Vent_template)
-            else:
-                Vent_template = self.Vent_template
-
-        # Check attributes
+        # Check the input files
+        required = ["func_orig", "anat_orig"]
+        if no_FastSeg:
+            required += ["WM_template", "Vent_template"]
         for attr in (
             "func_orig",
             "anat_orig",
@@ -532,64 +608,42 @@ class RtpApp(RTP):
             "WM_template",
             "Vent_template",
         ):
-            if not hasattr(self, attr) or getattr(self, attr) is None:
-                if attr in ("func_orig", "anat_orig") or (
-                    no_FastSeg and attr in ("WM_template", "Vent_template")
-                ):
+            if getattr(self, attr, None) in (None, ""):
+                if attr in required:
                     errmsg = f"\n{attr} is not set.\n"
                     self._logger.error(errmsg)
                     self.err_popup(errmsg)
                     return -1
-                else:
-                    continue
-
-            fpath = getattr(self, attr)
-            if fpath == "":
                 continue
-            fpath = Path(fpath)
-            fpath = fpath.parent / re.sub(
-                "'", "", re.sub(r"\'*\[\d+\]\'*$", "", fpath.name)
-            )
 
-            if not Path(fpath).is_file() and len(str(fpath)) > 0:
-                if (
-                    attr
-                    in (
-                        "template",
-                        "ROI_template",
-                        "WM_template",
-                        "Vent_template",
-                    )
-                    and not no_FastSeg
-                ):
+            if not _strip_subbrick_selector(getattr(self, attr)).is_file():
+                if attr not in ("func_orig", "anat_orig") and not no_FastSeg:
+                    # Optional template file. Unset it.
                     self.set_param(attr, "")
                     continue
-                else:
-                    errmsg = f"\nNot found {attr}:{getattr(self, attr)}.\n"
-                    self._logger.error(errmsg)
-                    self.err_popup(errmsg)
-                    return -1
+
+                errmsg = f"\n{attr} not found: {getattr(self, attr)}.\n"
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
+                return -1
 
             self.set_param(attr, Path(getattr(self, attr)))
 
-        # Disable CreateMasks button in GUI
         if hasattr(self, "ui_CreateMasks_btn"):
             self.ui_CreateMasks_btn.setEnabled(False)
 
         if self.main_win is not None:
-            # Check shift (overwrite) and ctrl (ask_cmd) key press
+            # Shift-click: overwrite. Ctrl-click: ask_cmd.
+            shift = QtCore.Qt.ShiftModifier
+            ctrl = QtCore.Qt.ControlModifier
             modifiers = QtWidgets.QApplication.keyboardModifiers()
-            if modifiers == QtCore.Qt.ShiftModifier:
+            if modifiers in (shift, ctrl | shift):
                 overwrite = True
-            elif modifiers == QtCore.Qt.ControlModifier:
-                ask_cmd = True
-            elif modifiers == (
-                QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier
-            ):
-                overwrite = True
+            if modifiers in (ctrl, ctrl | shift):
                 ask_cmd = True
 
-        # Progress bar
+        # Progress bar. The processing output to stdout is shown in the
+        # dialog.
         if progress_dlg:
             sys.stdout.flush()
             original_stdout = sys.stdout
@@ -605,8 +659,8 @@ class RtpApp(RTP):
         else:
             progress_bar = None
 
-        # Initialize the processing time for progress information,
-        # if it is not set.
+        # Processing times for the progress report. Only the steps to run are
+        # counted.
         for k in self.prtime_keys:
             if k not in self.proc_times:
                 self.proc_times[k] = 1
@@ -616,16 +670,14 @@ class RtpApp(RTP):
         else:
             del self.proc_times["SkullStrip"]
 
-        # Make image processor object
         improc = RtpImgProc(main_win=self.main_win)
         improc.proc_times = self.proc_times
 
-        # Set total_ETA for the progress report.
         total_ETA = np.sum(list(self.proc_times.values()))
         if not Path(self.template).is_file():
             total_ETA -= self.proc_times["ANTs"]
 
-        # Make RTP work_dir
+        # Output directory: work_dir/RTP
         work_dir = self.work_dir
         if work_dir.name != 'RTP':
             out_dir = work_dir / 'RTP'
@@ -634,12 +686,13 @@ class RtpApp(RTP):
         else:
             out_dir = work_dir
 
-        st0 = time.time()  # start time
+        st0 = time.time()
         OK = True
         # endregion: Initialize
 
         try:
-            # region: Check image space ---------------------------------------
+            # region: Get the image space and deoblique the anatomy -----------
+            # The space label (e.g., ORIG) is copied to vr_base_*.
             func_space = None
             try:
                 func_space = (
@@ -652,33 +705,35 @@ class RtpApp(RTP):
             except Exception:
                 pass
 
-            # Deoblique self.anat_orig
             anat_orig = out_dir / Path(self.anat_orig).name
             improc.copy_deoblique(
                 self.anat_orig, anat_orig, progress_bar=progress_bar,
                 overwrite=overwrite
             )
-            # endregion: Check image space
+            # endregion
 
-            # region: 0. Copy func_orig to out_dir as vr_base_* --------------
+            # region: 0. Copy func_orig to out_dir as vr_base_* ---------------
             if (
                 Path(func_orig).parent != out_dir
                 or not Path(func_orig).stem.startswith("vr_base_")
                 or overwrite
             ):
-                src_f_stem = Path(func_orig).with_suffix('').stem
-                suffix = Path(func_orig).suffix
-                ma = re.search(r"[\'*|\"*]\[(\d+)\][\'*|\"*]", suffix)
-                vidx = None
+                # AFNI sub-brick selector (e.g., func.nii.gz'[0]' or
+                # func.nii.gz[0]). The last volume is used if not specified.
+                sel_pat = r"[\'\"]*\[(\d+)\][\'\"]*$"
+                ma = re.search(sel_pat, Path(func_orig).name)
                 if ma is not None:
                     vidx = int(ma.groups()[0])
                 else:
                     vidx = -1
 
-                # Remove the AFNI sub-brick selector from the file name
                 src_f = Path(func_orig)
-                src_f = src_f.parent / re.sub(
-                    "'", "", re.sub(r"\'*\[\d+\]\'*$", "", src_f.name))
+                src_f = src_f.parent / re.sub(sel_pat, "", src_f.name)
+                # File name without the image file extension
+                src_f_stem = re.sub(
+                    r"(\.nii(\.gz)?|\+\w+\.(HEAD|BRIK)(\.gz)?)$", "",
+                    src_f.name
+                )
 
                 if not src_f_stem.startswith("vr_base_"):
                     src_save_fname = "vr_base_" + src_f_stem
@@ -691,10 +746,7 @@ class RtpApp(RTP):
                     (not dst_f.is_file() or overwrite)
                 ):
                     src_img = improc.load_image(src_f, vidx=vidx)
-                    if src_img is None:
-                        if progress_dlg:
-                            sys.stdout = original_stdout
-                        return
+                    assert src_img is not None, f"Failed to load {src_f}.\n"
                     print("#" * 80)
                     print(f"Copy {func_orig} to {dst_f}")
                     nib.save(src_img, dst_f)
@@ -707,26 +759,28 @@ class RtpApp(RTP):
                         )
                         print(ostr.decode())
 
-                # json sidecar file
-                dst_json_f = dst_f.with_suffix('.json')
+                # json sidecar file (the name RtpTshift looks for)
+                dst_json_f = out_dir / f"{src_save_fname}.json"
                 if not dst_json_f.is_file() or overwrite:
-                    # If a json file exists, copy it
-                    json_f = src_f.with_suffix('').with_suffix('.json')
-                    if not json_f.is_file():
-                        json_f = (
-                            json_f.parent /
-                            json_f.name.replace("vr_base_", "")
-                        )
-                        if not json_f.is_file():
-                            json_f = (
-                                json_f.parent.parent /
-                                json_f.name.replace("vr_base_", "")
-                            )
+                    # Copy the json file of the source image if it exists.
+                    # Look also for the name without 'vr_base_' and in the
+                    # parent directory.
+                    json_name = f"{src_f_stem}.json"
+                    json_name_nobase = json_name.replace("vr_base_", "")
+                    json_cands = [
+                        src_f.parent / json_name,
+                        src_f.parent / json_name_nobase,
+                        src_f.parent.parent / json_name_nobase,
+                    ]
+                    json_f = next(
+                        (ff for ff in json_cands if ff.is_file()),
+                        json_cands[-1]
+                    )
 
                     if json_f.is_file() and json_f != dst_json_f:
                         shutil.copy(json_f, dst_json_f)
                     else:
-                        # Save TR and slice timing
+                        # Save TR and slice timing from the image header
                         header = nib.load(src_f).header
 
                         slice_timing = []
@@ -737,7 +791,7 @@ class RtpApp(RTP):
                                 pass
                         elif (
                             hasattr(header, "info")
-                            and "TAXIS_FLOATS" in header.info
+                            and "TAXIS_OFFSETS" in header.info
                         ):
                             slice_timing = header.info["TAXIS_OFFSETS"]
 
@@ -756,14 +810,15 @@ class RtpApp(RTP):
 
                 print("\n")
                 self.set_param("func_orig", dst_f)
-            # endregion: Copy func_orig as vr_base_*
+            # endregion
+
+            # Use self.set_param() to set the result files so that the GUI
+            # fields are updated.
 
             # region: 1. Brain segmentation -----------------------------------
             if not no_FastSeg:
-                # FastSeg
-                # Make Brain, WM, Vent segmentations
+                # FastSeg makes the brain, WM, Vent, and aseg segmentations.
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
-
                 seg_files = improc.run_fast_seg(
                     out_dir,
                     anat_orig,
@@ -772,15 +827,13 @@ class RtpApp(RTP):
                     overwrite=overwrite,
                 )
                 assert seg_files is not None
-
-                # Use self.set_param() to update GUI fields
                 self.set_param("brain_anat_orig", seg_files[0])
-                WM_seg = seg_files[1]
-                Vent_seg = seg_files[2]
-                aseg_seg = seg_files[3]
+                fastseg_files = {
+                    "WM": seg_files[1],
+                    "Vent": seg_files[2],
+                    "aseg": seg_files[3],
+                }
             else:
-                # 3dSkullStrip
-                # Make Brain segmentations
                 brain_anat_orig = improc.skullStrip(
                     out_dir,
                     anat_orig,
@@ -789,13 +842,13 @@ class RtpApp(RTP):
                     ask_cmd=ask_cmd,
                     overwrite=overwrite,
                 )
-                assert brain_anat_orig is not None, "skullStrip failed.\n"
-
-                # Use self.set_param() to update GUI fields
+                # skullStrip returns -1 when the command edit is canceled
+                assert brain_anat_orig not in (None, -1), \
+                    "skullStrip failed or canceled.\n"
                 self.set_param("brain_anat_orig", brain_anat_orig)
             # endregion
 
-            # region: 2. Suceptibility distortion correction ------------------
+            # region: 2. Susceptibility distortion correction -----------------
             if (
                 self.fieldmap_posi and Path(self.fieldmap_posi).is_file() and
                 self.fieldmap_nega and Path(self.fieldmap_nega).is_file()
@@ -812,8 +865,6 @@ class RtpApp(RTP):
                 assert sdc_invwarp is not None, (
                     "Distortion correction failed.\n"
                 )
-
-                # Use self.set_param() to update GUI fields
                 self.set_param("sdc_invwarp", sdc_invwarp)
                 self.set_param("func_orig_sdc", func_orig_sdc)
                 func_base = func_orig_sdc
@@ -821,6 +872,24 @@ class RtpApp(RTP):
                 self.set_param("sdc_invwarp", "")
                 self.set_param("func_orig_sdc", "")
                 func_base = self.func_orig
+
+            # With distortion correction, the masks are made in the corrected
+            # space and warped back to the space of func_orig.
+            do_invsdc = bool(self.sdc_invwarp) and \
+                Path(self.sdc_invwarp).is_file()
+
+            def apply_invsdc(img_f, interpolator):
+                """Warp img_f into the uncorrected func_orig space."""
+                return improc.ants_warp_resample(
+                    out_dir,
+                    img_f,
+                    self.func_orig,
+                    [self.sdc_invwarp],
+                    suffix="_invsdc",
+                    interpolator=interpolator,
+                    progress_bar=progress_bar,
+                    overwrite=overwrite,
+                )
             # endregion
 
             # region: 3. Align anatomy to function ----------------------------
@@ -834,8 +903,6 @@ class RtpApp(RTP):
                 overwrite=overwrite,
             )
             assert alAnat is not None, "align_anat2epi failed.\n"
-
-            # Use self.set_param() to update GUI fields
             self.set_param("alAnat", alAnat)
 
             alAnat_f_stem = self.alAnat.stem.replace(".nii", "")
@@ -856,44 +923,39 @@ class RtpApp(RTP):
             )
             assert mask_files is not None
 
-            if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                # Apply inverse distortion correction to the masks
-                mask_files = list(mask_files)
-                for ii, mask_f in enumerate(mask_files):
-                    mask_files[ii] = improc.ants_warp_resample(
-                        out_dir,
-                        mask_f,
-                        self.func_orig,
-                        [self.sdc_invwarp],
-                        suffix="_invsdc",
-                        interpolator="nearestNeighbor",
-                        progress_bar=progress_bar,
-                        overwrite=overwrite,
-                    )
-                    assert mask_files[ii] is not None
+            if do_invsdc:
+                mask_files = [
+                    apply_invsdc(mask_f, "nearestNeighbor")
+                    for mask_f in mask_files
+                ]
+                assert None not in mask_files
 
             self.set_param("RTP_mask", mask_files[0])
             self.set_param("GSR_mask", mask_files[1])
             # endregion
 
             # region: 5. Warp template ----------------------------------------
-            if Path(self.template).is_file():
-                if Path(self.ROI_template).is_file() or no_FastSeg:
-                    warp_params = improc.warp_template(
-                        out_dir,
-                        self.alAnat,
-                        self.template,
-                        total_ETA,
-                        progress_bar=progress_bar,
-                        ask_cmd=ask_cmd,
-                        overwrite=overwrite,
-                    )
-            else:
-                warp_params = None
+            # The template registration is needed for the ROI template and,
+            # without FastSeg, for the WM and Vent templates.
+            warp_params = None
+            if Path(self.template).is_file() and (
+                Path(self.ROI_template).is_file() or no_FastSeg
+            ):
+                warp_params = improc.warp_template(
+                    out_dir,
+                    self.alAnat,
+                    self.template,
+                    total_ETA,
+                    progress_bar=progress_bar,
+                    ask_cmd=ask_cmd,
+                    overwrite=overwrite,
+                )
+                # warp_template returns None or -1 on failure or cancel
+                assert warp_params not in (None, -1), \
+                    "warp_template failed or canceled.\n"
             # endregion
 
-            # region: 6. Apply warp -------------------------------------------
-            # ROI_template
+            # region: 6. Warp ROI template ------------------------------------
             if warp_params is not None and Path(self.ROI_template).is_file():
                 ROI_orig = improc.ants_warp_resample(
                     out_dir,
@@ -908,51 +970,34 @@ class RtpApp(RTP):
                 assert ROI_orig is not None
                 self.set_param("ROI_orig", ROI_orig)
 
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    # Apply inverse distortion correction to the ROI
-                    ROI_orig_invsdc = improc.ants_warp_resample(
-                        out_dir,
-                        ROI_orig,
-                        self.func_orig,
-                        [self.sdc_invwarp],
-                        suffix="_invsdc",
-                        interpolator="linear",
-                        progress_bar=progress_bar,
-                        overwrite=overwrite,
-                    )
+                if do_invsdc:
+                    ROI_orig_invsdc = apply_invsdc(ROI_orig, self.ROI_resample)
                     assert ROI_orig_invsdc is not None
                     self.set_param("ROI_orig", ROI_orig_invsdc)
             # endregion
 
             # region: 7. Make white matter and ventricle masks ----------------
-            if warp_params is not None and Path(self.ROI_template).is_file():
-                for segname in ("WM", "Vent", "aseg"):
-                    if segname == "WM":
-                        erode = 2
-                        if no_FastSeg:
-                            seg_anat_f = self.WM_template
-                        else:
-                            seg_anat_f = WM_seg
-                        interpolator = "linear"
-                    elif segname == "Vent":
-                        erode = 1
-                        if no_FastSeg:
-                            seg_anat_f = self.Vent_template
-                        else:
-                            seg_anat_f = Vent_seg
-                        interpolator = "linear"
-                    elif segname == "aseg":
-                        erode = 0
-                        if no_FastSeg:
-                            continue
-                        else:
-                            seg_anat_f = aseg_seg
-                        interpolator = "nearestNeighbor"
-
-                    assert seg_anat_f.is_file()
-
+            # FastSeg masks are aligned with aff1D_f. Template masks (no
+            # FastSeg) need the template registration.
+            if not no_FastSeg or warp_params is not None:
+                # {segment name: (erosion, interpolator)}
+                # Binary masks and label maps are resampled without
+                # interpolation not to dilate or mix the labels.
+                seg_opts = {
+                    "WM": (2, "nearestNeighbor"),
+                    "Vent": (1, "nearestNeighbor"),
+                    "aseg": (0, "genericLabel"),
+                }
+                for segname, (erode, interpolator) in seg_opts.items():
                     if no_FastSeg:
-                        # warp template seg_anat_f
+                        if segname == "aseg":
+                            # aseg is made only by FastSeg
+                            self.set_param("aseg_orig", "")
+                            continue
+
+                        # Warp the template mask to the aligned anatomy
+                        seg_anat_f = getattr(self, f"{segname}_template")
+                        assert seg_anat_f.is_file()
                         seg_anat_f = improc.ants_warp_resample(
                             out_dir,
                             seg_anat_f,
@@ -960,10 +1005,14 @@ class RtpApp(RTP):
                             warp_params,
                             interpolator=interpolator,
                             progress_bar=progress_bar,
-                            ask_cmd=ask_cmd,
                             overwrite=overwrite,
                         )
-                        aff1D_f = None
+                        assert seg_anat_f is not None
+                        seg_aff1D_f = None
+                    else:
+                        seg_anat_f = fastseg_files[segname]
+                        assert seg_anat_f.is_file()
+                        seg_aff1D_f = aff1D_f
 
                     seg_al_f = improc.resample_segmasks(
                         out_dir,
@@ -972,39 +1021,30 @@ class RtpApp(RTP):
                         erode,
                         self.func_orig,
                         total_ETA,
-                        aff1D_f=aff1D_f,
+                        aff1D_f=seg_aff1D_f,
                         progress_bar=progress_bar,
                         ask_cmd=ask_cmd,
                         overwrite=overwrite,
                     )
+                    assert seg_al_f is not None
 
-                    if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                        # Apply inverse distortion correction to the ROI
-                        seg_al_f = improc.ants_warp_resample(
-                            out_dir,
-                            seg_al_f,
-                            self.func_orig,
-                            [self.sdc_invwarp],
-                            suffix="_invsdc",
-                            interpolator="linear",
-                            progress_bar=progress_bar,
-                            overwrite=overwrite,
-                        )
+                    if do_invsdc:
+                        seg_al_f = apply_invsdc(seg_al_f, interpolator)
                         assert seg_al_f is not None
 
-                    # Use self.set_param() to update GUI fields
                     self.set_param(f"{segname}_orig", seg_al_f)
+            else:
+                # Do not leave the masks of a previous run.
+                self._logger.warning(
+                    "WM and Vent masks are not made: template is not set."
+                )
+                for segname in ("WM", "Vent", "aseg"):
+                    self.set_param(f"{segname}_orig", "")
             # endregion
 
         except Exception:
             OK = False
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            traceback.print_exception(exc_type, exc_obj, exc_tb)
-            if progress_bar is not None:
-                progress_bar.set_msgTxt("Exit with error.")
-                progress_bar.add_desc("!!! Exit with error.")
-                progress_bar.setWindowTitle(progress_bar.title)
-                progress_bar.btnCancel.setText("Close")
+            traceback.print_exc()
 
         # region: All done ----------------------------------------------------
         if progress_bar is not None:
@@ -1024,8 +1064,6 @@ class RtpApp(RTP):
 
         if OK:
             self.proc_times = improc.proc_times
-
-            # Message dialog
             if self.main_win is not None:
                 QtWidgets.QMessageBox.information(
                     self.main_win,
@@ -1033,7 +1071,6 @@ class RtpApp(RTP):
                     "Mask creation is complete.",
                 )
 
-        # Enable CreateMasks button
         if hasattr(self, "ui_CreateMasks_btn"):
             self.ui_CreateMasks_btn.setEnabled(True)
         # endregion
@@ -1041,22 +1078,23 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def RTP_setup(self, *args, rtp_params={}, ignore_error=False):
         """
-        Setup and enable RTP modules.
+        Set up and enable the RTP modules.
 
         Parameters
         ----------
-        rtp_params : dictionary, optional
-            Dictionary of RTP parameters dictionary. The default is {}.
+        rtp_params : dict, optional
+            Parameters of the RTP modules: {module name: {parameter: value}}.
+            The default is {}.
         ignore_error : bool, optional
-            Ignore error to allow incomplete setup. The default is False.
+            Ignore errors to allow an incomplete setup. The default is False.
 
         Returns
         -------
         int
              0 : normal
-            -1 : error
-
+            -1 : error or canceled
         """
+        # *args absorbs the 'checked' argument of the button click signal.
         if "enable_RTP" in rtp_params:
             self.set_param("enable_RTP", bool(rtp_params["enable_RTP"]) * 2)
         else:
@@ -1064,27 +1102,27 @@ class RtpApp(RTP):
 
         show_progress = (self.main_win is not None) and (self.enable_RTP > 0)
         if show_progress:
-            # progress bar
             progress_bar = DlgProgressBar(
                 title="Session setup ...", parent=self.main_win
             )
             progress = 0
-            time.sleep(0.01)  # Give UI time to update the dialog
+            time.sleep(0.01)  # Give the UI time to update the dialog
+
+        def cancel_setup():
+            if show_progress and progress_bar.isVisible():
+                progress_bar.close()
+            return -1
 
         # region: Set RTP parameters ------------------------------------------
         if self.enable_RTP > 0:
-            # Set parameters in rtp_params
-            for proc, params in rtp_params.items():
-                if proc in self.rtp_objs:
-                    for attr, val in params.items():
-                        self.rtp_objs[proc].set_param(attr, val)
+            self._set_module_params(rtp_params)
 
             for proc in ["WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS"]:
                 if show_progress:
                     progress += 100 // 5
                     progress_bar.set_value(progress)
-                    progress_bar.add_desc("Set {} parameters\n".format(proc))
-                    time.sleep(0.01)  # Give time for UI to update the dialog
+                    progress_bar.add_desc(f"Set {proc} parameters\n")
+                    time.sleep(0.01)  # Give the UI time to update the dialog
 
                 if proc not in self.rtp_objs:
                     continue
@@ -1092,9 +1130,9 @@ class RtpApp(RTP):
                 pobj = self.rtp_objs[proc]
                 if pobj.enabled:
                     if hasattr(pobj, "work_dir"):
-                        setattr(pobj, "work_dir", Path(self.work_dir))
-                        if not Path(pobj.work_dir).is_dir():
-                            Path(pobj.work_dir).mkdir()
+                        pobj.work_dir = Path(self.work_dir)
+                        if not pobj.work_dir.is_dir():
+                            pobj.work_dir.mkdir()
 
                     if proc == "WATCH":
                         if not Path(pobj.watch_dir).is_dir():
@@ -1102,151 +1140,52 @@ class RtpApp(RTP):
                             self._logger.error(errmsg)
                             self.err_popup(errmsg)
                             if not ignore_error:
-                                if show_progress:
-                                    progress_bar.close()
-                                    return -1
+                                return cancel_setup()
 
                         if not Path(self.func_orig).is_file():
                             errmsg = (
-                                "Not found 'Base function image'"
+                                "'Base function image' not found:"
                                 + f" {self.func_orig}."
                             )
                             self._logger.error(errmsg)
                             self.err_popup(errmsg)
-                            if show_progress and progress_bar.isVisible():
-                                progress_bar.close()
-                                return -1
+                            if not ignore_error:
+                                return cancel_setup()
 
                     elif proc == "VOLREG":
                         if Path(self.func_orig).is_file():
                             pobj.set_param("ref_vol", self.func_orig)
                         else:
+                            # Ask the user to select a reference volume
                             ret = pobj.set_param("ref_vol", "external")
-                            if ret is not None and ret == -1:
-                                # Canceled
-                                if show_progress and progress_bar.isVisible():
-                                    progress_bar.close()
-                                return -1
+                            if ret == -1:  # Canceled
+                                return cancel_setup()
 
                     elif proc == "TSHIFT":
-                        if not Path(self.func_param_ref).is_file():
-                            if not ignore_error:
-                                errmsg = (
-                                    "Not found 'fMRI parameter reference'"
-                                    + f" {self.func_param_ref}."
-                                )
-                                self._logger.error(errmsg)
-                                self.err_popup(errmsg)
-                                if show_progress and progress_bar.isVisible():
-                                    progress_bar.close()
-                                    return -1
-                        else:
-                            # Get parameters from a paremeter reference image
-                            self.rtp_objs["TSHIFT"].set_from_sample(
-                                self.func_param_ref
+                        if Path(self.func_param_ref).is_file():
+                            # Get the slice timing and TR from the reference
+                            pobj.set_from_sample(self.func_param_ref)
+                        elif not ignore_error:
+                            errmsg = (
+                                "'fMRI parameter reference' not found:"
+                                + f" {self.func_param_ref}."
                             )
+                            self._logger.error(errmsg)
+                            self.err_popup(errmsg)
+                            return cancel_setup()
 
                     elif proc == "SMOOTH":
                         if Path(self.RTP_mask).is_file():
                             pobj.set_param("mask_file", self.RTP_mask)
-                        else:
-                            if not ignore_error:
-                                ret = pobj.set_param("mask_file", "external")
-                                if ret is not None and ret == -1:
-                                    # Canceled
-                                    if (
-                                        show_progress
-                                        and progress_bar.isVisible()
-                                    ):
-                                        progress_bar.close()
-                                    return -1
+                        elif not ignore_error:
+                            # Ask the user to select a mask file
+                            ret = pobj.set_param("mask_file", "external")
+                            if ret == -1:  # Canceled
+                                return cancel_setup()
 
                     elif proc == "REGRESS":
-                        pobj.set_param("TR", self.rtp_objs["TSHIFT"].TR)
-                        pobj.set_param(
-                            "tshift", self.rtp_objs["TSHIFT"].ref_time
-                        )
-                        pobj.set_param("mask_file", self.RTP_mask)
-                        if pobj.mot_reg != "None":
-                            if not self.rtp_objs["VOLREG"].enabled:
-                                pobj.ui_motReg_cmbBx.setCurrentText("None")
-                                errmsg = "VOLREG is not enabled."
-                                errmsg += "Motion regressor is set to None."
-                                self.rtp_objs["VOLREG"].errmsg(errmsg)
-                            else:
-                                pobj.set_param(
-                                    "volreg", self.rtp_objs["VOLREG"]
-                                )
-
-                        if pobj.phys_reg != "None":
-                            pobj.set_param(
-                                "rtp_physio", self.rtp_objs["TTLPHYSIO"]
-                            )
-
-                        if pobj.GS_reg:
-                            if Path(self.GSR_mask).is_file():
-                                pobj.set_param("GS_mask", self.GSR_mask)
-                            else:
-                                if not ignore_error and hasattr(
-                                    pobj, "ui_GS_mask_lnEd"
-                                ):
-                                    ret = pobj.set_param(
-                                        "GS_mask",
-                                        self.work_dir,
-                                        pobj.ui_GS_mask_lnEd.setText,
-                                    )
-                                    if ret == -1:
-                                        if (
-                                            show_progress
-                                            and progress_bar.isVisible()
-                                        ):
-                                            progress_bar.close()
-                                        return -1
-
-                        if pobj.WM_reg:
-                            if Path(self.WM_orig).is_file():
-                                pobj.set_param("WM_mask", self.WM_orig)
-                            else:
-                                if not ignore_error and hasattr(
-                                    pobj, "ui_WM_mask_lnEd"
-                                ):
-                                    ret = pobj.set_param(
-                                        "WM_mask",
-                                        self.work_dir,
-                                        pobj.ui_WM_mask_lnEd.setText,
-                                    )
-                                    if ret == -1:
-                                        if (
-                                            show_progress
-                                            and progress_bar.isVisible()
-                                        ):
-                                            progress_bar.close()
-                                        return -1
-
-                        if pobj.Vent_reg:
-                            if Path(self.Vent_orig).is_file():
-                                pobj.set_param("Vent_mask", self.Vent_orig)
-                            else:
-                                if not ignore_error and hasattr(
-                                    pobj, "ui_Vent_mask_lnEd"
-                                ):
-                                    ret = pobj.set_param(
-                                        "Vent_mask",
-                                        self.work_dir,
-                                        pobj.ui_Vent_mask_lnEd.setText,
-                                    )
-                                    if ret == -1:
-                                        if (
-                                            show_progress
-                                            and progress_bar.isVisible()
-                                        ):
-                                            progress_bar.close()
-                                        return -1
-
-                        if pobj.reg_retro_proc:
-                            self.max_watch_wait = np.max(
-                                [self.max_watch_wait, pobj.wait_num / 2]
-                            )
+                        if self._setup_regress(pobj, ignore_error) == -1:
+                            return cancel_setup()
 
                 if show_progress and not progress_bar.isVisible():
                     self._logger.info("Cancel experiment setup")
@@ -1255,13 +1194,11 @@ class RtpApp(RTP):
         # endregion: Set RTP parameters
 
         if show_progress:
-            progress = 100
-            progress_bar.set_value(progress)
+            progress_bar.set_value(100)
             progress_bar.add_desc("Done")
-            time.sleep(0.1)  # Give time for UI to update the dialog
+            time.sleep(0.1)  # Give the UI time to update the dialog
 
         if self.main_win is not None:
-            # Set ready button
             self.ui_ready_btn.setEnabled(True)
             self.ui_ready_btn.setText("Ready")
             self.ui_quit_btn.setEnabled(True)
@@ -1269,6 +1206,7 @@ class RtpApp(RTP):
             if show_progress:
                 progress_bar.close()
 
+            # Show the parameter list tab
             self.main_win.show_options_list()
             self.main_win.options_tab.setCurrentIndex(2)
             QtWidgets.QApplication.processEvents()
@@ -1277,76 +1215,142 @@ class RtpApp(RTP):
         return 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _setup_regress(self, pobj, ignore_error):
+        """Set the REGRESS parameters that depend on the other modules.
+
+        Returns -1 if the user canceled a mask file selection.
+        """
+        pobj.set_param("TR", self.rtp_objs["TSHIFT"].TR)
+        pobj.set_param("tshift", self.rtp_objs["TSHIFT"].ref_time)
+        pobj.set_param("mask_file", self.RTP_mask)
+        if pobj.mot_reg != "None":
+            if not self.rtp_objs["VOLREG"].enabled:
+                pobj.ui_motReg_cmbBx.setCurrentText("None")
+                errmsg = "VOLREG is not enabled. "
+                errmsg += "Motion regressor is set to None."
+                self.rtp_objs["VOLREG"].errmsg(errmsg)
+            else:
+                pobj.set_param("volreg", self.rtp_objs["VOLREG"])
+
+        if pobj.phys_reg != "None":
+            pobj.set_param("rtp_physio", self.rtp_objs["TTLPHYSIO"])
+
+        # Noise ROI masks
+        for use_reg, mask_param, mask_f in (
+            (pobj.GS_reg, "GS_mask", self.GSR_mask),
+            (pobj.WM_reg, "WM_mask", self.WM_orig),
+            (pobj.Vent_reg, "Vent_mask", self.Vent_orig),
+        ):
+            if not use_reg:
+                continue
+
+            if Path(mask_f).is_file():
+                pobj.set_param(mask_param, mask_f)
+            elif not ignore_error and hasattr(pobj, f"ui_{mask_param}_lnEd"):
+                # Ask the user to select a mask file
+                ret = pobj.set_param(
+                    mask_param,
+                    self.work_dir,
+                    getattr(pobj, f"ui_{mask_param}_lnEd").setText,
+                )
+                if ret == -1:
+                    return -1
+
+        if pobj.reg_retro_proc:
+            self.max_watch_wait = np.max(
+                [self.max_watch_wait, pobj.wait_num / 2]
+            )
+
+        return 0
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _is_running_dcm2nii(self):
-        # Check if dcm2niix is in progress
-        try:
-            ostr = subprocess.check_output(shlex.split("pgrep -f dcm2niix"))
-            if len(ostr.decode().rstrip()):
-                errmsg = "DICOM to NIfTI conversion is still in progress."
-                self._logger.error(errmsg)
-                self.err_popup(errmsg)
-                return True
-        except Exception:
-            pass
+        """Return True (with an error popup) if dcm2niix is running."""
+        if len(_find_processes("dcm2niix")):
+            errmsg = "DICOM to NIfTI conversion is still in progress."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
+            return True
 
         return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
-        """Ready to run the process"""
+        """Get ready to run the process.
+
+        Returns
+        -------
+        The first module of the process chain (None if RTP is disabled).
+        """
         self._logger.debug("ready_to_run")
 
-        #  --- Disable ui to block parameters change --------------------------
+        # Disable the UI to block parameter changes
         if self.enable_RTP > 0 and self.main_win is not None:
             self.ui_setEnabled(False)
 
         # --- Ready RTP -------------------------------------------------------
         proc_chain = None
         if self.enable_RTP > 0:
-            # connect RTP modules
-            if self.rtp_objs["WATCH"].enabled:
-                proc_chain = self.rtp_objs["WATCH"]
-                last_proc = proc_chain
-            else:
-                proc_chain = None
+            # Use the maximum scan length of REGRESS (a realistic scan
+            # length, set by the user) for all modules, so that the buffers
+            # are allocated once before the scan.
+            if "REGRESS" in self.rtp_objs:
+                max_len = self.rtp_objs["REGRESS"].max_scan_length
+                for proc, pobj in self.rtp_objs.items():
+                    if proc == "REGRESS" or \
+                            not hasattr(pobj, "max_scan_length"):
+                        continue
+                    if proc == "VOLREG":
+                        pobj.set_param("max_scan_length", max_len)
+                    else:
+                        pobj.max_scan_length = max_len
 
-            for proc in ["VOLREG", "TSHIFT", "SMOOTH", "REGRESS"]:
+            # Connect the enabled RTP modules into a chain
+            last_proc = None
+            for proc in ["WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS"]:
                 if proc not in self.rtp_objs:
                     continue
 
                 pobj = self.rtp_objs[proc]
-                if pobj.enabled:
-                    if proc_chain is None:
-                        proc_chain = pobj
-                        last_proc = proc_chain
-                    else:
-                        last_proc.next_proc = pobj
+                if not pobj.enabled:
+                    continue
 
-                    if proc == "TSHIFT":
-                        self.max_watch_wait = max(
-                            pobj.TR * 3, self.max_watch_wait
-                        )
+                if proc_chain is None:
+                    proc_chain = pobj
+                else:
+                    last_proc.next_proc = pobj
 
-                    elif proc == "REGRESS":
-                        if pobj.GS_reg or pobj.WM_reg or pobj.Vent_reg:
-                            if self.rtp_objs["VOLREG"].enabled:
-                                pobj.set_param(
-                                    "mask_src_proc", self.rtp_objs["VOLREG"]
-                                )
-                            elif self.rtp_objs["TSHIFT"].enabled:
-                                pobj.set_param(
-                                    "mask_src_proc", self.rtp_objs["TSHIFT"]
-                                )
-                            else:
-                                pobj.set_param(
-                                    "mask_src_proc", self.rtp_objs["WATCH"]
-                                )
+                # Wait longer than the expected interval of the input before
+                # chkRunTimerEvent regards the scan as ended.
+                if proc == "TSHIFT":
+                    self.max_watch_wait = max(
+                        pobj.TR * 3, self.max_watch_wait
+                    )
 
-                        self.max_watch_wait = max(
-                            pobj.wait_num * 0.5, self.max_watch_wait
-                        )
+                elif proc == "REGRESS":
+                    if pobj.GS_reg or pobj.WM_reg or pobj.Vent_reg:
+                        # Noise ROI signals are taken from the image before
+                        # smoothing.
+                        if self.rtp_objs["VOLREG"].enabled:
+                            mask_src = self.rtp_objs["VOLREG"]
+                        elif self.rtp_objs["TSHIFT"].enabled:
+                            mask_src = self.rtp_objs["TSHIFT"]
+                        else:
+                            mask_src = self.rtp_objs["WATCH"]
+                        pobj.set_param("mask_src_proc", mask_src)
 
-                    last_proc = pobj
+                    self.max_watch_wait = max(
+                        pobj.wait_num * 0.5, self.max_watch_wait
+                    )
+
+                last_proc = pobj
+
+            if proc_chain is None:
+                errmsg = "No RTP module is enabled."
+                self._logger.error(errmsg)
+                self.err_popup(errmsg)
+                self.ui_setEnabled(True)
+                return
 
             last_proc.save_proc = True
             last_proc.next_proc = self  # self (RtpApp) is the last process
@@ -1360,17 +1364,17 @@ class RtpApp(RTP):
                     self.rtp_objs["REGRESS"].enabled
                     and self.rtp_objs["REGRESS"].phys_reg != "None"
                 ):
-                    # Start physio recording
                     self.main_win.chbShowPhysio.setCheckState(2)
 
             # Reset process chain status
             proc_chain.end_reset()
 
-            # Ready process sequence: proc_ready calls its child's proc_ready
+            # ready_proc of each module calls ready_proc of the next one.
             if not proc_chain.ready_proc():
+                self.ui_setEnabled(True)
                 return
 
-            # Logging process parameters
+            # Log the process parameters
             log_str = "RTP parameters:\n"
             rtp = proc_chain
             while rtp is not None:
@@ -1382,31 +1386,32 @@ class RtpApp(RTP):
 
                 rtp = rtp.next_proc
 
-            log_str = log_str.rstrip()
-            self._logger.info(log_str)
+            self._logger.info(log_str.rstrip())
 
         # --- Ready application -----------------------------------------------
         if self.run_extApp:
-            # Ready external application
             if not self.isAlive_extApp():
                 self.boot_extApp()
                 if not self.isAlive_extApp():
-                    errmsg = "Cannot get response from extApp."
+                    errmsg = "No response from the external application."
                     self._logger.error(errmsg)
                     self.err_popup(errmsg)
+                    self.ui_setEnabled(True)
                     return
 
         else:
+            # Start a new signal file
             if not self.sig_save_file.parent.is_dir():
                 os.makedirs(self.sig_save_file.parent)
-            open(self.sig_save_file, "w").write("Time,Index,Value\n")
+            with open(self.sig_save_file, "w") as fd:
+                fd.write("Time,Index,Value\n")
 
-        # Start running-status checking timer
         if self.main_win is not None:
-            # Timers and QThread can only be used with QApplication
+            # Start the running-status check timer. Timers and QThread work
+            # only with a QApplication.
             self.chk_run_timer.start(1000)
 
-            # Stand by scan onset monitor
+            # Wait for the scan onset signal
             if (
                 "TTLPHYSIO" in self.rtp_objs
                 and self.rtp_objs["TTLPHYSIO"] is not None
@@ -1416,7 +1421,6 @@ class RtpApp(RTP):
             self._scanning = False
             self._wait_start = True
 
-            # Run wait_onset thread
             self.th_wait_onset = QtCore.QThread()
             self.wait_onset = RtpApp.WAIT_ONSET(
                 self, self.rtp_objs["TTLPHYSIO"], self.extApp_sock
@@ -1426,7 +1430,6 @@ class RtpApp(RTP):
             self.wait_onset.finished.connect(self.th_wait_onset.quit)
             self.th_wait_onset.start()
 
-            # Change button text
             self.ui_ready_btn.setText("Waiting for scan start ...")
             self.ui_ready_btn.setEnabled(False)
             self.ui_manStart_btn.setEnabled(True)
@@ -1437,7 +1440,7 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def manual_start(self):
-        """Manual scan start."""
+        """Start the scan manually."""
         self.scan_onset = time.time()
         self._scanning = True
         self._wait_start = False
@@ -1450,23 +1453,20 @@ class RtpApp(RTP):
             self.rtp_objs["TTLPHYSIO"].release_standby_scan()
 
         if self.extApp_sock is not None:
-            # Send message to self.extApp_sock
-            onset_str = datetime.fromtimestamp(self.scan_onset).isoformat()
-            msg = f"SCAN_START {onset_str};"
-            try:
-                self.extApp_sock.send(msg.encode())
-            except BrokenPipeError:
-                pass
+            _send_scan_start(self.extApp_sock, self.scan_onset)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_run(self, quit_btn=False, scan_name=None):
-        """End the RTP run and save results."""
+        """End the RTP run and save the results.
+
+        Returns
+        -------
+        save_fnames : dict
+            {description: saved file path}
+        """
+        # end_run can also be called by chkRunTimerEvent. Do not run it twice
+        # at the same time.
         if self._isRunning_end_run_proc:
-            """
-            Check if end_run is running.
-            end_run could be called simultaneously by the timer thread's'
-            chkRunTimerEvent function,
-            """
             return
 
         self._isRunning_end_run_proc = True
@@ -1477,7 +1477,6 @@ class RtpApp(RTP):
             self._logger.info("Quit button is pressed.")
 
         if self.main_win is not None:
-            # Disable buttons
             self.ui_ready_btn.setText("Ready")
             self.ui_ready_btn.setEnabled(False)
             self.ui_quit_btn.setEnabled(False)
@@ -1488,10 +1487,9 @@ class RtpApp(RTP):
         try:
             save_fnames = {}
 
-            # Run custom end process
             self.end_proc()
 
-            # Abort WAIT_ONSET thread if it is running
+            # Abort the WAIT_ONSET thread if it is running
             if (
                 hasattr(self, "th_wait_onset")
                 and self.th_wait_onset.isRunning()
@@ -1501,14 +1499,13 @@ class RtpApp(RTP):
                     self.wait_onset.finished.emit()
                     self.th_wait_onset.wait()
 
-            # Send 'END' message to an external application
+            # Send 'END' message to the external application
             if self.isAlive_extApp():
                 if self.send_extApp("END;".encode()):
                     recv = self.recv_extApp(timeout=3)
                     if recv is not None:
                         self._logger.info(f"Recv {recv.decode()}")
 
-            # Save parameter list
             if self.enable_RTP > 0:
                 if scan_name is None or scan_name is False:
                     if (
@@ -1519,19 +1516,11 @@ class RtpApp(RTP):
                     else:
                         scan_name = f"scan_{time.strftime('%Y%m%d%H%M')}"
 
-                # Get parameters
+                # Save the parameters
                 all_params = {}
                 for rtp in ("WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS"):
-                    if (
-                        rtp not in self.rtp_objs
-                        or not self.rtp_objs[rtp].enabled
-                    ):
-                        continue
-
-                    if not self.rtp_objs[rtp].enabled:
-                        continue
-
-                    all_params[rtp] = self.rtp_objs[rtp].get_params()
+                    if rtp in self.rtp_objs and self.rtp_objs[rtp].enabled:
+                        all_params[rtp] = self.rtp_objs[rtp].get_params()
 
                 all_params[self.__class__.__name__] = self.get_params()
 
@@ -1542,10 +1531,9 @@ class RtpApp(RTP):
                 save_f = save_dir / f"rtp_params_{scan_name}.txt"
                 with open(save_f, "w") as fd:
                     for rtp, opt_dict in all_params.items():
-                        fd.write("# {}\n".format(rtp))
+                        fd.write(f"# {rtp}\n")
                         for k in sorted(opt_dict.keys()):
-                            val = opt_dict[k]
-                            fd.write("{}: {}\n".format(k, val))
+                            fd.write(f"{k}: {opt_dict[k]}\n")
                 save_fnames["RTP parameters"] = save_f
 
                 # Save ROI signals
@@ -1559,29 +1547,19 @@ class RtpApp(RTP):
                     )
                     save_fnames["ROI signals"] = roi_save_f
 
-                # Get the root and last processes
-                root_proc = None
-                for rtp, obj in self.rtp_objs.items():
-                    if rtp in ("TTLPHYSIO"):
-                        continue
-                    if obj.enabled:
-                        if root_proc is None:
-                            root_proc = obj
-
-                # Reset all process chain
+                # Reset the process chain from its first module
+                root_proc = next(
+                    obj for rtp, obj in self.rtp_objs.items()
+                    if rtp != "TTLPHYSIO" and obj.enabled
+                )
                 out_files = root_proc.end_reset()
                 if out_files is not None:
                     save_fnames.update(out_files)
 
         except Exception as e:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = "".join(
-                traceback.format_exception(exc_type, exc_obj, exc_tb)
-            )
-            self._logger.error(str(e) + "\n" + errmsg)
+            self._logger.error(str(e) + "\n" + traceback.format_exc())
 
         if self.main_win is not None:
-            # Enable ui
             self.ui_setEnabled(True)
             self.main_win.options_tab.setCurrentIndex(0)
 
@@ -1598,187 +1576,163 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def check_onAFNI(self, base=None, ovl=None):
-        """Check and display images in AFNI."""
+        """Display images in AFNI to check them.
 
-        # Set underlay and overlay image file
+        Parameters
+        ----------
+        base : str, optional
+            Underlay image: 'anat' (aligned anatomy) or 'func' (reference
+            function image).
+        ovl : str, optional
+            Overlay image: 'func', 'wm', 'vent', 'roi', 'RTPmask', or
+            'GSRmask'.
+        """
+        # With distortion correction, the masks in func_orig space are
+        # '*_invsdc' files. The anatomy is aligned to the corrected function,
+        # so the corrected function and masks are shown on it.
+        sdc_applied = bool(self.sdc_invwarp) and \
+            Path(self.sdc_invwarp).is_file()
+
         base_img = None
         if base == "anat":
             base_img = self.alAnat
         elif base == "func":
             base_img = self.func_orig
 
+        ovl_mask_attrs = {
+            "wm": "WM_orig",
+            "vent": "Vent_orig",
+            "roi": "ROI_orig",
+            "RTPmask": "RTP_mask",
+            "GSRmask": "GSR_mask",
+        }
         ovl_img = None
         if ovl == "func":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = self.func_orig_sdc
-                else:
-                    ovl_img = self.func_orig
+            if base == "anat" and sdc_applied:
+                ovl_img = self.func_orig_sdc
             else:
                 ovl_img = self.func_orig
 
-        elif ovl == "wm":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = (
-                        Path(self.WM_orig).parent /
-                        Path(self.WM_orig).name.replace("_invsdc", "")
-                    )
-                else:
-                    ovl_img = self.WM_orig
-            elif base == "func":
-                ovl_img = self.WM_orig
+        elif ovl in ovl_mask_attrs and base in ("anat", "func"):
+            ovl_img = getattr(self, ovl_mask_attrs[ovl])
+            if base == "anat" and sdc_applied:
+                ovl_img = (
+                    Path(ovl_img).parent /
+                    Path(ovl_img).name.replace("_invsdc", "")
+                )
 
-        elif ovl == "vent":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = (
-                        Path(self.Vent_orig).parent /
-                        Path(self.Vent_orig).name.replace("_invsdc", "")
-                    )
-                else:
-                    ovl_img = self.Vent_orig
-            elif base == "func":
-                ovl_img = self.Vent_orig
+        if base is None and ovl is None:
+            # 'Open AFNI' button: only boot AFNI in work_dir
+            ses_dir = Path(self.work_dir)
+        else:
+            if base_img is None or not Path(base_img).is_file():
+                errmsg = f"Base image ({base}) is not set or found: {base_img}"
+                self.err_popup(errmsg)
+                return
+            ses_dir = Path(base_img).parent
 
-        elif ovl == "roi":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = (
-                        Path(self.ROI_orig).parent /
-                        Path(self.ROI_orig).name.replace("_invsdc", "")
-                    )
-                else:
-                    ovl_img = self.ROI_orig
-            elif base == "func":
-                ovl_img = self.ROI_orig
+            if ovl_img is None or not Path(ovl_img).is_file():
+                errmsg = (
+                    f"Overlay image ({ovl}) is not set or found: {ovl_img}"
+                )
+                self.err_popup(errmsg)
+                return
 
-        elif ovl == "RTPmask":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = (
-                        Path(self.RTP_mask).parent /
-                        Path(self.RTP_mask).name.replace("_invsdc", "")
-                    )
-                else:
-                    ovl_img = self.RTP_mask
-            elif base == "func":
-                ovl_img = self.RTP_mask
-
-        elif ovl == "GSRmask":
-            if base == "anat":
-                if self.sdc_invwarp and Path(self.sdc_invwarp).is_file():
-                    ovl_img = (
-                        Path(self.GSR_mask).parent /
-                        Path(self.GSR_mask).name.replace("_invsdc", "")
-                    )
-                else:
-                    ovl_img = self.GSR_mask
-            elif base == "func":
-                ovl_img = self.GSR_mask
-
-        if base_img is None or not Path(base_img).is_file():
-            errmsg = f"Base image {base_img.name} is not set or found."
-            self.err_popup(errmsg)
-            return
-        ses_dir = base_img.parent
-
-        if ovl_img is None or not Path(ovl_img).is_file():
-            errmsg = f"Base image {ovl_img.name} is not set or found."
-            self.err_popup(errmsg)
-            return
-
-        # Check if afni is ready
-        cmd0 = "afni"
-        pret = subprocess.run(
-            shlex.split(f"pgrep -af '{cmd0}'"), stdout=subprocess.PIPE
-        )
-        procs = pret.stdout
-        procs = [
-            ll
-            for ll in procs.decode().rstrip().split("\n")
-            if "pgrep -af 'afni" not in ll
-            and "RTafni" not in ll
-            and len(ll) > 0
-        ]
-        if len(procs) == 0:
-            # Boot AFNI
+        # Boot AFNI if it is not running. plugout_drive needs an AFNI started
+        # with -yesplugouts (boot_afni adds it).
+        if len(_find_processes("afni", ["-yesplugouts"])) == 0:
             boot_afni(
                 main_win=self.main_win,
                 boot_dir=ses_dir,
                 TRUSTHOST=self.AFNIRT_TRUSTHOST,
             )
 
-        if base_img is not None:
-            # Get volume shape to adjust window size
-            baseWinSize = 480  # height of axial image window
-            bimg = nib.load(base_img)
-            vsize = np.diag(bimg.affine)[:3]
-            if np.any(vsize == 0):
-                vsize = np.abs(
-                    [r[np.argmax(np.abs(r))] for r in bimg.affine[:3, :3]]
-                )
-            vshape = bimg.shape[:3] * vsize
-            wh_ax = np.abs(
-                [int(baseWinSize * vshape[0] // vshape[1]), baseWinSize]
-            )
-            wh_sg = np.abs(
-                [baseWinSize, int(baseWinSize * vshape[2] // vshape[1])]
-            )
-            wh_cr = np.abs(
-                [
-                    int(baseWinSize * vshape[0] // vshape[1]),
-                    int(baseWinSize * vshape[2] // vshape[1]),
-                ]
-            )
+        if base is None and ovl is None:
+            return
 
-            # Get cursor position
-            if ovl in ["roi", "wm", "vent", "mask"]:
-                ovl_v = nib.load(ovl_img).get_fdata()
-                if ovl_v.ndim > 3:
-                    ovl_v = ovl_v[:, :, :, 0]
+        # Image window sizes adjusted to the volume shape
+        baseWinSize = 480  # height of the axial image window
+        bimg = nib.load(base_img)
+        vsize = np.diag(bimg.affine)[:3]
+        if np.any(vsize == 0):
+            # Oblique or rotated affine
+            vsize = np.abs(
+                [r[np.argmax(np.abs(r))] for r in bimg.affine[:3, :3]]
+            )
+        vshape = bimg.shape[:3] * vsize
+        wh_ax = np.abs(
+            [int(baseWinSize * vshape[0] // vshape[1]), baseWinSize]
+        )
+        wh_sg = np.abs(
+            [baseWinSize, int(baseWinSize * vshape[2] // vshape[1])]
+        )
+        wh_cr = np.abs(
+            [
+                int(baseWinSize * vshape[0] // vshape[1]),
+                int(baseWinSize * vshape[2] // vshape[1]),
+            ]
+        )
+
+        # Put the cursor at the center of the mask
+        xyz = None
+        if ovl in ovl_mask_attrs:
+            ovl_v = nib.load(ovl_img).get_fdata()
+            if ovl_v.ndim > 3:
+                ovl_v = ovl_v[:, :, :, 0]
+            if np.any(ovl_v != 0):
                 ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
                 ijk = np.concatenate([ijk, [1]])
                 xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
 
-            # Run plugout_drive to drive afni
-            le = 800  # left end
-            tp = 500  # top
-            cmd = "plugout_drive"
-            cmd += f" -com 'SWITCH_SESSION {Path(ses_dir).name}'"
-            cmd += " -com 'RESCAN_THIS'"
-            cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
-            if ovl_img is not None:
-                cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
-                cmd += " -com 'SEE_OVERLAY +'"
-            cmd += " -com 'OPEN_WINDOW A.axialimage"
-            cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.sagittalimage"
-            if le + wh_ax[0] + wh_sg[0] + wh_cr[0] - 100 > 1920:
-                cmd += (
-                    f" geom={wh_sg[0]}x{wh_sg[1]}+"
-                    f"{le + wh_ax[0] - 50}+{tp - 100}"
-                )
-                cmd += " opacity=6'"
-                cmd += " -com 'OPEN_WINDOW A.coronalimage"
-                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le + wh_ax[0] - 50}"
-                cmd += f"+{wh_sg[1] + tp - 100} opacity=6'"
-            else:
-                cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le + wh_ax[0] - 50}+{tp}"
-                cmd += " opacity=6'"
-                cmd += " -com 'OPEN_WINDOW A.coronalimage"
-                cmd += f" geom={wh_cr[0]}x{wh_cr[1]}"
-                cmd += f"+{le + wh_ax[0] + wh_sg[0] - 100}"
-                cmd += f"+{tp} opacity=6'"
+        # Drive AFNI with plugout_drive
+        le = 800  # left end
+        tp = 500  # top
+        cmd = "plugout_drive"
+        cmd += f" -com 'SWITCH_SESSION {Path(ses_dir).name}'"
+        cmd += " -com 'RESCAN_THIS'"
+        cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
+        cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
+        cmd += " -com 'SEE_OVERLAY +'"
+        cmd += " -com 'OPEN_WINDOW A.axialimage"
+        cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
+        cmd += " -com 'OPEN_WINDOW A.sagittalimage"
+        if le + wh_ax[0] + wh_sg[0] + wh_cr[0] - 100 > 1920:
+            # Too wide for the screen. Put the coronal window below the
+            # sagittal one.
+            cmd += (
+                f" geom={wh_sg[0]}x{wh_sg[1]}+"
+                f"{le + wh_ax[0] - 50}+{tp - 100}"
+            )
+            cmd += " opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.coronalimage"
+            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le + wh_ax[0] - 50}"
+            cmd += f"+{wh_sg[1] + tp - 100} opacity=6'"
+        else:
+            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le + wh_ax[0] - 50}+{tp}"
+            cmd += " opacity=6'"
+            cmd += " -com 'OPEN_WINDOW A.coronalimage"
+            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}"
+            cmd += f"+{le + wh_ax[0] + wh_sg[0] - 100}"
+            cmd += f"+{tp} opacity=6'"
 
-            if ovl in ["roi", "wm", "vent", "mask"]:
-                cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
-            cmd += " -quit"
-            subprocess.run(cmd, shell=True)
+        if xyz is not None:
+            cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
+        cmd += " -quit"
+        subprocess.run(cmd, shell=True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def delete_file(self, attr, keepfile=False):
-        """Delete specified file or all processed files."""
+        """Delete a file parameter's file, or all processed files.
+
+        Parameters
+        ----------
+        attr : str
+            Name of the file parameter, or 'AllProc' for all processed
+            files.
+        keepfile : bool, optional
+            Only unset the parameter without deleting the file.
+            The default is False.
+        """
         if not hasattr(self, attr) and attr != "AllProc":
             return
 
@@ -1789,14 +1743,16 @@ class RtpApp(RTP):
                 return
 
         if not keepfile:
-            # Warning dialog
+            # Confirmation dialog
             msgBox = QtWidgets.QMessageBox()
             msgBox.setIcon(QtWidgets.QMessageBox.Question)
             if attr != "AllProc":
-                msgBox.setText(f"Are you sure to delete {ff}?")
+                msgBox.setText(f"Are you sure you want to delete {ff}?")
                 msgBox.setWindowTitle(f"Delete {attr} file")
             else:
-                msgBox.setText("Are you sure to delete ALL processed files?")
+                msgBox.setText(
+                    "Are you sure you want to delete ALL processed files?"
+                )
                 msgBox.setWindowTitle("Delete all processed files")
 
             msgBox.setStandardButtons(
@@ -1812,7 +1768,7 @@ class RtpApp(RTP):
         else:
             delFiles = {}
 
-            # Set all processed images to delete
+            # All processed images
             for rmattr in (
                 "alAnat",
                 "WM_orig",
@@ -1828,44 +1784,62 @@ class RtpApp(RTP):
                 ):
                     delFiles[rmattr] = Path(getattr(self, rmattr))
 
-            # Delete interim files
-            anat_prefix = self.anat_orig.name.replace(
-                "".join(self.anat_orig.suffixes[-2:]), ""
-            )
-            anat_prefix = anat_prefix.replace("+orig", "").replace("+tlrc", "")
-            if not hasattr(self, "brain_anat_orig") and hasattr(
-                self, "anat_orig"
+            # Intermediate files in the make_masks output directory
+            # (work_dir/RTP). Nothing is searched if work_dir is not set.
+            work_dir = Path(self.work_dir)
+            if str(self.work_dir) == "":
+                out_dir = None
+            elif work_dir.name != "RTP":
+                out_dir = work_dir / "RTP"
+            else:
+                out_dir = work_dir
+
+            brain_anat_orig = Path(getattr(self, "brain_anat_orig", ""))
+            if (
+                not brain_anat_orig.is_file()
+                and self.anat_orig
+                and out_dir is not None
             ):
-                brain_anat_orig = self.work_dir / (
-                    anat_prefix + "_Brain.nii.gz"
+                # Brain image name made by make_masks from anat_orig
+                anat_orig = Path(self.anat_orig)
+                anat_prefix = anat_orig.name.replace(
+                    "".join(anat_orig.suffixes[-2:]), ""
                 )
+                anat_prefix = anat_prefix.replace("+orig", "").replace(
+                    "+tlrc", ""
+                )
+                brain_anat_orig = out_dir / (anat_prefix + "_Brain.nii.gz")
                 if brain_anat_orig.is_file():
                     self.brain_anat_orig = brain_anat_orig
                     delFiles["brain_anat_orig"] = brain_anat_orig
 
-            if hasattr(self, "brain_anat_orig"):
+            if brain_anat_orig.is_file():
                 WM_anat = (
-                    self.brain_anat_orig.parent
-                    / self.brain_anat_orig.name.replace("Brain", "WM")
+                    brain_anat_orig.parent
+                    / brain_anat_orig.name.replace("Brain", "WM")
                 )
                 if WM_anat.is_file():
                     delFiles["WM_anat"] = WM_anat
 
                 Vent_anat = (
-                    self.brain_anat_orig.parent
-                    / self.brain_anat_orig.name.replace("Brain", "Vent")
+                    brain_anat_orig.parent
+                    / brain_anat_orig.name.replace("Brain", "Vent")
                 )
                 if Vent_anat.is_file():
                     delFiles["Vent_anat"] = Vent_anat
 
-                del_tmep = anat_prefix + "_Brain_alFunc"
-                for rmf in self.brain_anat_orig.parent.glob(f"*{del_tmep}*"):
-                    attr = rmf.stem.replace("del_tmep", "alFunc_")
+                # e.g., anat_Brain_alFunc_mat.aff12.1D
+                alfunc_pat = brain_anat_orig.name.replace(
+                    ".nii.gz", ""
+                ).replace(".nii", "") + "_alFunc"
+                for rmf in brain_anat_orig.parent.glob(f"*{alfunc_pat}*"):
+                    attr = rmf.stem.replace(alfunc_pat, "alFunc")
                     delFiles[attr] = rmf
 
-            for rmf in self.work_dir.glob("template2orig_*"):
-                attr = rmf.stem.replace("template2orig_", "")
-                delFiles[attr] = rmf
+            if out_dir is not None:
+                for rmf in out_dir.glob("template2orig_*"):
+                    attr = rmf.stem.replace("template2orig_", "")
+                    delFiles[attr] = rmf
 
             if hasattr(self, "func_orig") and Path(self.func_orig).is_file():
                 fbase = re.sub(r"\+.*", "", Path(self.func_orig).name)
@@ -1875,10 +1849,10 @@ class RtpApp(RTP):
                 if func_mask.is_file():
                     delFiles["func_mask"] = func_mask
 
-        # Delete files
         for attr, ff in delFiles.items():
             if not keepfile:
                 if ".HEAD" in ff.suffixes or ".BRIK" in ff.suffixes:
+                    # Delete both the AFNI .HEAD and .BRIK files
                     ff_stem = ff.stem
                     if ff.suffix == ".gz":
                         ff_stem = Path(ff_stem).stem
@@ -1892,11 +1866,11 @@ class RtpApp(RTP):
             if hasattr(self, attr):
                 self.set_param(attr, "")
 
-        return
-
     # --- Signal plot ---------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class PlotROISignal(QtCore.QObject):
+        """Window to plot the ROI signal in real time."""
+
         finished = QtCore.pyqtSignal()
 
         def __init__(self, root, num_ROIs=1, roi_labels=[], main_win=None):
@@ -1906,12 +1880,10 @@ class RtpApp(RTP):
             self.main_win = main_win
             self.abort = False
 
-            # Initialize figure
-            plt_winname = "ROI signal"
             self.plt_win = MatplotlibWindow()
-            self.plt_win.setWindowTitle(plt_winname)
+            self.plt_win.setWindowTitle("ROI signal")
 
-            # set position
+            # Place the window to the right of the main window
             if main_win is not None:
                 main_geom = main_win.geometry()
                 x = main_geom.x() + main_geom.width() + 10
@@ -1921,7 +1893,6 @@ class RtpApp(RTP):
             win_height = 80 + 70 * num_ROIs
             self.plt_win.setGeometry(x, y, 500, win_height)
 
-            # Set axis
             self.roi_labels = roi_labels
             self._axes = self.plt_win.canvas.figure.subplots(num_ROIs, 1)
             if num_ROIs == 1:
@@ -1934,9 +1905,16 @@ class RtpApp(RTP):
 
             self.reset_plot()
 
-            # show window
             self.plt_win.show()
             self.plt_win.canvas.draw()
+
+            # Qt widgets must be updated in the GUI thread. A timer in the
+            # GUI thread polls the ROI signal and updates the plot.
+            self._plt_xi = []
+            self._running = False
+            self._timer = QtCore.QTimer(self)
+            self._timer.setInterval(100)
+            self._timer.timeout.connect(self._update_plot)
 
         # ---------------------------------------------------------------------
         def reset_plot(self):
@@ -1951,62 +1929,78 @@ class RtpApp(RTP):
 
         # ---------------------------------------------------------------------
         def run(self):
-            plt_xi = self.root._plt_xi.copy()
-            while self.plt_win.isVisible() and not self.abort:
-                if self.main_win is not None and not self.main_win.isVisible():
-                    break
+            """Start updating the plot."""
+            self._plt_xi = self.root._plt_xi.copy()
+            self._running = True
+            self._timer.start()
 
-                if len(self.root._plt_xi) == len(plt_xi):
-                    time.sleep(0.1)
-                    continue
+        # ---------------------------------------------------------------------
+        def isRunning(self):
+            return self._running
 
-                try:
-                    # Plot signal
-                    plt_xi = self.root._plt_xi.copy()
-                    plt_roi_sig = self.root._roi_sig
-                    for ii, ax in enumerate(self._axes):
-                        ll = min(len(plt_xi), len(plt_roi_sig[ii]))
-                        if ll == 0:
-                            continue
+        # ---------------------------------------------------------------------
+        def _update_plot(self):
+            main_closed = (
+                self.main_win is not None and not self.main_win.isVisible()
+            )
+            if not self.plt_win.isVisible() or self.abort or main_closed:
+                self.end_thread()
+                return
 
-                        y = plt_roi_sig[ii][:ll]
-                        self._ln[ii][0].set_data(plt_xi[:ll], y)
+            if len(self.root._plt_xi) == len(self._plt_xi):
+                return
 
-                        # Adjust y scale
-                        ax.relim()
-                        if np.sum(~np.isnan(y)) > 10:
-                            yl_orig = np.array(ax.get_ylim())
-                            yl = yl_orig.copy()
-                            sd = np.nanstd(y)
-                            mu = np.nanmean(y)
-                            if np.nanmin(y) < yl[0]:
-                                yl[0] = max(np.nanmin(y), mu - 4 * sd)
+            try:
+                # Plot signal
+                plt_xi = self.root._plt_xi.copy()
+                self._plt_xi = plt_xi
+                plt_roi_sig = self.root._roi_sig
+                for ii, ax in enumerate(self._axes):
+                    ll = min(len(plt_xi), len(plt_roi_sig[ii]))
+                    if ll == 0:
+                        continue
 
-                            if np.nanmax(y) > yl[1]:
-                                yl[1] = min(np.nanmax(y), mu + 4 * sd)
+                    y = plt_roi_sig[ii][:ll]
+                    self._ln[ii][0].set_data(plt_xi[:ll], y)
 
-                            if np.any(yl != yl_orig):
-                                ax.set_ylim(yl)
+                    # Adjust the y range, ignoring outliers beyond 4 SD
+                    ax.relim()
+                    if np.sum(~np.isnan(y)) > 10:
+                        yl_orig = np.array(ax.get_ylim())
+                        yl = yl_orig.copy()
+                        sd = np.nanstd(y)
+                        mu = np.nanmean(y)
+                        if np.nanmin(y) < yl[0]:
+                            yl[0] = max(np.nanmin(y), mu - 4 * sd)
 
-                        ax.autoscale_view()
+                        if np.nanmax(y) > yl[1]:
+                            yl[1] = min(np.nanmax(y), mu + 4 * sd)
 
-                        xl = ax.get_xlim()
-                        if (plt_xi[-1] // 10 + 1) * 10 > xl[1]:
-                            ax.set_xlim([0, (plt_xi[-1] // 10 + 1) * 10])
-                    self.plt_win.canvas.draw()
+                        if np.any(yl != yl_orig):
+                            ax.set_ylim(yl)
 
-                except IndexError:
-                    continue
+                    ax.autoscale_view()
 
-                except Exception as e:
-                    self.root.errmsg(str(e), no_pop=True)
-                    sys.stdout.flush()
-                    continue
+                    # Extend the x range in steps of 10
+                    xl = ax.get_xlim()
+                    if (plt_xi[-1] // 10 + 1) * 10 > xl[1]:
+                        ax.set_xlim([0, (plt_xi[-1] // 10 + 1) * 10])
+                self.plt_win.canvas.draw()
 
-            self.end_thread()
+            except IndexError:
+                pass
+
+            except Exception as e:
+                self.root.errmsg(str(e), no_pop=True)
+                sys.stdout.flush()
 
         # ---------------------------------------------------------------------
         def end_thread(self):
+            if not self._running:
+                return
+            self._running = False
+            self._timer.stop()
+
             if self.plt_win.isVisible():
                 self.plt_win.close()
 
@@ -2018,34 +2012,24 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_ROISig_plot(self, num_ROIs=1, roi_labels=[]):
         """Open the ROI signal plot."""
-        if hasattr(self, "thPltROISig") and self.thPltROISig.isRunning():
+        if hasattr(self, "pltROISig") and self.pltROISig.isRunning():
             return
 
-        self.thPltROISig = QtCore.QThread()
         self.pltROISig = RtpApp.PlotROISignal(
             self,
             num_ROIs=num_ROIs,
             roi_labels=roi_labels,
             main_win=self.main_win,
         )
-        self.pltROISig.moveToThread(self.thPltROISig)
-        self.thPltROISig.started.connect(self.pltROISig.run)
-        self.pltROISig.finished.connect(self.thPltROISig.quit)
-        self.thPltROISig.start()
+        self.pltROISig.run()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_ROISig_plot(self):
         """Close the ROI signal plot."""
-        if hasattr(self, "thPltROISig") and self.thPltROISig.isRunning():
-            self.pltROISig.abort = True
-            if not self.thPltROISig.wait(1):
-                self.pltROISig.finished.emit()
-                self.thPltROISig.wait()
-
-            del self.thPltROISig
-
         if hasattr(self, "pltROISig"):
+            pltROISig = self.pltROISig
             del self.pltROISig
+            pltROISig.end_thread()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_ROIsig_chk(self, state):
@@ -2060,41 +2044,45 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_ROI_sig(self, save_f, ti, roi_sig, roi_label=[]):
         """
-        Save ROI signal extracted in RTP.
+        Save the ROI signals extracted in RTP.
 
         Parameters
         ----------
         save_f : Path or str
-            Saving file path/name.
-        ti : int list
+            Output file path.
+        ti : list of int
             Time (TR) indices.
-        roi_sig : array like
-            Array of ROI signals; Nr. ROIs x Nr. TRs
-        roi_label : str list, optional
-            ROI names. The default is [].
-
-        Returns
-        -------
-        None.
-
+        roi_sig : array-like
+            ROI signals; Nr. ROIs x Nr. TRs.
+        roi_label : list of str, optional
+            ROI names. A, B, C, ... are used if it has fewer names than
+            ROIs. The default is [].
         """
         if len(roi_label) < len(roi_sig):
             labs = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
             roi_label = [labs[ii] for ii in range(len(roi_sig))]
 
-        roi_sig = np.array(roi_sig).T
-        ti = ti[: roi_sig.shape[0]]
-
-        savedf = pd.DataFrame(columns=["TR"] + roi_label)
-        savedf.loc[:, "TR"] = ti
-        savedf.iloc[:, 1:] = roi_sig
+        # ROI signals can have different lengths; shorter ones are padded
+        # with NaN.
+        n_rows = max([len(sig) for sig in roi_sig], default=0)
+        savedf = pd.DataFrame(
+            {"TR": pd.Series(list(ti[:n_rows]))}
+            | {
+                lab: pd.Series(list(sig), dtype=float)
+                for lab, sig in zip(roi_label, roi_sig)
+            }
+        )
 
         savedf.to_csv(save_f, index=False)
 
     # --- Session control -----------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class WAIT_ONSET(QtCore.QObject):
-        """Send scan start message to an external application"""
+        """Wait for the scan onset and notify the external application.
+
+        Run in a QThread. The onset time is read from onsetObj
+        (RtpTTLPhysio).
+        """
 
         finished = QtCore.pyqtSignal()
 
@@ -2106,12 +2094,12 @@ class RtpApp(RTP):
             self.abort = False
 
         def run(self):
-            if self.onsetObj is not None and self.onsetObj.available:
-                onset_time = self.onsetObj.scan_onset
-
-            while not self.abort and onset_time == 0:
+            onset_time = 0
+            while not self.abort:
                 if self.onsetObj is not None and self.onsetObj.available:
                     onset_time = self.onsetObj.scan_onset
+                    if onset_time != 0:
+                        break
                 time.sleep(1 / 60)
 
             if self.abort:
@@ -2125,16 +2113,9 @@ class RtpApp(RTP):
                 self.onsetObj.start_scan()
 
             if self.extApp_sock is not None:
-                # Send message to self.extApp_sock
-                onset_str = datetime.fromtimestamp(onset_time).isoformat()
-                msg = f"SCAN_START {onset_str};"
-                try:
-                    self.extApp_sock.send(msg.encode())
-                except BrokenPipeError:
-                    pass
+                _send_scan_start(self.extApp_sock, onset_time)
 
             self.finished.emit()
-            return
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_setEnabled(self, enabled):
@@ -2161,23 +2142,21 @@ class RtpApp(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def chkRunTimerEvent(self):
-        """Check the running process"""
-
+        """Check the running status every second and end the session if
+        requested by the external application or no new image arrives."""
         if self.extApp_sock is not None:
-            # Check a message from an external application
+            # Check a message from the external application
             msg = self.recv_extApp(timeout=0.001)
             if msg is not None and "END_SESSION" in msg.decode():
                 if self.ui_quit_btn.isEnabled():
                     self._logger.info("Recv END_SESSION. End session.")
                     if not self._isRunning_end_run_proc:
                         self.end_run()
-                    return
                 else:
                     self.ui_ready_btn.setEnabled(False)
-
                 return
 
-        # Check delay in WATCH
+        # Check the time since the last image in WATCH
         if (
             self.enable_RTP
             and not np.isnan(self.max_watch_wait)
@@ -2192,7 +2171,7 @@ class RtpApp(RTP):
                     self.end_run()
                 return
 
-        # Check scan start
+        # Update the button text when the scan has started
         if (
             hasattr(self, "ui_ready_btn")
             and "waiting" in self.ui_ready_btn.text().lower()
@@ -2201,102 +2180,78 @@ class RtpApp(RTP):
                 self.ui_ready_btn.setText("Session is running")
                 self.ui_manStart_btn.setEnabled(False)
 
-        # schedule the next check
+        # Schedule the next check
         self.chk_run_timer.start(1000)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def keyPressEvent(self, event):
-        if self._wait_start:
-            if event.key() == QtCore.Qt.Key_T:
-                # Scan start
-                self.manual_start()
+        # The 'T' key starts the scan while waiting for the scan onset.
+        if self._wait_start and event.key() == QtCore.Qt.Key_T:
+            self.manual_start()
 
     # --- Communication with an external application via RTP_SERVE ----------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def boot_extApp(self, cmd="", timeout=30):
         """
-        Setup external appllication with RTP_SERVE server
+        Start an external application with the RTP_SERVE server.
+
+        A running process of the same application is killed first.
 
         Parameters
         ----------
-        cmd : str
-            Command line string to boot an application.
+        cmd : str, optional
+            Command line to start the application. The default is
+            self.extApp_cmd.
+        timeout : float, optional
+            Timeout (s) to wait for the server to start. The default is 30.
 
         Returns
         -------
-        self.extApp_addr and self.extApp_proc are set.
+        0 on success (self.extApp_addr and self.extApp_proc are set), -1 on
+        failure.
         """
-
-        # --- Initialize ---
         if len(cmd) == 0:
             cmd = self.extApp_cmd
 
+        if len(cmd.split()) == 0:
+            errmsg = "No command is set for the external application."
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
+            return -1
+
         if self.main_win is not None:
-            if len(cmd):
-                cmdstr = Path(cmd.split()[0]).name
-            else:
-                cmd = "external application"
+            cmdstr = Path(cmd.split()[0]).name
             progress_bar = DlgProgressBar(
                 title=f"Run {cmdstr} ...", parent=self.main_win
             )
             progress_bar.btnCancel.setVisible(False)
             progress_bar.set_msgTxt(f"Run {cmdstr} ...")
-            time.sleep(0.1)  # Give time for UI to update the dialog
+            time.sleep(0.1)  # Give the UI time to update the dialog
         else:
             progress_bar = None
 
         # --- Kill a running process ---
         if self.extApp_sock is not None:
             self.send_extApp("QUIT;".encode("utf-8"), no_err_pop=True)
-
             try:
                 self.extApp_sock.close()
             except Exception:
                 pass
             self.extApp_sock = None
 
-        for kill_cmd in cmd.split():
-            kill_cmd = Path(kill_cmd).name
-            if kill_cmd.endswith(".sh") or kill_cmd.endswith(".py"):
-                kill_cmd = Path(kill_cmd).stem
-                break
+        # Kill the process this object started before
+        self._kill_extApp_proc(signal.SIGKILL)
 
-        if sys.platform == "darwin":
-            pret = subprocess.run(
-                f"ps -A | grep {kill_cmd}", shell=True, stdout=subprocess.PIPE
-            )
-        else:
-            pret = subprocess.run(
-                f"ps -A ww | grep {kill_cmd}",
-                shell=True,
-                stdout=subprocess.PIPE,
-            )
-        procs = pret.stdout
-        procs = [
-            ll
-            for ll in procs.decode().rstrip().split("\n")
-            if f"grep {kill_cmd}" not in ll and len(ll) > 0
-        ]
-        for ll in procs:
-            pid = int(ll.split()[0])
-            try:
-                os.killpg(pid, 9)
-            except Exception:
-                pass
-
-        self.extApp_proc = None
-
-        # --- Boot externel application ---
+        # --- Start the external application ---
         if progress_bar is not None:
             progress_bar.add_desc(f"Run {cmd} ...")
-            time.sleep(0.1)  # Give time for UI to update the dialog
+            time.sleep(0.1)  # Give the UI time to update the dialog
 
         extApp_addr, extApp_proc = boot_RTP_SERVE_app(cmd, timeout=timeout)
 
-        # Check app boot failure.
         if extApp_addr is None:
-            errmsg = extApp_proc
-            errmsg = "Failed to run the external application.\n" + errmsg
+            # extApp_proc holds the error message
+            errmsg = "Failed to run the external application.\n" + extApp_proc
             self._logger.error(errmsg)
             self.err_popup(errmsg)
             if progress_bar is not None:
@@ -2306,9 +2261,10 @@ class RtpApp(RTP):
         if progress_bar is not None:
             progress_bar.add_desc(" done.")
 
-        # Set extApp properties
         self.set_param("extApp_addr", extApp_addr)
+        # Keep the process and its group ID to kill it later
         self.extApp_proc = extApp_proc
+        self._extApp_pgid = os.getpgid(extApp_proc.pid)
         self.connect_extApp()
 
         if progress_bar is not None:
@@ -2317,8 +2273,41 @@ class RtpApp(RTP):
         return 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _kill_extApp_proc(self, sig=signal.SIGTERM):
+        """Kill the external application process started by boot_extApp.
+
+        Its process group is killed if it leads its own group. Otherwise
+        (e.g., it shares the group of this process), only the process itself
+        is killed.
+        """
+        proc = self.extApp_proc
+        self.extApp_proc = None
+        pgid = self._extApp_pgid
+        self._extApp_pgid = None
+
+        # Popen keeps an unreaped child, so its PID cannot be reused while
+        # poll() returns None.
+        if proc is None or proc.poll() is not None:
+            return
+
+        try:
+            if pgid == proc.pid and pgid != os.getpgrp():
+                os.killpg(pgid, sig)
+            else:
+                proc.send_signal(sig)
+            proc.wait(timeout=5)
+        except Exception as e:
+            self._logger.error(f"Failed to kill the external app: {e}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def connect_extApp(self, no_err_pop=False):
-        """Connect to the external application socket."""
+        """Connect to the external application socket.
+
+        Returns
+        -------
+        True if already connected, 0 if newly connected, False if no address
+        is set, -1 if the connection failed.
+        """
         if self.extApp_addr is None:
             errmsg = "No address is set for the external application."
             self._logger.error(errmsg)
@@ -2328,29 +2317,28 @@ class RtpApp(RTP):
         if self.extApp_sock is not None:
             if self.isAlive_extApp():
                 return True
-            else:
-                try:
-                    self.extApp_sock.close()
-                except Exception:
-                    pass
+
+            try:
+                self.extApp_sock.close()
+            except Exception:
+                pass
 
         self.extApp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self.extApp_sock.connect(self.extApp_addr)
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
         except ConnectionRefusedError:
-            errmsg = f"Failed connecting {self.extApp_addr}"
+            errmsg = f"Failed to connect to {self.extApp_addr}"
             self._logger.error(errmsg)
             if not no_err_pop:
                 self.err_popup(errmsg)
-
             return -1
 
         return 0
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def isAlive_extApp(self):
-        """Check if the external application is alive."""
+        """Check if the external application responds."""
         if self.extApp_addr is None:
             return False
 
@@ -2360,7 +2348,7 @@ class RtpApp(RTP):
                 return False
 
         try:
-            # Clear receive buffer
+            # Clear the receive buffer
             self.extApp_sock.settimeout(3)
             while True:
                 try:
@@ -2373,40 +2361,32 @@ class RtpApp(RTP):
             self.extApp_sock.send("IsAlive?;".encode())
             recv = self.extApp_sock.recv(1024)
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
-            if "Yes." in recv.decode():
-                return True
-            else:
-                return False
-
-        except socket.timeout as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(errstr)
-            return False
-
-        except BrokenPipeError as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(errstr)
-            self.extApp_sock = None
-            return False
+            return "Yes." in recv.decode()
 
         except Exception as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(errstr)
+            self._logger.error(str(e) + "\n" + traceback.format_exc())
+            if isinstance(e, BrokenPipeError):
+                self.extApp_sock = None
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_extApp(self, data, pkl=False, no_err_pop=False):
         """
-        Send data to an external RTP_SERVE application.
+        Send data to the external RTP_SERVE application.
 
         Parameters
         ----------
         data : bytes
-            message to send.
+            Message to send.
         pkl : bool, optional
-            send data as a pickled binary.
-        """
+            Send data as a pickled binary.
+        no_err_pop : bool, optional
+            Do not show an error popup.
 
+        Returns
+        -------
+        True if sent.
+        """
         if self.extApp_sock is None:
             return False
 
@@ -2419,7 +2399,7 @@ class RtpApp(RTP):
 
         except BrokenPipeError:
             self.extApp_sock = None
-            errmsg = "No connection to external app."
+            errmsg = "No connection to the external application."
             self._logger.debug(errmsg)
             if not no_err_pop:
                 self.err_popup(errmsg)
@@ -2428,27 +2408,21 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def recv_extApp(self, bufsize=1024, timeout=None):
         """
-        Receive data from an external RTP_SERVE application.
+        Receive data from the external RTP_SERVE application.
 
         Parameters
         ----------
         bufsize : int, optional
-            reciving buffer size
+            Receive buffer size.
         timeout : float, optional
-            response waiting timeout (s). The default is None ==
-            no timeout.
+            Timeout (s) to wait for a response. The default is None (no
+            timeout).
 
         Returns
         -------
-        received : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        Returned message from the server.
-
+        bytes or None
+            Message from the server. None if nothing is received.
         """
-
         if self.extApp_sock is None:
             return None
 
@@ -2461,15 +2435,16 @@ class RtpApp(RTP):
 
         except BrokenPipeError:
             self.extApp_sock = None
-            self._logger.error("No connection to external app.")
+            self._logger.error("No connection to the external application.")
             received = None
 
         except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            traceback.print_exception(exc_type, exc_obj, exc_tb)
+            traceback.print_exc()
             received = None
 
-        self.extApp_sock.settimeout(self.extApp_sock_timeout)
+        # The socket is None after a broken connection
+        if self.extApp_sock is not None:
+            self.extApp_sock.settimeout(self.extApp_sock_timeout)
 
         return received
 
@@ -2479,10 +2454,27 @@ class RtpApp(RTP):
         self, attr, val=None, reset_fn=None, echo=False, unk_warning=True
     ):
         """
-        When reset_fn is None, set_param is considered to be called from
-        load_parameters function.
+        Set a parameter and update the UI.
+
+        Parameters
+        ----------
+        attr : str
+            Parameter name.
+        val : optional
+            Parameter value.
+        reset_fn : function, optional
+            Function to set the value to the UI widget. It is given when
+            set_param is called from the UI. None means a call from the
+            program (e.g., load_parameters).
+        echo : bool, optional
+            Print the set value.
+        unk_warning : bool, optional
+            Log an error for an unknown parameter.
         """
         self._logger.debug(f"set_param: {attr} = {val}")
+
+        if attr == "aseg_oirg":  # Misspelled name in old parameter files
+            attr = "aseg_orig"
 
         if attr == "enable_RTP":
             if reset_fn is None and hasattr(self, "ui_enableRTP_chb"):
@@ -2517,9 +2509,8 @@ class RtpApp(RTP):
                     if not self.isAlive_extApp():
                         self.extApp_addr = None
                         return
-                    address_str = "{}:{}".format(*val)
                     self.ui_extApp_addr_lnEd.blockSignals(True)
-                    self.ui_extApp_addr_lnEd.setText(address_str)
+                    self.ui_extApp_addr_lnEd.setText("{}:{}".format(*val))
                     self.ui_extApp_addr_lnEd.blockSignals(False)
 
             elif type(val) is str:
@@ -2540,17 +2531,16 @@ class RtpApp(RTP):
                             self.ui_extApp_addr_lnEd.blockSignals(False)
                     return
 
-                if self.extApp_sock is not None:
-                    if (
-                        self.extApp_addr is None
-                        or self.extApp_addr[0] != val[0]
-                        or self.extApp_addr[1] != val[1]
-                    ):
-                        # Address is changed. Close the current socket.
-                        self.extApp_sock.close()
-                        self.extApp_sock = None
+                if self.extApp_sock is not None and (
+                    self.extApp_addr is None
+                    or tuple(self.extApp_addr[:2]) != val
+                ):
+                    # The address is changed. Close the current socket.
+                    self.extApp_sock.close()
+                    self.extApp_sock = None
 
         elif attr == "extApp_isAlive":
+            # Check the connection and show the result with reset_fn
             if self.extApp_addr is None:
                 extApp_addr = self.ui_extApp_addr_lnEd.text()
                 self.set_param("extApp_addr", extApp_addr)
@@ -2572,7 +2562,7 @@ class RtpApp(RTP):
             if val == "":
                 fname = QtWidgets.QFileDialog.getSaveFileName(
                     None,
-                    "Real-time signal save filename",
+                    "File name to save the real-time signal",
                     str(self.work_dir),
                     "*.csv",
                 )
@@ -2594,85 +2584,37 @@ class RtpApp(RTP):
                         reset_fn(self.sig_save_file)
                     return
 
-        elif attr in (
-            "anat_orig",
-            "func_orig",
-            "func_param_ref",
-            "template",
-            "ROI_template",
-            "WM_template",
-            "Vent_template",
-            "sdc_invwarp",
-            "func_orig_sdc",
-            "alAnat",
-            "brain_anat_orig",
-            "ROI_orig",
-            "WM_orig",
-            "Vent_orig",
-            "aseg_orig",
-            "RTP_mask",
-            "GSR_mask",
-            "fieldmap_posi",
-            "fieldmap_nega",
-        ):
-            msglab = {
-                "anat_orig": "anatomy image in original space",
-                "func_orig": "function image in original space",
-                "func_param_ref": "fMRI parameter reference image",
-                "template": "template image",
-                "ROI_template": "ROI mask on template",
-                "WM_template": "white matter mask on template",
-                "Vent_template": "ventricle mask on template",
-                "sdc_invwarp": "distortion correction inverse warp",
-                "func_orig_sdc": "distortion-corrected functional image",
-                "alAnat": "aligned anatomy image in original space",
-                "brain_anat_orig":
-                    "skull-stripped brain image in original space",
-                "ROI_orig": "ROI mask in original space",
-                "WM_orig": "white matter mask in original space",
-                "Vent_orig": "ventricle mask in original space",
-                "aseg_orig": "aseg in original space",
-                "RTP_mask": "mask for real-time processing",
-                "GSR_mask": "mask for global signal regression",
-                "fieldmap_posi": "fieldmap with same phase encoding",
-                "fieldmap_nega": "fieldmap with opposite phase encoding",
-            }
+        elif attr in _FILE_PARAM_LABELS:
             if reset_fn is not None:
-                # Set start directory
-                startdir = self.work_dir
+                # Called from the UI. Select the file with a dialog.
                 if val is not None and os.path.isdir(val):
                     startdir = val
+                elif "template" in attr and Path(self.template).is_file():
+                    startdir = Path(self.template).parent
                 else:
-                    if "template" in attr and Path(self.template).is_file():
-                        startdir = Path(self.template).parent
-                    else:
-                        startdir = self.work_dir
+                    startdir = self.work_dir
 
-                dlgMdg = "RtpApp: Select {}".format(msglab[attr])
+                dlg_msg = f"RtpApp: Select {_FILE_PARAM_LABELS[attr]}"
                 filt = "*.BRIK* *.nii*;;*.*"
                 fname = self.select_file_dlg(
-                    dlgMdg, startdir, filt, parent=self.rtp_gui
+                    dlg_msg, startdir, filt, parent=self.rtp_gui
                 )
                 if fname[0] == "":
                     return -1
 
                 val = fname[0]
-                if reset_fn:
-                    reset_fn(val)
-
+                reset_fn(val)
                 val = Path(val).absolute()
             else:
+                # Unset the parameter if the file is not found.
                 if val is None:
                     val = ""
+                elif _strip_subbrick_selector(
+                    Path(val).absolute()
+                ).is_file():
+                    val = Path(val).absolute()
                 else:
-                    fpath = Path(val).absolute()
-                    fpath = fpath.parent / re.sub(
-                        "'", "", re.sub(r"\'*\[\d+\]\'*$", "", fpath.name)
-                    )
-                    if Path(fpath).is_file():
-                        val = Path(val).absolute()
-                    else:
-                        val = ""
+                    val = ""
 
                 if hasattr(self, f"ui_{attr}_lnEd"):
                     obj = getattr(self, f"ui_{attr}_lnEd")
@@ -2689,30 +2631,83 @@ class RtpApp(RTP):
             if hasattr(self, "ui_no_FastSeg_chb"):
                 self.ui_no_FastSeg_chb.setChecked(val)
 
-        elif attr in ("proc_times", "fastSeg_batch_size", "run_extApp"):
-            # Just set the attribute
-            pass
-
-        else:
-            # Ignore an unrecognized parameter
-            if not hasattr(self, attr):
-                if unk_warning:
-                    self._logger.error(f"{attr} is unrecognized parameter.")
+        elif not hasattr(self, attr):
+            # Other existing attributes (e.g., max_watch_wait) are just set
+            if unk_warning:
+                self._logger.error(f"{attr} is an unknown parameter.")
             return
 
         setattr(self, attr, val)
         if echo:
-            print(
-                "{}.".format(self.__class__.__name__) + attr,
-                "=",
-                getattr(self, attr),
-            )
+            print(f"{self.__class__.__name__}.{attr} = {getattr(self, attr)}")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _add_file_row(
+        self, layout, row, label, attr, set_dir, show_value=True,
+        highlight=False,
+    ):
+        """Add a row of [label, file path, Set, Unset] widgets for a file
+        parameter to a grid layout.
+
+        Parameters
+        ----------
+        layout : QGridLayout
+            Layout to add the widgets.
+        row : int
+            Row index in the layout.
+        label : str
+            Label text.
+        attr : str
+            File parameter name.
+        set_dir : function
+            Returns the value given to set_param when Set is clicked (the
+            start directory of the file dialog).
+        show_value : bool, optional
+            Show the current value in the path field.
+        highlight : bool, optional
+            Color the Set button.
+
+        Returns
+        -------
+        (label, path field, Set button, Unset button) widgets
+        """
+        lb = QtWidgets.QLabel(label)
+        layout.addWidget(lb, row, 0)
+
+        lnEd = QtWidgets.QLineEdit()
+        if show_value:
+            lnEd.setText(str(getattr(self, attr)))
+        lnEd.setReadOnly(True)
+        lnEd.setStyleSheet("border: 0px none;")
+        layout.addWidget(lnEd, row, 1)
+
+        set_btn = QtWidgets.QPushButton("Set")
+        set_btn.clicked.connect(
+            lambda: self.set_param(attr, set_dir(), lnEd.setText)
+        )
+        if highlight:
+            set_btn.setStyleSheet(_SET_BTN_STYLE)
+        layout.addWidget(set_btn, row, 2)
+
+        del_btn = QtWidgets.QPushButton("Unset")
+        del_btn.clicked.connect(
+            lambda: self.delete_file(attr, keepfile=True)
+        )
+        layout.addWidget(del_btn, row, 3)
+
+        return lb, lnEd, set_btn, del_btn
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ui_set_param(self):
-        """Set up the UI parameters."""
+        """Make the UI widgets.
+
+        Returns
+        -------
+        ui_rows : list of tuples
+            Widget rows to be placed by RtpGUI.
+        """
         ui_rows = []
-        self.ui_objs = []
+        self.ui_objs = []  # Widgets disabled while running
 
         # enabled
         self.ui_enableRTP_chb = QtWidgets.QCheckBox("Enable RTP")
@@ -2728,6 +2723,14 @@ class RtpApp(RTP):
         # tab
         self.ui_top_tabs = QtWidgets.QTabWidget()
         ui_rows.append((self.ui_top_tabs,))
+
+        # Values given to set_param by the Set buttons of the file rows
+        # (the start directory of the file dialog)
+        def default_dir():
+            return ""
+
+        def work_dir():
+            return self.work_dir
 
         # region: Preprocessing tab -------------------------------------------
         self.ui_preprocessingTab = QtWidgets.QWidget()
@@ -2750,87 +2753,33 @@ class RtpApp(RTP):
         self.ui_objs.append(self.ui_RefImg_grpBx)
 
         # -- Anatomy orig image --
-        ri = 0
-        var_lb = QtWidgets.QLabel("Anatomy image :")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_anat_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_anat_orig_lnEd.setReadOnly(True)
-        self.ui_anat_orig_lnEd.setStyleSheet("border: 0px none;")
-        RefImg_gLayout.addWidget(self.ui_anat_orig_lnEd, ri, 1)
+        (
+            _, self.ui_anat_orig_lnEd, self.ui_anat_orig_btn,
+            self.ui_anat_orig_del_btn
+        ) = self._add_file_row(
+            RefImg_gLayout, 0, "Anatomy image :", "anat_orig", default_dir,
+            show_value=False, highlight=True,
+        )
         if self.anat_orig and Path(self.anat_orig).exists():
-            self.ui_anat_orig_lnEd.setText(self.anat_orig)
-
-        self.ui_anat_orig_btn = QtWidgets.QPushButton("Set")
-        self.ui_anat_orig_btn.clicked.connect(
-            lambda: self.set_param(
-                "anat_orig", "", self.ui_anat_orig_lnEd.setText
-            )
-        )
-        self.ui_anat_orig_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        RefImg_gLayout.addWidget(self.ui_anat_orig_btn, ri, 2)
-
-        self.ui_anat_orig_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_anat_orig_del_btn.clicked.connect(
-            lambda: self.delete_file("anat_orig", keepfile=True)
-        )
-        RefImg_gLayout.addWidget(self.ui_anat_orig_del_btn, ri, 3)
+            self.ui_anat_orig_lnEd.setText(str(self.anat_orig))
 
         # -- function orig image --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Base function image : ")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_func_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_func_orig_lnEd.setReadOnly(True)
-        self.ui_func_orig_lnEd.setStyleSheet("border: 0px none;")
-        RefImg_gLayout.addWidget(self.ui_func_orig_lnEd, ri, 1)
-
-        self.ui_func_orig_btn = QtWidgets.QPushButton("Set")
-        self.ui_func_orig_btn.clicked.connect(
-            lambda: self.set_param(
-                "func_orig", "", self.ui_func_orig_lnEd.setText
-            )
+        (
+            _, self.ui_func_orig_lnEd, self.ui_func_orig_btn,
+            self.ui_func_orig_del_btn
+        ) = self._add_file_row(
+            RefImg_gLayout, 1, "Base function image : ", "func_orig",
+            default_dir, show_value=False, highlight=True,
         )
-        self.ui_func_orig_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        RefImg_gLayout.addWidget(self.ui_func_orig_btn, ri, 2)
 
-        self.ui_func_orig_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_func_orig_del_btn.clicked.connect(
-            lambda: self.delete_file("func_orig", keepfile=True)
+        # -- parameter reference image --
+        (
+            _, self.ui_func_param_ref_lnEd, self.ui_param_ref_btn,
+            self.ui_param_ref_del_btn
+        ) = self._add_file_row(
+            RefImg_gLayout, 2, "fMRI parameter reference : ",
+            "func_param_ref", default_dir, show_value=False, highlight=True,
         )
-        RefImg_gLayout.addWidget(self.ui_func_orig_del_btn, ri, 3)
-
-        # -- paremeter reference image --
-        ri += 1
-        var_lb = QtWidgets.QLabel("fMRI parameter reference : ")
-        RefImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_func_param_ref_lnEd = QtWidgets.QLineEdit()
-        self.ui_func_param_ref_lnEd.setReadOnly(True)
-        self.ui_func_param_ref_lnEd.setStyleSheet("border: 0px none;")
-        RefImg_gLayout.addWidget(self.ui_func_param_ref_lnEd, ri, 1)
-
-        self.ui_param_ref_btn = QtWidgets.QPushButton("Set")
-        self.ui_param_ref_btn.clicked.connect(
-            lambda: self.set_param(
-                "func_param_ref", "", self.ui_func_param_ref_lnEd.setText
-            )
-        )
-        self.ui_param_ref_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        RefImg_gLayout.addWidget(self.ui_param_ref_btn, ri, 2)
-
-        self.ui_param_ref_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_param_ref_del_btn.clicked.connect(
-            lambda: self.delete_file("func_param_ref", keepfile=True)
-        )
-        RefImg_gLayout.addWidget(self.ui_param_ref_del_btn, ri, 3)
         # endregion
 
         # region: Fieldmap PEPOLAR images group --
@@ -2839,59 +2788,23 @@ class RtpApp(RTP):
         self.ui_preprocessing_fLayout.addRow(self.ui_Fmap_grpBx)
         self.ui_objs.append(self.ui_Fmap_grpBx)
 
-        # -- Fieldmap with same phase encoding --
-        ri = 0
-        var_lb = QtWidgets.QLabel("Same PE direction :")
-        Fmap_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_fieldmap_posi_lnEd = QtWidgets.QLineEdit()
-        self.ui_fieldmap_posi_lnEd.setReadOnly(True)
-        self.ui_fieldmap_posi_lnEd.setStyleSheet("border: 0px none;")
-        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_lnEd, ri, 1)
-
-        self.ui_fieldmap_posi_btn = QtWidgets.QPushButton("Set")
-        self.ui_fieldmap_posi_btn.clicked.connect(
-            lambda: self.set_param(
-                "fieldmap_posi", "", self.ui_fieldmap_posi_lnEd.setText
-            )
+        # -- Fieldmap with the same phase encoding --
+        (
+            _, self.ui_fieldmap_posi_lnEd, self.ui_fieldmap_posi_btn,
+            self.ui_fieldmap_posi_del_btn
+        ) = self._add_file_row(
+            Fmap_gLayout, 0, "Same PE direction :", "fieldmap_posi",
+            default_dir, show_value=False, highlight=True,
         )
-        self.ui_fieldmap_posi_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_btn, ri, 2)
 
-        self.ui_fieldmap_posi_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_fieldmap_posi_del_btn.clicked.connect(
-            lambda: self.delete_file("fieldmap_posi", keepfile=True)
+        # -- Fieldmap with the opposite phase encoding --
+        (
+            _, self.ui_fieldmap_nega_lnEd, self.ui_fieldmap_nega_btn,
+            self.ui_fieldmap_nega_del_btn
+        ) = self._add_file_row(
+            Fmap_gLayout, 1, "Opposite PE direction :", "fieldmap_nega",
+            default_dir, show_value=False, highlight=True,
         )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_posi_del_btn, ri, 3)
-
-        # -- Fieldmap with opposite phase encoding --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Opposite PE direction :")
-        Fmap_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_fieldmap_nega_lnEd = QtWidgets.QLineEdit()
-        self.ui_fieldmap_nega_lnEd.setReadOnly(True)
-        self.ui_fieldmap_nega_lnEd.setStyleSheet("border: 0px none;")
-        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_lnEd, ri, 1)
-
-        self.ui_fieldmap_nega_btn = QtWidgets.QPushButton("Set")
-        self.ui_fieldmap_nega_btn.clicked.connect(
-            lambda: self.set_param(
-                "fieldmap_nega", "", self.ui_fieldmap_nega_lnEd.setText
-            )
-        )
-        self.ui_fieldmap_nega_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_btn, ri, 2)
-
-        self.ui_fieldmap_nega_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_fieldmap_nega_del_btn.clicked.connect(
-            lambda: self.delete_file("fieldmap_nega", keepfile=True)
-        )
-        Fmap_gLayout.addWidget(self.ui_fieldmap_nega_del_btn, ri, 3)
         # endregion
 
         # region: CreateMasks button --
@@ -2908,9 +2821,7 @@ class RtpApp(RTP):
                 progress_dlg=True, no_FastSeg=self.no_FastSeg
             )
         )
-        self.ui_CreateMasks_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);"
-        )
+        self.ui_CreateMasks_btn.setStyleSheet(_SET_BTN_STYLE)
         ui_CreateMasks_hLayout.addWidget(self.ui_CreateMasks_btn)
         self.ui_objs.append(self.ui_CreateMasks_btn)
 
@@ -2926,7 +2837,7 @@ class RtpApp(RTP):
         self.ui_objs.append(self.ui_no_FastSeg_chb)
         # endregion
 
-        # region: check ROIs groups ---
+        # region: Check masks group ---
         self.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
             "Display the masks in AFNI"
         )
@@ -2988,71 +2899,34 @@ class RtpApp(RTP):
         self.ui_top_tabs.addTab(self.ui_templateTab, "Template")
         template_fLayout = QtWidgets.QFormLayout(self.ui_templateTab)
 
-        # -- Template group box --
         self.ui_Template_grpBx = QtWidgets.QGroupBox("Template images")
         Template_gLayout = QtWidgets.QGridLayout(self.ui_Template_grpBx)
         template_fLayout.addWidget(self.ui_Template_grpBx)
         self.ui_objs.append(self.ui_Template_grpBx)
 
-        ri = 0
-
-        # -- Templete image --
-        var_lb = QtWidgets.QLabel("Template brain :")
-        Template_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_template_lnEd.setText(str(self.template))
-        self.ui_template_lnEd.setReadOnly(True)
-        self.ui_template_lnEd.setStyleSheet("border: 0px none;")
-        Template_gLayout.addWidget(self.ui_template_lnEd, ri, 1)
-
-        self.ui_template_btn = QtWidgets.QPushButton("Set")
-        self.ui_template_btn.clicked.connect(
-            lambda: self.set_param(
-                "template",
-                os.path.dirname(self.ui_template_lnEd.text()),
-                self.ui_template_lnEd.setText,
-            )
+        # The file dialog for a template file starts from the directory of
+        # the current file.
+        # -- Template image --
+        (
+            _, self.ui_template_lnEd, self.ui_template_btn,
+            self.ui_template_del_btn
+        ) = self._add_file_row(
+            Template_gLayout, 0, "Template brain :", "template",
+            lambda: os.path.dirname(self.ui_template_lnEd.text()),
         )
-        Template_gLayout.addWidget(self.ui_template_btn, ri, 2)
-
-        self.ui_template_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_template_del_btn.clicked.connect(
-            lambda: self.delete_file("template", keepfile=True)
-        )
-        Template_gLayout.addWidget(self.ui_template_del_btn, ri, 3)
 
         # -- ROI on template --
-        ri += 1
-        self.ui_ROI_template_lb = QtWidgets.QLabel("ROI on template :")
-        Template_gLayout.addWidget(self.ui_ROI_template_lb, ri, 0)
-
-        self.ui_ROI_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_ROI_template_lnEd.setText(str(self.ROI_template))
-        self.ui_ROI_template_lnEd.setReadOnly(True)
-        self.ui_ROI_template_lnEd.setStyleSheet("border: 0px none;")
-        Template_gLayout.addWidget(self.ui_ROI_template_lnEd, ri, 1)
-
-        self.ui_ROI_template_btn = QtWidgets.QPushButton("Set")
-        self.ui_ROI_template_btn.clicked.connect(
-            lambda: self.set_param(
-                "ROI_template",
-                os.path.dirname(self.ui_ROI_template_lnEd.text()),
-                self.ui_ROI_template_lnEd.setText,
-            )
+        (
+            self.ui_ROI_template_lb, self.ui_ROI_template_lnEd,
+            self.ui_ROI_template_btn, self.ui_ROI_template_del_btn
+        ) = self._add_file_row(
+            Template_gLayout, 1, "ROI on template :", "ROI_template",
+            lambda: os.path.dirname(self.ui_ROI_template_lnEd.text()),
         )
-        Template_gLayout.addWidget(self.ui_ROI_template_btn, ri, 2)
-
-        self.ui_ROI_template_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_ROI_template_del_btn.clicked.connect(
-            lambda: self.delete_file("ROI_template", keepfile=True)
-        )
-        Template_gLayout.addWidget(self.ui_ROI_template_del_btn, ri, 3)
 
         # ROI resampling mode
-        ri += 1
         var_ROI_resample_lb = QtWidgets.QLabel("ROI resampling :")
-        Template_gLayout.addWidget(var_ROI_resample_lb, ri, 0)
+        Template_gLayout.addWidget(var_ROI_resample_lb, 2, 0)
 
         self.ui_ROI_resample_cmbBx = QtWidgets.QComboBox()
         self.ui_ROI_resample_cmbBx.addItems(self.ROI_resample_opts)
@@ -3064,305 +2938,109 @@ class RtpApp(RTP):
                 self.ui_ROI_resample_cmbBx.setCurrentIndex,
             )
         )
-        Template_gLayout.addWidget(self.ui_ROI_resample_cmbBx, ri, 1)
+        Template_gLayout.addWidget(self.ui_ROI_resample_cmbBx, 2, 1)
 
         # -- WM on template --
-        ri += 1
-        self.ui_WM_template_lb = QtWidgets.QLabel("White matter on template :")
-        Template_gLayout.addWidget(self.ui_WM_template_lb, ri, 0)
-
-        self.ui_WM_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_WM_template_lnEd.setText(str(self.WM_template))
-        self.ui_WM_template_lnEd.setReadOnly(True)
-        self.ui_WM_template_lnEd.setStyleSheet("border: 0px none;")
-        Template_gLayout.addWidget(self.ui_WM_template_lnEd, ri, 1)
-
-        self.ui_WM_template_btn = QtWidgets.QPushButton("Set")
-        self.ui_WM_template_btn.clicked.connect(
-            lambda: self.set_param(
-                "WM_template",
-                os.path.dirname(self.ui_WM_template_lnEd.text()),
-                self.ui_WM_template_lnEd.setText,
-            )
+        (
+            self.ui_WM_template_lb, self.ui_WM_template_lnEd,
+            self.ui_WM_template_btn, self.ui_WM_template_del_btn
+        ) = self._add_file_row(
+            Template_gLayout, 3, "White matter on template :", "WM_template",
+            lambda: os.path.dirname(self.ui_WM_template_lnEd.text()),
         )
-        Template_gLayout.addWidget(self.ui_WM_template_btn, ri, 2)
-
-        self.ui_WM_template_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_WM_template_del_btn.clicked.connect(
-            lambda: self.delete_file("WM_template", keepfile=True)
-        )
-        Template_gLayout.addWidget(self.ui_WM_template_del_btn, ri, 3)
 
         # -- Ventricle on template --
-        ri += 1
-        self.ui_Vent_template_lb = QtWidgets.QLabel("Ventricle on template :")
-        Template_gLayout.addWidget(self.ui_Vent_template_lb, ri, 0)
-
-        self.ui_Vent_template_lnEd = QtWidgets.QLineEdit()
-        self.ui_Vent_template_lnEd.setText(str(self.Vent_template))
-        self.ui_Vent_template_lnEd.setReadOnly(True)
-        self.ui_Vent_template_lnEd.setStyleSheet("border: 0px none;")
-        Template_gLayout.addWidget(self.ui_Vent_template_lnEd, ri, 1)
-
-        self.ui_Vent_template_btn = QtWidgets.QPushButton("Set")
-        self.ui_Vent_template_btn.clicked.connect(
-            lambda: self.set_param(
-                "Vent_template",
-                os.path.dirname(self.ui_Vent_template_lnEd.text()),
-                self.ui_Vent_template_lnEd.setText,
-            )
+        (
+            self.ui_Vent_template_lb, self.ui_Vent_template_lnEd,
+            self.ui_Vent_template_btn, self.ui_Vent_template_del_btn
+        ) = self._add_file_row(
+            Template_gLayout, 4, "Ventricle on template :", "Vent_template",
+            lambda: os.path.dirname(self.ui_Vent_template_lnEd.text()),
         )
-        Template_gLayout.addWidget(self.ui_Vent_template_btn, ri, 2)
-
-        self.ui_Vent_template_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_Vent_template_del_btn.clicked.connect(
-            lambda: self.delete_file("Vent_template", keepfile=True)
-        )
-        Template_gLayout.addWidget(self.ui_Vent_template_del_btn, ri, 3)
 
         # --- Processed image tab ---------------------------------------------
         self.ui_procImgTab = QtWidgets.QWidget()
         self.ui_top_tabs.addTab(self.ui_procImgTab, "Processed images")
         procImg_gLayout = QtWidgets.QGridLayout(self.ui_procImgTab)
 
-        # -- distortion correction warp --
-        ri0 = 0
-        var_lb = QtWidgets.QLabel("Distortion warp :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_sdc_invwarp_lnEd = QtWidgets.QLineEdit()
-        self.ui_sdc_invwarp_lnEd.setText(str(self.sdc_invwarp))
-        self.ui_sdc_invwarp_lnEd.setReadOnly(True)
-        self.ui_sdc_invwarp_lnEd.setStyleSheet("border: 0px none;")
-        procImg_gLayout.addWidget(self.ui_sdc_invwarp_lnEd, ri0, 1)
-
-        self.ui_sdc_invwarp_btn = QtWidgets.QPushButton("Set")
-        self.ui_sdc_invwarp_btn.clicked.connect(
-            lambda: self.set_param(
-                "sdc_invwarp", self.work_dir,
-                self.ui_sdc_invwarp_lnEd.setText
-            )
-        )
-        procImg_gLayout.addWidget(self.ui_sdc_invwarp_btn, ri0, 2)
-
-        self.ui_sdc_invwarp_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_sdc_invwarp_del_btn.clicked.connect(
-            lambda: self.delete_file("sdc_invwarp", keepfile=True)
-        )
-        procImg_gLayout.addWidget(self.ui_sdc_invwarp_del_btn, ri0, 3)
-
-        # -- distortion-corrected functional image --
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("Corrected function :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_func_orig_sdc_lnEd = QtWidgets.QLineEdit()
-        self.ui_func_orig_sdc_lnEd.setText(str(self.func_orig_sdc))
-        self.ui_func_orig_sdc_lnEd.setReadOnly(True)
-        self.ui_func_orig_sdc_lnEd.setStyleSheet("border: 0px none;")
-        procImg_gLayout.addWidget(self.ui_func_orig_sdc_lnEd, ri0, 1)
-
-        self.ui_func_orig_sdc_btn = QtWidgets.QPushButton("Set")
-        self.ui_func_orig_sdc_btn.clicked.connect(
-            lambda: self.set_param(
-                "func_orig_sdc", self.work_dir,
-                self.ui_func_orig_sdc_lnEd.setText
-            )
-        )
-        procImg_gLayout.addWidget(self.ui_func_orig_sdc_btn, ri0, 2)
-
-        self.ui_func_orig_sdc_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_func_orig_sdc_del_btn.clicked.connect(
-            lambda: self.delete_file("func_orig_sdc", keepfile=True)
-        )
-        procImg_gLayout.addWidget(self.ui_func_orig_sdc_del_btn, ri0, 3)
-
-        # -- aligned anatomy --
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("Aligned anatomy :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_alAnat_lnEd = QtWidgets.QLineEdit()
-        self.ui_alAnat_lnEd.setText(str(self.alAnat))
-        self.ui_alAnat_lnEd.setReadOnly(True)
-        self.ui_alAnat_lnEd.setStyleSheet("border: 0px none;")
-        procImg_gLayout.addWidget(self.ui_alAnat_lnEd, ri0, 1)
-
-        self.ui_alAnat_btn = QtWidgets.QPushButton("Set")
-        self.ui_alAnat_btn.clicked.connect(
-            lambda: self.set_param(
-                "alAnat", self.work_dir, self.ui_alAnat_lnEd.setText
-            )
-        )
-        procImg_gLayout.addWidget(self.ui_alAnat_btn, ri0, 2)
-
-        self.ui_alAnat_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_alAnat_del_btn.clicked.connect(
-            lambda: self.delete_file("alAnat", keepfile=True)
-        )
-        procImg_gLayout.addWidget(self.ui_alAnat_del_btn, ri0, 3)
-
-        self.ui_objs.extend(
-            [
-                var_lb,
-                self.ui_alAnat_lnEd,
-                self.ui_alAnat_btn,
-                self.ui_alAnat_del_btn,
-            ]
+        # -- Distortion correction warp --
+        (
+            _, self.ui_sdc_invwarp_lnEd, self.ui_sdc_invwarp_btn,
+            self.ui_sdc_invwarp_del_btn
+        ) = self._add_file_row(
+            procImg_gLayout, 0, "Distortion warp :", "sdc_invwarp", work_dir
         )
 
-        # -- warped images --
-        ri0 += 1
+        # -- Distortion-corrected functional image --
+        (
+            _, self.ui_func_orig_sdc_lnEd, self.ui_func_orig_sdc_btn,
+            self.ui_func_orig_sdc_del_btn
+        ) = self._add_file_row(
+            procImg_gLayout, 1, "Corrected function :", "func_orig_sdc",
+            work_dir,
+        )
+
+        # -- Aligned anatomy --
+        alAnat_row = self._add_file_row(
+            procImg_gLayout, 2, "Aligned anatomy :", "alAnat", work_dir
+        )
+        (
+            _, self.ui_alAnat_lnEd, self.ui_alAnat_btn, self.ui_alAnat_del_btn
+        ) = alAnat_row
+        self.ui_objs.extend(alAnat_row)
+
+        # -- Warped images --
         self.ui_wrpImg_grpBx = QtWidgets.QGroupBox("Warped images")
         wrpImg_gLayout = QtWidgets.QGridLayout(self.ui_wrpImg_grpBx)
-        procImg_gLayout.addWidget(self.ui_wrpImg_grpBx, ri0, 0, 1, 4)
+        procImg_gLayout.addWidget(self.ui_wrpImg_grpBx, 3, 0, 1, 4)
         self.ui_objs.append(self.ui_wrpImg_grpBx)
 
         # -- WM in the original space --
-        ri = 0
-        var_lb = QtWidgets.QLabel("WM mask in original :")
-        wrpImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_WM_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_WM_orig_lnEd.setText(str(self.WM_orig))
-        self.ui_WM_orig_lnEd.setReadOnly(True)
-        self.ui_WM_orig_lnEd.setStyleSheet("border: 0px none;")
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_lnEd, ri, 1)
-
-        self.ui_WM_orig_btn = QtWidgets.QPushButton("Set")
-        self.ui_WM_orig_btn.clicked.connect(
-            lambda: self.set_param(
-                "WM_orig", self.work_dir, self.ui_WM_orig_lnEd.setText
-            )
+        (
+            _, self.ui_WM_orig_lnEd, self.ui_WM_orig_btn,
+            self.ui_WM_orig_del_btn
+        ) = self._add_file_row(
+            wrpImg_gLayout, 0, "WM mask in original :", "WM_orig", work_dir
         )
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_btn, ri, 2)
-
-        self.ui_WM_orig_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_WM_orig_del_btn.clicked.connect(
-            lambda: self.delete_file("WM_orig", keepfile=True)
-        )
-        wrpImg_gLayout.addWidget(self.ui_WM_orig_del_btn, ri, 3)
 
         # -- Vent in the original space --
-        ri += 1
-        var_lb = QtWidgets.QLabel("Vent mask in original :")
-        wrpImg_gLayout.addWidget(var_lb, ri, 0)
-
-        self.ui_Vent_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_Vent_orig_lnEd.setText(str(self.Vent_orig))
-        self.ui_Vent_orig_lnEd.setReadOnly(True)
-        self.ui_Vent_orig_lnEd.setStyleSheet("border: 0px none;")
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_lnEd, ri, 1)
-
-        self.ui_Vent_orig_btn = QtWidgets.QPushButton("Set")
-        self.ui_Vent_orig_btn.clicked.connect(
-            lambda: self.set_param(
-                "Vent_orig", self.work_dir, self.ui_Vent_orig_lnEd.setText
-            )
+        (
+            _, self.ui_Vent_orig_lnEd, self.ui_Vent_orig_btn,
+            self.ui_Vent_orig_del_btn
+        ) = self._add_file_row(
+            wrpImg_gLayout, 1, "Vent mask in original :", "Vent_orig",
+            work_dir,
         )
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_btn, ri, 2)
-
-        self.ui_Vent_orig_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_Vent_orig_del_btn.clicked.connect(
-            lambda: self.delete_file("Vent_orig", keepfile=True)
-        )
-        wrpImg_gLayout.addWidget(self.ui_Vent_orig_del_btn, ri, 3)
 
         # -- ROI in the original space --
-        ri += 1
-        self.ui_ROI_orig_lb = QtWidgets.QLabel("ROI mask in original :")
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lb, ri, 0)
-
-        self.ui_ROI_orig_lnEd = QtWidgets.QLineEdit()
-        self.ui_ROI_orig_lnEd.setText(str(self.ROI_orig))
-        self.ui_ROI_orig_lnEd.setReadOnly(True)
-        self.ui_ROI_orig_lnEd.setStyleSheet("border: 0px none;")
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_lnEd, ri, 1)
-
-        self.ui_ROI_orig_btn = QtWidgets.QPushButton("Set")
-        self.ui_ROI_orig_btn.clicked.connect(
-            lambda: self.set_param(
-                "ROI_orig", self.work_dir, self.ui_ROI_orig_lnEd.setText
-            )
-        )
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_btn, ri, 2)
-
-        self.ui_ROI_orig_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_ROI_orig_del_btn.clicked.connect(
-            lambda: self.delete_file("ROI_orig", keepfile=True)
-        )
-        wrpImg_gLayout.addWidget(self.ui_ROI_orig_del_btn, ri, 3)
-
-        # --- RTP_mask ---
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("RTP mask :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_RTP_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_RTP_mask_lnEd.setText(str(self.RTP_mask))
-        self.ui_RTP_mask_lnEd.setReadOnly(True)
-        self.ui_RTP_mask_lnEd.setStyleSheet("border: 0px none;")
-        procImg_gLayout.addWidget(self.ui_RTP_mask_lnEd, ri0, 1)
-
-        self.ui_RTP_mask_btn = QtWidgets.QPushButton("Set")
-        self.ui_RTP_mask_btn.clicked.connect(
-            lambda: self.set_param(
-                "RTP_mask", self.work_dir, self.ui_RTP_mask_lnEd.setText
-            )
-        )
-        procImg_gLayout.addWidget(self.ui_RTP_mask_btn, ri0, 2)
-
-        self.ui_RTP_mask_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_RTP_mask_del_btn.clicked.connect(
-            lambda: self.delete_file("RTP_mask", keepfile=True)
-        )
-        procImg_gLayout.addWidget(self.ui_RTP_mask_del_btn, ri0, 3)
-
-        self.ui_objs.extend(
-            [
-                var_lb,
-                self.ui_RTP_mask_lnEd,
-                self.ui_RTP_mask_btn,
-                self.ui_RTP_mask_del_btn,
-            ]
+        (
+            self.ui_ROI_orig_lb, self.ui_ROI_orig_lnEd, self.ui_ROI_orig_btn,
+            self.ui_ROI_orig_del_btn
+        ) = self._add_file_row(
+            wrpImg_gLayout, 2, "ROI mask in original :", "ROI_orig", work_dir
         )
 
-        # --- GSR mask ---
-        ri0 += 1
-        var_lb = QtWidgets.QLabel("GSR mask :")
-        procImg_gLayout.addWidget(var_lb, ri0, 0)
-
-        self.ui_GSR_mask_lnEd = QtWidgets.QLineEdit()
-        self.ui_GSR_mask_lnEd.setText(str(self.GSR_mask))
-        self.ui_GSR_mask_lnEd.setReadOnly(True)
-        self.ui_GSR_mask_lnEd.setStyleSheet("border: 0px none;")
-        procImg_gLayout.addWidget(self.ui_GSR_mask_lnEd, ri0, 1)
-
-        self.ui_GSR_mask_btn = QtWidgets.QPushButton("Set")
-        self.ui_GSR_mask_btn.clicked.connect(
-            lambda: self.set_param(
-                "GSR_mask", self.work_dir, self.ui_GSR_mask_lnEd.setText
-            )
+        # -- RTP mask --
+        RTP_mask_row = self._add_file_row(
+            procImg_gLayout, 4, "RTP mask :", "RTP_mask", work_dir
         )
-        procImg_gLayout.addWidget(self.ui_GSR_mask_btn, ri0, 2)
+        (
+            _, self.ui_RTP_mask_lnEd, self.ui_RTP_mask_btn,
+            self.ui_RTP_mask_del_btn
+        ) = RTP_mask_row
+        self.ui_objs.extend(RTP_mask_row)
 
-        self.ui_GSR_mask_del_btn = QtWidgets.QPushButton("Unset")
-        self.ui_GSR_mask_del_btn.clicked.connect(
-            lambda: self.delete_file("GSR_mask", keepfile=True)
+        # -- GSR mask --
+        GSR_mask_row = self._add_file_row(
+            procImg_gLayout, 5, "GSR mask :", "GSR_mask", work_dir
         )
-        procImg_gLayout.addWidget(self.ui_GSR_mask_del_btn, ri0, 3)
+        (
+            _, self.ui_GSR_mask_lnEd, self.ui_GSR_mask_btn,
+            self.ui_GSR_mask_del_btn
+        ) = GSR_mask_row
+        self.ui_objs.extend(GSR_mask_row)
 
-        self.ui_objs.extend(
-            [
-                var_lb,
-                self.ui_GSR_mask_lnEd,
-                self.ui_GSR_mask_btn,
-                self.ui_GSR_mask_del_btn,
-            ]
-        )
-
-        # --- Delete all processed images ---
-        ri0 += 1
+        # -- Delete all processed images --
         self.ui_delAllProcImgs_btn = QtWidgets.QPushButton("Delete All")
         self.ui_delAllProcImgs_btn.setStyleSheet(
             "background-color: rgb(255,0,0);"
@@ -3370,11 +3048,11 @@ class RtpApp(RTP):
         self.ui_delAllProcImgs_btn.clicked.connect(
             lambda: self.delete_file("AllProc")
         )
-        procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, ri0, 3)
+        procImg_gLayout.addWidget(self.ui_delAllProcImgs_btn, 6, 3)
         self.ui_objs.append(self.ui_delAllProcImgs_btn)
 
         if self.run_extApp:
-            # --- External App tab --------------------------------------------
+            # --- External App tab ------------------------------------------
             self.ui_extAppTab = QtWidgets.QWidget()
             self.ui_top_tabs.addTab(self.ui_extAppTab, "Ext App")
             self.ui_extApp_fLayout = QtWidgets.QFormLayout(self.ui_extAppTab)
@@ -3399,7 +3077,7 @@ class RtpApp(RTP):
             self.ui_extApp_fLayout.addRow(self.ui_extApp_run_btn, None)
             self.ui_objs.append(self.ui_extApp_run_btn)
 
-            # address
+            # Address
             var_lb = QtWidgets.QLabel("App server address\n(host:port):")
             self.ui_extApp_addr_lnEd = QtWidgets.QLineEdit()
             self.ui_extApp_addr_lnEd.editingFinished.connect(
@@ -3431,12 +3109,12 @@ class RtpApp(RTP):
             self.ui_objs.append(self.ui_extApp_isAlive_btn)
 
         else:
-            # --- Output --------------------------------------------
+            # --- Output tab ------------------------------------------------
             self.ui_extAppTab = QtWidgets.QWidget()
             self.ui_top_tabs.addTab(self.ui_extAppTab, "Output")
             self.ui_extApp_gLayout = QtWidgets.QGridLayout(self.ui_extAppTab)
 
-            # real-time signal save file
+            # Real-time signal output file
             var_lb = QtWidgets.QLabel("Real-time output file :")
             self.ui_extApp_gLayout.addWidget(var_lb, 0, 0)
 
@@ -3457,12 +3135,10 @@ class RtpApp(RTP):
                     "sig_save_file", "", self.ui_sigSaveFile_lnEd.setText
                 )
             )
-            self.ui_sigSaveFile_btn.setStyleSheet(
-                "background-color: rgb(151,217,235);"
-            )
+            self.ui_sigSaveFile_btn.setStyleSheet(_SET_BTN_STYLE)
             self.ui_extApp_gLayout.addWidget(self.ui_sigSaveFile_btn, 0, 2)
 
-        # --- Setup experiment button -----------------------------------------
+        # --- RTP setup button ------------------------------------------------
         self.ui_setRTP_btn = QtWidgets.QPushButton("RTP setup")
         self.ui_setRTP_btn.setStyleSheet(
             "background-color: rgb(151,217,235);height: 20px;"
@@ -3478,18 +3154,15 @@ class RtpApp(RTP):
         self.ui_showROISig_cbx.stateChanged.connect(
             lambda x: self.show_ROIsig_chk(x)
         )
-        # This checkbox will be placed by RtpGUI.layout_ui
+        # RtpGUI.layout_ui places this checkbox.
 
         # --- Ready and Quit buttons ------------------------------------------
         readyQuitWdt = QtWidgets.QWidget()
         self.main_win.hBoxExpCtrls.addWidget(readyQuitWdt)
-        ui_readyQiut_gLayout = QtWidgets.QGridLayout(readyQuitWdt)
+        readyQuit_gLayout = QtWidgets.QGridLayout(readyQuitWdt)
 
         # -- Ready button --
         self.ui_ready_btn = QtWidgets.QPushButton("Ready")
-        self.ui_ready_btn.setStyleSheet(
-            "font: bold; background-color: rgb(237,45,135);"
-        )
         self.ui_ready_btn.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
@@ -3498,26 +3171,27 @@ class RtpApp(RTP):
         self.ui_ready_btn.setStyleSheet(
             "background-color: rgb(255,201,32);height: 20px;"
         )
-        ui_readyQiut_gLayout.addWidget(self.ui_ready_btn, 0, 0, 1, 4)
+        readyQuit_gLayout.addWidget(self.ui_ready_btn, 0, 0, 1, 4)
 
         # -- Manual start button --
         self.ui_manStart_btn = QtWidgets.QPushButton("Manual start")
         self.ui_manStart_btn.setStyleSheet("background-color: rgb(94,63,153);")
         self.ui_manStart_btn.clicked.connect(self.manual_start)
         self.ui_manStart_btn.setEnabled(False)
-        ui_readyQiut_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
+        readyQuit_gLayout.addWidget(self.ui_manStart_btn, 0, 4, 1, 1)
 
         # -- Quit button --
         self.ui_quit_btn = QtWidgets.QPushButton("Cancel")
         self.ui_quit_btn.setStyleSheet("background-color: rgb(255,0,0);")
         self.ui_quit_btn.clicked.connect(partial(self.end_run, True))
         self.ui_quit_btn.setEnabled(False)
-        ui_readyQiut_gLayout.addWidget(self.ui_quit_btn, 0, 5, 1, 1)
+        readyQuit_gLayout.addWidget(self.ui_quit_btn, 0, 5, 1, 1)
 
         return ui_rows
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
+        """Return the parameters to save, excluding run-time states."""
         opts = super().get_params()
 
         excld_opts = (
@@ -3541,20 +3215,18 @@ class RtpApp(RTP):
         )
 
         for k in excld_opts:
-            if k in opts or k[0] == "_":
-                del opts[k]
+            opts.pop(k, None)
 
         return opts
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
-        # Kill self.extApp_proc
+        # Quit the external application
         if (
             hasattr(self, "extApp_proc")
             and self.extApp_proc is not None
             and self.extApp_proc.poll() is None
         ):
-            # Kill running App
             if self.extApp_sock is not None:
                 if self.send_extApp("QUIT;".encode(), no_err_pop=True):
                     while self.extApp_proc.poll() is None:
@@ -3563,7 +3235,7 @@ class RtpApp(RTP):
                     self.extApp_sock.close()
                     self.extApp_sock = None
             else:
-                os.killpg(os.getpgid(self.extApp_proc.pid), signal.SIGTERM)
+                self._kill_extApp_proc(signal.SIGTERM)
 
 
 # %% __main__ =================================================================
@@ -3602,12 +3274,12 @@ if __name__ == "__main__":
     app_obj = {"RTP App": rtp_app}
     rtp_ui = RtpGUI(rtp_app.rtp_objs, app_obj, log_file=log_file)
 
-    # Keep RTP objects for loading and saving the parameters
-    all_rtp_objs = rtp_app.rtp_objs
-    all_rtp_objs.update(app_obj)
+    # Keep RTP objects for loading and saving the parameters. A new dict is
+    # made not to add the application to rtp_app.rtp_objs.
+    all_rtp_objs = {**rtp_app.rtp_objs, **app_obj}
 
-    if Path("ROI_NF_params.pkl").is_file():
-        load_parameters(all_rtp_objs, fname="ROI_NF_params.pkl")
+    if Path("RTPSpy_params.pkl").is_file():
+        load_parameters(all_rtp_objs, fname="RTPSpy_params.pkl")
 
     # Run the application
     sys.excepthook = excepthook
@@ -3624,5 +3296,5 @@ if __name__ == "__main__":
         exit_code = -1
 
     # --- End ---
-    save_parameters(all_rtp_objs, fname="ROI_NF_params.pkl")
+    save_parameters(all_rtp_objs, fname="RTPSpy_params.pkl")
     sys.exit(exit_code)
