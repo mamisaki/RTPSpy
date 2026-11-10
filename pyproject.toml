@@ -1,7 +1,85 @@
 [build-system]
-requires = [
-    "setuptools",
-    "wheel"
-]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "RTPSpy"
+version = "2.0.0.dev0"
+description = "fMRI Real-Time Processing System in python"
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "Masaya Misaki", email = "mamisaki@gmail.com" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+# Imported by rtpspy (excluding rtpspy/FastSurfer). The tested versions are
+# those of RTPSpy.yml (Python 3.12). AFNI and dcm2niix are external tools and
+# are not installed by pip.
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "nibabel>=5.2",
+    "pandas>=2.1",
+    "torch>=2.2",
+    "pydicom>=3.0",
+    "watchdog>=4.0",
+    "psutil>=5.9",
+    "pyserial>=3.5",
+    "PyQt5>=5.15",
+    "matplotlib>=3.8",
+    "cycler>=0.11",
+    "antspyx>=0.5",
+]
+
+[project.optional-dependencies]
+# Segmentation with FastSurfer (rtpspy.fast_seg). FastSurfer itself is not
+# a pip package: clone it into rtpspy/FastSurfer (see README) and install
+# its pinned requirements with
+#   pip install -r rtpspy/FastSurfer/requirements.txt
+# The list below is the core of FastSurfer v2.6.0 requirements.
+fastseg = [
+    "h5py>=3.7",
+    "lapy>=1.5.0",
+    "scikit-image>=0.19.3",
+    "scikit-learn>=1.2.2",
+    "simpleitk>=2.2.1",
+    "torchio>=0.18.83",
+    "torchvision>=0.17",
+    "pyyaml>=6.0",
+    "tqdm>=4.65",
+    "yacs>=0.1.8",
+]
+# Optional: monitor geometry for the window layout (falls back to tkinter)
+gui = ["screeninfo>=0.8"]
+test = ["pytest>=7.4"]
+
+[project.urls]
+Homepage = "https://github.com/mamisaki/RTPSpy"
+Repository = "https://github.com/mamisaki/RTPSpy"
+
+[tool.setuptools]
+# Only the rtpspy package. rtpspy/FastSurfer (a separate clone) and
+# rtpspy/lib_RetroTS are not packaged.
+packages = ["rtpspy"]
+include-package-data = false
+# Installed as a command (rtp_imgproc looks for ants_run.py on PATH)
+script-files = ["rtpspy/ants_run.py"]
+
+[tool.setuptools.package-data]
+rtpspy = ["librtp.so", "librtp.dylib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import rtpspy from the source tree when it is not installed
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = [
+    "gpu: needs a CUDA device",
+    "afni: needs the AFNI command-line programs",
+    "slow: takes more than ~20 s",
+]

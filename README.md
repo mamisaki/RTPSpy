@@ -98,6 +98,16 @@ conda activate RTPSpy
 > On macOS, or if you encounter an error related to librtp.so, compile the librtp library from the source.  
 > Refer to [Compile librtp library](./Compilelibrtp.md) to do it.
 
+### Running the tests
+The unit tests in `tests/` use pytest and only the test data in `tests/` or synthetic data.
+```
+cd ~/RTPSpy
+pip install pytest                                               # in the RTPSpy environment
+QT_QPA_PLATFORM=offscreen python -m pytest tests                 # all tests
+python -m pytest tests -m "not gpu and not afni and not slow"    # quick CPU-only tests (as in CI)
+```
+Tests are marked `gpu` (needs CUDA), `afni` (compares with AFNI programs on PATH), and `slow` (long runs). The `gpu` and `afni` tests are skipped when CUDA or AFNI is not available.
+
 ## Usage
 Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full) for usage information about the library.
 RTPSpy is not a complete application by itself but is intended to be used as part of a user's custom rtfMRI application.

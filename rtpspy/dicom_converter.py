@@ -250,9 +250,8 @@ class DicomConverter():
             # Rows without SeriesNumber (e.g., non-DICOM files in an old
             # list) cannot be converted to int.
             dcm_info = dcm_info[dcm_info.SeriesNumber.notna()]
-            dcm_info.sort_values(
-                ['SeriesNumber', 'IsImage', 'AcquisitionDateTime'],
-                inplace=True)
+            dcm_info = dcm_info.sort_values(
+                ['SeriesNumber', 'IsImage', 'AcquisitionDateTime'])
             dcm_info['SeriesNumber'] = dcm_info.SeriesNumber.astype(int)
             dcm_info['IsImage'] = dcm_info.IsImage.astype(bool)
 
