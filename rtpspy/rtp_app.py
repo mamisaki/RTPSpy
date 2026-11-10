@@ -169,6 +169,9 @@ def _find_processes(prog, args=()):
 class RtpApp(RTP):
     """RTP application class"""
 
+    # Log label (see RTP.do_proc). The image filename is not changed.
+    _proc_label = "ROI signal extraction"
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
         self,
@@ -359,7 +362,7 @@ class RtpApp(RTP):
                     self.rtp_objs[proc].set_param(attr, val)
 
     # --- Override these functions for a custom application -------------------
-    # ready_proc, do_proc, end_reset, end_proc
+    # ready_proc, _process (or do_proc), end_reset, end_proc
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_proc(self):
         """Prepare the process."""
@@ -387,85 +390,76 @@ class RtpApp(RTP):
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0, **kwargs):
         """Process the RTP image (e.g., extracting the ROI signal).
 
+        The processing step is self._process(); the common bookkeeping
+        (volume count, ignore_init, processing time log, error handling) is
+        done by RTP.do_proc. As the last process of the chain, RtpApp does
+        not pass the image on nor keep it (self._output does nothing).
+
         kwargs can include qc, the online QC of the volume from RtpRegress
         ({'FD': mm, 'DVARS': %, 'tSNR': median tSNR, 'censored': bool};
         see RtpRegress). It is kept in self.qc_last. The message sent to the
         external application is not changed; an application class
-        overriding this method can use self.qc_last (or accept the qc
-        keyword) to use the QC, e.g., to skip the feedback of a censored
-        volume. If the overriding do_proc has no qc parameter or **kwargs,
-        REGRESS does not pass qc; the QC is then available in
+        overriding _process or do_proc can use self.qc_last (or accept the
+        qc keyword in do_proc) to use the QC, e.g., to skip the feedback of
+        a censored volume. If an overriding do_proc has no qc parameter or
+        **kwargs, REGRESS does not pass qc; the QC is then available in
         self.rtp_objs["REGRESS"].qc_last.
         """
         if "qc" in kwargs:
             self.qc_last = kwargs["qc"]
 
-        try:
-            # Increment the number of received volumes
-            self._vol_num += 1  # 1-based number of volumes received
-            if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-based index
+        super().do_proc(fmri_img, vol_idx=vol_idx,
+                        pre_proc_time=pre_proc_time, **kwargs)
 
-            if vol_idx < self.ignore_init:
-                return
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
+        """Extract the mean signal in the ROI and send it to the external
+        application or save it to a file (see RTP.do_proc)."""
+        dataV = fmri_img.get_fdata()
 
-            if self._proc_start_idx < 0:
-                self._proc_start_idx = vol_idx
+        # --- Initialize ------------------------------------------------------
+        if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
+            self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
 
-            dataV = fmri_img.get_fdata()
+        # --- Run the process -------------------------------------------------
+        # Mean signal in the ROI, excluding voxels with zero signal
+        roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
+        mean_sig = np.nanmean(dataV[roimask])
 
-            # --- Initialize --------------------------------------------------
-            if Path(self.ROI_orig).is_file() and self.ROI_mask is None:
-                self.ROI_mask = np.asarray(nib.load(self.ROI_orig).dataobj)
+        val_str = (
+            f"{time.time() - self.scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
+        )
+        if self.extApp_sock is not None:
+            # Send data to the external application via socket
+            try:
+                msg = f"NF {val_str};"
+                self.send_extApp(msg.encode())
+                self._logger.info(f"Sent '{msg}' to an external app")
+            except Exception as e:
+                self._logger.error(str(e) + "\n" + traceback.format_exc())
 
-            # --- Run the process ---------------------------------------------
-            # Mean signal in the ROI, excluding voxels with zero signal
-            roimask = (self.ROI_mask > 0) & (np.abs(dataV) > 0.0)
-            mean_sig = np.nanmean(dataV[roimask])
+        else:
+            # Save data to a file in real-time
+            with open(self.sig_save_file, "a") as save_fd:
+                print(val_str, file=save_fd)
+            self._logger.info(f"Saved ROI data '{val_str}'")
 
-            val_str = (
-                f"{time.time() - self.scan_onset:.4f},{vol_idx},{mean_sig:.6f}"
-            )
-            if self.extApp_sock is not None:
-                # Send data to the external application via socket
-                try:
-                    msg = f"NF {val_str};"
-                    self.send_extApp(msg.encode())
-                    self._logger.info(f"Sent '{msg}' to an external app")
-                except Exception as e:
-                    self._logger.error(str(e) + "\n" + traceback.format_exc())
+        # Update signal plot
+        self._plt_xi.append(vol_idx + 1)
+        self._roi_sig[0].append(mean_sig)
 
-            else:
-                # Save data to a file in real-time
-                with open(self.sig_save_file, "a") as save_fd:
-                    print(val_str, file=save_fd)
-                self._logger.info(f"Saved ROI data '{val_str}'")
+        return fmri_img
 
-            # --- Post-process ------------------------------------------------
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
-            if pre_proc_time is not None:
-                proc_delay = self._proc_time[-1] - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _output(self, fmri_img, vol_idx, tstamp, **kwargs):
+        """RtpApp is the end of the chain: nothing is passed or kept."""
+        pass
 
-            # Log message
-            if fmri_img.get_filename():
-                fname = Path(fmri_img.get_filename()).name
-            else:
-                fname = "unknown.nii.gz"
-            msg = f"#{vol_idx + 1};ROI signal extraction;{fname}"
-            msg += f";tstamp={tstamp}"
-            if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s"
-            self._logger.info(msg)
-
-            # Update signal plot
-            self._plt_xi.append(vol_idx + 1)
-            self._roi_sig[0].append(mean_sig)
-
-        except Exception as e:
-            self._logger.error(str(e) + "\n" + traceback.format_exc())
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _proc_error(self):
+        """Log the exception raised in do_proc with the traceback."""
+        e = sys.exc_info()[1]
+        self._logger.error(str(e) + "\n" + traceback.format_exc())
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

@@ -9,10 +9,8 @@ RTP online slice-timing correction
 
 # %% import ===================================================================
 from pathlib import Path
-import sys
 import time
 import copy
-import traceback
 import json
 
 import numpy as np
@@ -28,6 +26,10 @@ except Exception:
 # %% class RtpTshift =========================================================
 class RtpTshift(RTP):
     """ Online slice-timing correction """
+
+    # Log label and output filename prefix (see RTP.do_proc)
+    _proc_label = 'Slice-timing correction'
+    _out_prefix = 'ts.'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, method='cubic', ref_time=0, TR=2.0,
@@ -88,131 +90,75 @@ class RtpTshift(RTP):
         return self._proc_ready
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
-        try:
-            # Increment the number of received volumes
-            self._vol_num += 1  # 1-based number of received volumes
-            if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-based index
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
+        """
+        Slice-timing correction of the volume (see RTP.do_proc).
 
-            if vol_idx < self.ignore_init:
-                # Skip the initial volumes
-                return
-
-            if self._proc_start_idx < 0:
-                self._proc_start_idx = vol_idx
-
-            # --- Initialize --------------------------------------------------
-            if fmri_img.shape[self.slice_dim] != len(self.slice_timing):
-                errmsg = 'Slice timing array does not match the data.'
-                self._logger.error(errmsg)
-                return
-
-            # Set the interpolation weights (again if the volume shape
-            # changed).
-            if not self.prep_weight or \
-                    self._weight_shape != tuple(fmri_img.shape[:3]):
-                self._calc_weights(fmri_img.shape[:3])
-                if not self.prep_weight:
-                    return
-
-            dataV = np.asarray(fmri_img.dataobj, dtype=np.float32)
-            if dataV.ndim > 3:
-                dataV = np.squeeze(dataV)
-
-            # The first volume cannot be corrected alone. Keep it and correct
-            # it retrospectively when the next volume arrives.
-            if len(self.pre_data) == 0:
-                self.pre_fmri_img = copy.deepcopy(fmri_img)
-                self.pre_data.append(dataV)
-                return
-
-            # --- Run the process ---------------------------------------------
-            if hasattr(self, 'pre_fmri_img'):
-                # Correct the kept previous volume and pass it on.
-                self._correct_previous_volume(dataV, vol_idx)
-
-                if self.method == 'cubic' and len(self.pre_data) < 2:
-                    # Cubic interpolation needs two previous volumes. Keep
-                    # the current volume too and correct it retrospectively
-                    # when the next volume arrives.
-                    self.pre_data.append(dataV)
-                    self.pre_fmri_img = copy.deepcopy(fmri_img)
-                    return
-
-                del self.pre_fmri_img
-
-            # Slice-timing correction of the current volume
-            if self.method == 'linear':
-                shift_dataV = self.wm1 * self.pre_data[-1] + self.w0 * dataV
-            elif self.method == 'cubic':
-                # The next volume is not available; the current volume is
-                # used in its place (w0p1 = w0 + wp1).
-                shift_dataV = \
-                    self.wm2 * self.pre_data[-2] + \
-                    self.wm1 * self.pre_data[-1] + \
-                    self.w0p1 * dataV
-
-            # Set the corrected data in fmri_img
-            fmri_img.uncache()
-            fmri_img._dataobj = shift_dataV
-            fmri_img.set_data_dtype(shift_dataV.dtype)
-
-            # Update the previous volume list
-            self.pre_data.append(dataV)
-            self.pre_data.pop(0)
-
-            # --- Post process ------------------------------------------------
-            # Record process time
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
-            if pre_proc_time is not None:
-                proc_delay = self._proc_time[-1] - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
-
-            # Log message
-            if fmri_img.get_filename():
-                fname = Path(fmri_img.get_filename()).name
-            else:
-                fname = "unknown.nii.gz"
-            msg = f"#{vol_idx+1};Slice-timing correction;{fname}"
-            msg += f";tstamp={tstamp}"
-            if pre_proc_time is not None:
-                msg += f";took {proc_delay:.4f}s"
-            self._logger.info(msg)
-
-            # Set filename
-            fmri_img.set_filename('ts.' + fname)
-
-            if self.next_proc:
-                # Keep the current processed data
-                self.proc_data = np.asanyarray(fmri_img.dataobj)
-                save_name = fmri_img.get_filename()
-
-                # Run the next process
-                self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self._proc_time[-1])
-
-            # Save processed image
-            if self.save_proc:
-                if self.next_proc is not None:
-                    # Restore the data processed in this module, as the next
-                    # process may have changed fmri_img.
-                    fmri_img.uncache()
-                    fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype(self.proc_data.dtype)
-                    fmri_img.set_filename(save_name)
-
-                self.keep_processed_image(fmri_img, vol_num=vol_idx,
-                                          save_temp=self.online_saving)
-
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
-                     f':{exc_tb.tb_lineno}'
+        The correction of a volume uses the previous volumes. The first
+        volume (and, with the cubic method, the second one) is held and
+        corrected retrospectively when the next volume arrives; then the
+        held volume is passed to the next process before the current one
+        (self._correct_previous_volume), and None is returned for a volume
+        that is held.
+        """
+        # --- Initialize ------------------------------------------------------
+        if fmri_img.shape[self.slice_dim] != len(self.slice_timing):
+            errmsg = 'Slice timing array does not match the data.'
             self._logger.error(errmsg)
-            traceback.print_exc(file=self._err_out)
+            return None
+
+        # Set the interpolation weights (again if the volume shape changed).
+        if not self.prep_weight or \
+                self._weight_shape != tuple(fmri_img.shape[:3]):
+            self._calc_weights(fmri_img.shape[:3])
+            if not self.prep_weight:
+                return None
+
+        dataV = np.asarray(fmri_img.dataobj, dtype=np.float32)
+        if dataV.ndim > 3:
+            dataV = np.squeeze(dataV)
+
+        # The first volume cannot be corrected alone. Keep it and correct it
+        # retrospectively when the next volume arrives.
+        if len(self.pre_data) == 0:
+            self.pre_fmri_img = copy.deepcopy(fmri_img)
+            self.pre_data.append(dataV)
+            return None
+
+        # --- Run the process -------------------------------------------------
+        if hasattr(self, 'pre_fmri_img'):
+            # Correct the kept previous volume and pass it on.
+            self._correct_previous_volume(dataV, vol_idx)
+
+            if self.method == 'cubic' and len(self.pre_data) < 2:
+                # Cubic interpolation needs two previous volumes. Keep the
+                # current volume too and correct it retrospectively when the
+                # next volume arrives.
+                self.pre_data.append(dataV)
+                self.pre_fmri_img = copy.deepcopy(fmri_img)
+                return None
+
+            del self.pre_fmri_img
+
+        # Slice-timing correction of the current volume
+        if self.method == 'linear':
+            shift_dataV = self.wm1 * self.pre_data[-1] + self.w0 * dataV
+        elif self.method == 'cubic':
+            # The next volume is not available; the current volume is used
+            # in its place (w0p1 = w0 + wp1).
+            shift_dataV = \
+                self.wm2 * self.pre_data[-2] + \
+                self.wm1 * self.pre_data[-1] + \
+                self.w0p1 * dataV
+
+        # Set the corrected data in fmri_img
+        self._set_img_data(fmri_img, shift_dataV)
+
+        # Update the previous volume list
+        self.pre_data.append(dataV)
+        self.pre_data.pop(0)
+
+        return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _correct_previous_volume(self, dataV, vol_idx):
@@ -242,9 +188,7 @@ class RtpTshift(RTP):
                     self.r1w0p1 * dataV
 
         pre_img = self.pre_fmri_img
-        pre_img.uncache()
-        pre_img._dataobj = retro_shft_dataV
-        pre_img.set_data_dtype(retro_shft_dataV.dtype)
+        self._set_img_data(pre_img, retro_shft_dataV)
 
         # Log message
         fname = pre_img.get_filename() or "unknown.nii.gz"
@@ -254,18 +198,14 @@ class RtpTshift(RTP):
         self._logger.info(msg)
 
         # Set the save filename
-        pre_img.set_filename('ts.' + fname + '.nii.gz')
+        pre_img.set_filename(self._out_prefix + fname + '.nii.gz')
 
-        # Save processed image
-        if self.save_proc:
-            self.keep_processed_image(pre_img, save_temp=self.online_saving,
-                                      vol_num=vol_idx-1)
-
+        # Keep this module's output (see RTP._pass_to_next), and output the
+        # corrected volume.
         if self.next_proc:
-            # Keep the current processed data
             self.proc_data = np.asanyarray(pre_img.dataobj)
-            # Run the next process
-            self.next_proc.do_proc(pre_img, vol_idx-1, time.time())
+        self._output_earlier_volume(pre_img, vol_idx-1,
+                                    save_temp=self.online_saving)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

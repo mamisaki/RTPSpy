@@ -157,6 +157,10 @@ class RtpRegress(RTP):
     uncensored volumes in the window exceeds the number of regressors.
     """
 
+    # Log label and output filename prefix (see RTP.do_proc)
+    _proc_label = 'Regression'
+    _out_prefix = 'regRes.'
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, max_poly_order=np.inf, TR=2.0, mot_reg='None',
                  volreg=None, GS_reg=False, GS_mask=None, WM_reg=False,
@@ -400,10 +404,10 @@ class RtpRegress(RTP):
         return self._proc_ready
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
         """
-        Regress out the nuisance signals from a volume and pass the residual
-        to the next process.
+        Regress out the nuisance signals from a volume (see RTP.do_proc).
+        The residual is passed to the next process.
 
         The X (self.desMtx) and Y (self.YMtx) buffers have a fixed number of
         rows (buf_len). The data of volume vol_idx is stored in row
@@ -411,326 +415,285 @@ class RtpRegress(RTP):
         is longer than buf_len. Each GLM fit uses the latest
         min(number of processed volumes, buf_len) volumes.
 
+        Until wait_num volumes are received (or, with motion censoring,
+        enough uncensored volumes), the volume is stored and None is
+        returned. With reg_retro_proc, the residuals of the volumes before
+        the first fit are passed to the next process at the first fit
+        (self._retro_proc).
+
+        The online QC of the volume (see the class docstring) is computed
+        here and passed to next_proc.do_proc as the keyword argument qc
+        (self._next_proc_kwargs).
+
         Parameters
         ----------
         fmri_img : nibabel image object
             Volume to process. Its data are replaced with the residual.
-        vol_idx : int, optional
-            0-based index of the volume from the scan start. If None,
-            the number of received volumes - 1 is used.
-        pre_proc_time : float, optional
+        vol_idx : int
+            0-based index of the volume from the scan start.
+        pre_proc_time : float or None
             Time stamp when the previous module finished.
-
-        The online QC of the volume (see the class docstring) is computed
-        here and passed to next_proc.do_proc as the keyword argument qc.
         """
 
-        try:
-            self._vol_num += 1  # Number of volumes received in this module
-            if vol_idx is None:
-                vol_idx = self._vol_num - 1
+        dataV = fmri_img.get_fdata()
+        if dataV.ndim > 3:
+            dataV = np.squeeze(dataV)
 
-            if vol_idx < self.ignore_init:
-                return
+        # --- Initialize ------------------------------------------------------
+        if self.maskV is None:
+            # Make the processing mask from the first received volume
+            self.set_mask(dataV)
+            self._logger.info(
+                f"Mask is set with the volume index {vol_idx}.")
 
-            if self._proc_start_idx < 0:
-                self._proc_start_idx = vol_idx
+        # Read the ROI masks. If a mask is not available, the regressor
+        # option is reset to False (only once).
+        for reg in ROI_REGS:
+            if getattr(self, f"{reg}_reg") and \
+                    getattr(self, f"{reg}_maskdata") is None:
+                self.read_roi_mask(reg, dataV)
 
-            dataV = fmri_img.get_fdata()
-            if dataV.ndim > 3:
-                dataV = np.squeeze(dataV)
+        if self.desMtx is None:
+            self._init_X_buffer()
 
-            # --- Initialize --------------------------------------------------
-            if self.maskV is None:
-                # Make the processing mask from the first received volume
-                self.set_mask(dataV)
-                self._logger.info(
-                    f"Mask is set with the volume index {vol_idx}.")
+        if self.YMtx is None:
+            self._init_Y_buffer()
 
-            # Read the ROI masks. If a mask is not available, the regressor
-            # option is reset to False (only once).
+        if self._qc_M is None:
+            self._init_qc()
+
+        # --- Store the volume in the buffers ---------------------------------
+        buf_len = self.YMtx.shape[0]
+        row = vol_idx % buf_len  # Row of this volume in the buffers
+        reg0_num = self.desMtx0.shape[1]  # Number of template regressors
+        if vol_idx >= buf_len:
+            if not self._ring_warned:
+                self._logger.warning(
+                    "The scan is longer than max_scan_length "
+                    f"({buf_len}). The GLM is fitted with the latest "
+                    f"{buf_len} volumes.")
+                self._ring_warned = True
+            # The row is reused: reset its template part (e.g., the
+            # design matrix read from a file) for this volume.
+            if vol_idx < self.desMtx0.shape[0]:
+                self.desMtx[row, :reg0_num] = torch.from_numpy(
+                    self.desMtx0[vol_idx]).to(self.device)
+            else:
+                self.desMtx[row, :reg0_num] = 0.0
+
+        # Y. Once Y_mean is set (at the first fit), the data are scaled
+        # to percent of the mean.
+        ydata = self._to_device(dataV[self.maskV])
+
+        # Online QC of this volume (ydata is not modified)
+        qc = self._update_qc(vol_idx, ydata)
+        if self._censor_row is None or len(self._censor_row) != buf_len:
+            self._censor_row = np.zeros(buf_len, dtype=bool)
+        self._censor_row[row] = qc['censored']  # Reset for a reused row
+        if qc['censored']:
+            self._logger.info(
+                f"#{vol_idx+1};Censored;FD={qc['FD']:.4f}"
+                f" > {self.censor_FD}")
+
+        if self.Y_mean is not None:
+            ydata = torch.where(self.Y_mean_mask,
+                                ydata / self.Y_mean * 100,
+                                torch.zeros_like(ydata))
+            ydata.clamp_(max=200)
+
+        self.YMtx[row, :] = ydata
+
+        # Motion regressors (self.motcols is contiguous)
+        if self.mot_reg != 'None':
+            mot = self.volreg._motion[vol_idx, :]
+            if self.mot_reg in ('mot12', 'dmot6'):
+                if self._vol_num > 1 and self.mot0 is not None:
+                    dmot = mot - self.mot0
+                else:
+                    dmot = np.zeros(6, dtype=np.float32)
+                self.mot0 = mot
+
+            if self.mot_reg in ('mot6', 'mot12'):
+                col0 = self.motcols[0]
+                self.desMtx[row, col0:col0+6] = self._to_device(mot)
+                if self.mot_reg == 'mot12':
+                    col6 = self.motcols[6]
+                    self.desMtx[row, col6:col6+6] = \
+                        self._to_device(dmot)
+            elif self.mot_reg == 'dmot6':
+                col0 = self.motcols[0]
+                self.desMtx[row, col0:col0+6] = self._to_device(dmot)
+
+        # ROI mean signal regressors from the mask_src_proc output
+        if self.GS_reg or self.WM_reg or self.Vent_reg:
+            src_data = self.mask_src_proc.proc_data[self.maskV]
             for reg in ROI_REGS:
-                if getattr(self, f"{reg}_reg") and \
-                        getattr(self, f"{reg}_maskdata") is None:
-                    self.read_roi_mask(reg, dataV)
+                if getattr(self, f"{reg}_reg"):
+                    roi_mask = getattr(self, f"{reg}_maskdata")
+                    self.desMtx[row, getattr(self, f"{reg}_col")] = \
+                        float(src_data[roi_mask].mean())
 
-            if self.desMtx is None:
-                self._init_X_buffer()
-
-            if self.YMtx is None:
-                self._init_Y_buffer()
-
-            if self._qc_M is None:
-                self._init_qc()
-
-            # --- Store the volume in the buffers -----------------------------
-            buf_len = self.YMtx.shape[0]
-            row = vol_idx % buf_len  # Row of this volume in the buffers
-            reg0_num = self.desMtx0.shape[1]  # Number of template regressors
-            if vol_idx >= buf_len:
-                if not self._ring_warned:
-                    self._logger.warning(
-                        "The scan is longer than max_scan_length "
-                        f"({buf_len}). The GLM is fitted with the latest "
-                        f"{buf_len} volumes.")
-                    self._ring_warned = True
-                # The row is reused: reset its template part (e.g., the
-                # design matrix read from a file) for this volume.
-                if vol_idx < self.desMtx0.shape[0]:
-                    self.desMtx[row, :reg0_num] = torch.from_numpy(
-                        self.desMtx0[vol_idx]).to(self.device)
-                else:
-                    self.desMtx[row, :reg0_num] = 0.0
-
-            # Y. Once Y_mean is set (at the first fit), the data are scaled
-            # to percent of the mean.
-            ydata = self._to_device(dataV[self.maskV])
-
-            # Online QC of this volume (ydata is not modified)
-            qc = self._update_qc(vol_idx, ydata)
-            if self._censor_row is None or len(self._censor_row) != buf_len:
-                self._censor_row = np.zeros(buf_len, dtype=bool)
-            self._censor_row[row] = qc['censored']  # Reset for a reused row
-            if qc['censored']:
-                self._logger.info(
-                    f"#{vol_idx+1};Censored;FD={qc['FD']:.4f}"
-                    f" > {self.censor_FD}")
-
-            if self.Y_mean is not None:
-                ydata = torch.where(self.Y_mean_mask,
-                                    ydata / self.Y_mean * 100,
-                                    torch.zeros_like(ydata))
-                ydata.clamp_(max=200)
-
-            self.YMtx[row, :] = ydata
-
-            # Motion regressors (self.motcols is contiguous)
-            if self.mot_reg != 'None':
-                mot = self.volreg._motion[vol_idx, :]
-                if self.mot_reg in ('mot12', 'dmot6'):
-                    if self._vol_num > 1 and self.mot0 is not None:
-                        dmot = mot - self.mot0
-                    else:
-                        dmot = np.zeros(6, dtype=np.float32)
-                    self.mot0 = mot
-
-                if self.mot_reg in ('mot6', 'mot12'):
-                    col0 = self.motcols[0]
-                    self.desMtx[row, col0:col0+6] = self._to_device(mot)
-                    if self.mot_reg == 'mot12':
-                        col6 = self.motcols[6]
-                        self.desMtx[row, col6:col6+6] = \
-                            self._to_device(dmot)
-                elif self.mot_reg == 'dmot6':
-                    col0 = self.motcols[0]
-                    self.desMtx[row, col0:col0+6] = self._to_device(dmot)
-
-            # ROI mean signal regressors from the mask_src_proc output
-            if self.GS_reg or self.WM_reg or self.Vent_reg:
-                src_data = self.mask_src_proc.proc_data[self.maskV]
-                for reg in ROI_REGS:
-                    if getattr(self, f"{reg}_reg"):
-                        roi_mask = getattr(self, f"{reg}_maskdata")
-                        self.desMtx[row, getattr(self, f"{reg}_col")] = \
-                            float(src_data[roi_mask].mean())
-
-            # --- Wait until enough volumes are received ----------------------
-            # Number of volumes received after the ignored ones
-            n_proc = vol_idx - self._proc_start_idx + 1
-            if n_proc <= self.wait_num:
-                tstamp, proc_delay = self._record_proc_time(pre_proc_time)
-                wait_idx = self._proc_start_idx + self.wait_num
-                self._log_proc(
-                    f"#{vol_idx+1};Regression;"
-                    f"Wait until volume #{wait_idx+1};"
-                    f"{self._img_name(fmri_img)}", tstamp, proc_delay)
-                return
-
-            # --- Volumes used in the GLM -------------------------------------
-            # The latest n_win volumes (all volumes until the buffer is
-            # full), in time order, and their rows in the buffers.
-            n_win = min(n_proc, buf_len)
-            win_vols = np.arange(vol_idx - n_win + 1, vol_idx + 1)
-            win_rows_np = win_vols % buf_len
-            win_rows = torch.from_numpy(win_rows_np).to(self.device)
-            # The rows are contiguous unless the buffer has wrapped.
-            contiguous = win_rows_np[-1] - win_rows_np[0] == n_win - 1
-
-            # --- Censored volumes in the window ------------------------------
-            first_fit = self.Y_mean is None
-            n_cens = 0
-            if self.censor_FD > 0:
-                win_cens = self._censor_row[win_rows_np]
-                n_cens = int(win_cens.sum())
-
-            if n_cens > 0:
-                # Uncensored volumes must be more than the regressors
-                n_reg = reg0_num + \
-                    min(1 + int(n_win*self.TR/150), self.max_poly_order) + 1
-                n_keep = n_win - n_cens
-                if n_keep <= n_reg:
-                    if first_fit:
-                        tstamp, proc_delay = \
-                            self._record_proc_time(pre_proc_time)
-                        self._log_proc(
-                            f"#{vol_idx+1};Regression;"
-                            f"Wait for more uncensored volumes ({n_keep} <="
-                            f" {n_reg} regressors);"
-                            f"{self._img_name(fmri_img)}", tstamp,
-                            proc_delay)
-                        return
-                    elif not self._censor_warned:
-                        self._logger.warning(
-                            f"Only {n_keep} uncensored volumes for {n_reg}"
-                            " regressors in the GLM window. The fit is"
-                            " underdetermined (minimum-norm solution).")
-                        self._censor_warned = True
-                else:
-                    self._censor_warned = False
-
-                # Rows (in the window order) used in the fit
-                keep_t = torch.from_numpy(~win_cens).to(self.device)
-
-            # --- Update the RETROICOR regressors -----------------------------
-            retro_ok = True
-            if self.phys_reg != 'None' and self.rtp_physio is not None:
-                retro_ok = self._update_retroicor(vol_idx, win_vols,
-                                                  win_rows)
-
-            # --- Fit the GLM -------------------------------------------------
-            if first_fit:
-                # Set Y_mean and scale the data in the window in place
-                Ywin = self.YMtx[win_rows]
-                if n_cens > 0:
-                    self.Y_mean = Ywin[keep_t].mean(axis=0)
-                else:
-                    self.Y_mean = Ywin.mean(axis=0)
-                self.Y_mean_mask = self.Y_mean.abs() > 1e-6
-
-                Ywin[:, self.Y_mean_mask] = \
-                    Ywin[:, self.Y_mean_mask] / \
-                    self.Y_mean[self.Y_mean_mask] * 100
-                Ywin.clamp_(max=200)
-                Ywin[:, ~self.Y_mean_mask] = 0.0
-                self.YMtx[win_rows] = Ywin
-                del Ywin
-
-            # Regressors of the window in time order, with the polynomials
-            # for the window length
-            polyreg = self.poly_reg(n_win, self.TR)
-            polyreg_num = polyreg.shape[1]
-            Xp = self.desMtx[win_rows, :reg0_num+polyreg_num].clone()
-            Xp[:, reg0_num:reg0_num+polyreg_num] = \
-                torch.from_numpy(polyreg).to(self.device)
-
-            # Standardize the motion and ROI signal regressors
-            norm_cols = [ii for ii, reg_name in enumerate(self.reg_names)
-                         if reg_name in NORM_REGS]
-            if len(norm_cols):
-                reg = Xp[:, norm_cols]
-                if n_cens > 0:
-                    reg_mean = reg[keep_t].mean(axis=0)
-                    reg_std = reg[keep_t].std(axis=0)
-                else:
-                    reg_mean = reg.mean(axis=0)
-                    reg_std = reg.std(axis=0)
-                # A constant regressor (std ~ 0) is zeroed out; the
-                # least-squares solver ignores a zero column.
-                valid = reg_std > 1e-6 * reg_mean.abs().clamp(min=1.0)
-                reg = torch.where(valid, (reg - reg_mean) / reg_std,
-                                  torch.zeros_like(reg))
-                Xp[:, norm_cols] = reg
-
-            if not retro_ok:
-                # Exclude the physio regressors from this fit
-                Xp[:, self.retrocols] = 0.0
-
-            # Regressors for the fit: the rows of the censored volumes are
-            # zeroed, which removes them from the least-squares fit (a zero
-            # row adds a constant |y|^2 to the cost; with the SVD solver,
-            # the corresponding rows of U are zero). Xp itself (used for the
-            # residuals) is kept.
-            if n_cens > 0:
-                Xp_fit = Xp * keep_t[:, None].to(Xp.dtype)
-            else:
-                Xp_fit = Xp
-
-            # Y of the window. Columns out of Y_mean_mask are zero, so their
-            # residuals are 0.
-            # The least-squares solution does not depend on the row order.
-            # When the buffer is full, the whole buffer is used as it is
-            # (no copy of Y), with the regressors placed at the same rows.
-            if n_win == buf_len:
-                Yp = self.YMtx
-                Xfit = torch.empty_like(Xp)
-                Xfit[win_rows] = Xp_fit
-            elif contiguous:
-                Yp = self.YMtx[win_rows_np[0]:win_rows_np[-1]+1]
-                Xfit = Xp_fit
-            else:
-                Yp = self.YMtx[win_rows]
-                Xfit = Xp_fit
-
-            # Beta minimizing ||Y - XB||^2
-            Beta = lstsq_SVDsolver(Xfit, Yp)
-
-            if self.reg_retro_proc and first_fit:
-                # Residuals of all the volumes in the window. The volumes
-                # before the current one are processed retrospectively.
-                Resids = (self.YMtx[win_rows] - torch.matmul(Xp, Beta)
-                          ).cpu().numpy()
-                self._retro_proc(fmri_img, vol_idx, Resids[:-1])
-                Resid = Resids[-1, :]
-                del Resids
-            else:
-                # Residual of the current volume only (the last row of Xp)
-                Resid = (self.YMtx[row] - torch.matmul(Xp[-1, :], Beta)
-                         ).cpu().numpy()
-
-            del Beta
-
-            # Replace the data of fmri_img with the residual
-            vol_data = np.zeros_like(self.maskV, dtype=np.float32)
-            vol_data[self.maskV] = Resid
-            fmri_img.uncache()
-            fmri_img._dataobj = vol_data
-            fmri_img.set_data_dtype(np.float32)
-
-            # --- Post process ------------------------------------------------
+        # --- Wait until enough volumes are received --------------------------
+        # Number of volumes received after the ignored ones
+        n_proc = vol_idx - self._proc_start_idx + 1
+        if n_proc <= self.wait_num:
             tstamp, proc_delay = self._record_proc_time(pre_proc_time)
-            fname = self._img_name(fmri_img)
-            self._log_proc(f"#{vol_idx+1};Regression;{fname}", tstamp,
-                           proc_delay)
+            wait_idx = self._proc_start_idx + self.wait_num
+            self._log_proc(
+                f"#{vol_idx+1};{self._proc_label};"
+                f"Wait until volume #{wait_idx+1};"
+                f"{self._img_name(fmri_img)}", tstamp, proc_delay)
+            return None
 
-            fmri_img.set_filename('regRes.' + fname)
+        # --- Volumes used in the GLM -----------------------------------------
+        # The latest n_win volumes (all volumes until the buffer is
+        # full), in time order, and their rows in the buffers.
+        n_win = min(n_proc, buf_len)
+        win_vols = np.arange(vol_idx - n_win + 1, vol_idx + 1)
+        win_rows_np = win_vols % buf_len
+        win_rows = torch.from_numpy(win_rows_np).to(self.device)
+        # The rows are contiguous unless the buffer has wrapped.
+        contiguous = win_rows_np[-1] - win_rows_np[0] == n_win - 1
 
-            if self.next_proc:
-                # Keep the processed data, since the next process can
-                # modify fmri_img.
-                self.proc_data = np.asanyarray(fmri_img.dataobj)
-                save_name = fmri_img.get_filename()
+        # --- Censored volumes in the window ----------------------------------
+        first_fit = self.Y_mean is None
+        n_cens = 0
+        if self.censor_FD > 0:
+            win_cens = self._censor_row[win_rows_np]
+            n_cens = int(win_cens.sum())
 
-                self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self._proc_time[-1],
-                                       **self._qc_kwargs(qc))
+        if n_cens > 0:
+            # Uncensored volumes must be more than the regressors
+            n_reg = reg0_num + \
+                min(1 + int(n_win*self.TR/150), self.max_poly_order) + 1
+            n_keep = n_win - n_cens
+            if n_keep <= n_reg:
+                if first_fit:
+                    tstamp, proc_delay = \
+                        self._record_proc_time(pre_proc_time)
+                    self._log_proc(
+                        f"#{vol_idx+1};{self._proc_label};"
+                        f"Wait for more uncensored volumes ({n_keep} <="
+                        f" {n_reg} regressors);"
+                        f"{self._img_name(fmri_img)}", tstamp,
+                        proc_delay)
+                    return None
+                elif not self._censor_warned:
+                    self._logger.warning(
+                        f"Only {n_keep} uncensored volumes for {n_reg}"
+                        " regressors in the GLM window. The fit is"
+                        " underdetermined (minimum-norm solution).")
+                    self._censor_warned = True
+            else:
+                self._censor_warned = False
 
-            if self.save_proc:
-                if self.next_proc is not None:
-                    # Restore the processed data of this module
-                    fmri_img.uncache()
-                    fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype(np.float32)
-                    fmri_img.set_filename(save_name)
+            # Rows (in the window order) used in the fit
+            keep_t = torch.from_numpy(~win_cens).to(self.device)
 
-                self.keep_processed_image(fmri_img, vol_num=vol_idx,
-                                          save_temp=self.online_saving)
+        # --- Update the RETROICOR regressors ---------------------------------
+        retro_ok = True
+        if self.phys_reg != 'None' and self.rtp_physio is not None:
+            retro_ok = self._update_retroicor(vol_idx, win_vols,
+                                              win_rows)
 
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
-                     f':{exc_tb.tb_lineno}'
-            self._logger.error(errmsg)
-            traceback.print_exc(file=self._err_out)
+        # --- Fit the GLM -----------------------------------------------------
+        if first_fit:
+            # Set Y_mean and scale the data in the window in place
+            Ywin = self.YMtx[win_rows]
+            if n_cens > 0:
+                self.Y_mean = Ywin[keep_t].mean(axis=0)
+            else:
+                self.Y_mean = Ywin.mean(axis=0)
+            self.Y_mean_mask = self.Y_mean.abs() > 1e-6
+
+            Ywin[:, self.Y_mean_mask] = \
+                Ywin[:, self.Y_mean_mask] / \
+                self.Y_mean[self.Y_mean_mask] * 100
+            Ywin.clamp_(max=200)
+            Ywin[:, ~self.Y_mean_mask] = 0.0
+            self.YMtx[win_rows] = Ywin
+            del Ywin
+
+        # Regressors of the window in time order, with the polynomials
+        # for the window length
+        polyreg = self.poly_reg(n_win, self.TR)
+        polyreg_num = polyreg.shape[1]
+        Xp = self.desMtx[win_rows, :reg0_num+polyreg_num].clone()
+        Xp[:, reg0_num:reg0_num+polyreg_num] = \
+            torch.from_numpy(polyreg).to(self.device)
+
+        # Standardize the motion and ROI signal regressors
+        norm_cols = [ii for ii, reg_name in enumerate(self.reg_names)
+                     if reg_name in NORM_REGS]
+        if len(norm_cols):
+            reg = Xp[:, norm_cols]
+            if n_cens > 0:
+                reg_mean = reg[keep_t].mean(axis=0)
+                reg_std = reg[keep_t].std(axis=0)
+            else:
+                reg_mean = reg.mean(axis=0)
+                reg_std = reg.std(axis=0)
+            # A constant regressor (std ~ 0) is zeroed out; the
+            # least-squares solver ignores a zero column.
+            valid = reg_std > 1e-6 * reg_mean.abs().clamp(min=1.0)
+            reg = torch.where(valid, (reg - reg_mean) / reg_std,
+                              torch.zeros_like(reg))
+            Xp[:, norm_cols] = reg
+
+        if not retro_ok:
+            # Exclude the physio regressors from this fit
+            Xp[:, self.retrocols] = 0.0
+
+        # Regressors for the fit: the rows of the censored volumes are
+        # zeroed, which removes them from the least-squares fit (a zero
+        # row adds a constant |y|^2 to the cost; with the SVD solver,
+        # the corresponding rows of U are zero). Xp itself (used for the
+        # residuals) is kept.
+        if n_cens > 0:
+            Xp_fit = Xp * keep_t[:, None].to(Xp.dtype)
+        else:
+            Xp_fit = Xp
+
+        # Y of the window. Columns out of Y_mean_mask are zero, so their
+        # residuals are 0.
+        # The least-squares solution does not depend on the row order.
+        # When the buffer is full, the whole buffer is used as it is
+        # (no copy of Y), with the regressors placed at the same rows.
+        if n_win == buf_len:
+            Yp = self.YMtx
+            Xfit = torch.empty_like(Xp)
+            Xfit[win_rows] = Xp_fit
+        elif contiguous:
+            Yp = self.YMtx[win_rows_np[0]:win_rows_np[-1]+1]
+            Xfit = Xp_fit
+        else:
+            Yp = self.YMtx[win_rows]
+            Xfit = Xp_fit
+
+        # Beta minimizing ||Y - XB||^2
+        Beta = lstsq_SVDsolver(Xfit, Yp)
+
+        if self.reg_retro_proc and first_fit:
+            # Residuals of all the volumes in the window. The volumes
+            # before the current one are processed retrospectively.
+            Resids = (self.YMtx[win_rows] - torch.matmul(Xp, Beta)
+                      ).cpu().numpy()
+            self._retro_proc(fmri_img, vol_idx, Resids[:-1])
+            Resid = Resids[-1, :]
+            del Resids
+        else:
+            # Residual of the current volume only (the last row of Xp)
+            Resid = (self.YMtx[row] - torch.matmul(Xp[-1, :], Beta)
+                     ).cpu().numpy()
+
+        del Beta
+
+        # Replace the data of fmri_img with the residual
+        vol_data = np.zeros_like(self.maskV, dtype=np.float32)
+        vol_data[self.maskV] = Resid
+        self._set_img_data(fmri_img, vol_data)
+
+        return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _init_X_buffer(self):
@@ -932,8 +895,12 @@ class RtpRegress(RTP):
         Keyword arguments for next_proc.do_proc: {'qc': qc} if its do_proc
         accepts a 'qc' keyword (or **kwargs), otherwise {} (e.g., an
         application class overriding do_proc without **kwargs; it can read
-        the QC from this object's qc_last or qc).
+        the QC from this object's qc_last or qc). {} if there is no
+        next_proc.
         """
+        if not self.next_proc:
+            return {}
+
         nproc, ok = self._qc_kw_cache
         if nproc is not self.next_proc:
             ok = False
@@ -946,6 +913,11 @@ class RtpRegress(RTP):
                 pass
             self._qc_kw_cache = (self.next_proc, ok)
         return {'qc': qc} if ok else {}
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _next_proc_kwargs(self, vol_idx):
+        """qc of the current volume for next_proc.do_proc (see RTP.do_proc)."""
+        return self._qc_kwargs(self.qc_last)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_qc_table(self):
@@ -1043,7 +1015,7 @@ class RtpRegress(RTP):
 
         # Filename template. The volume number in the current filename
         # (with its zero padding) is replaced with that of each volume.
-        save_name_temp = 'regRes.' + self._img_name(fmri_img)
+        save_name_temp = self._out_prefix + self._img_name(fmri_img)
         ma = re.search(f"0*{vol_idx+1}", save_name_temp)
         vol_str = ma.group() if ma is not None else None
 
@@ -1062,53 +1034,13 @@ class RtpRegress(RTP):
 
             retro_fmri_img.set_filename(save_name)
 
-            # Keep the volume before the next process, which may change
-            # the data and the filename of retro_fmri_img.
-            if self.save_proc:
-                self.keep_processed_image(retro_fmri_img, vol_num=vi)
-
-            if self.next_proc:
-                self.next_proc.do_proc(retro_fmri_img, vi, time.time(),
-                                       **self._qc_kwargs(self._qc_at(vi)))
+            # The volumes output retrospectively are not saved as
+            # single-volume files (save_temp=False).
+            self._output_earlier_volume(
+                retro_fmri_img, vi, save_temp=False,
+                **self._qc_kwargs(self._qc_at(vi)))
 
             time.sleep(0.005)  # Not to send the data too fast
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _record_proc_time(self, pre_proc_time):
-        """
-        Record the time stamp of the end of the processing.
-
-        Returns
-        -------
-        tstamp : float
-            Time stamp.
-        proc_delay : float or None
-            Time from pre_proc_time; None if pre_proc_time is None.
-        """
-        tstamp = time.time()
-        self._proc_time.append(tstamp)
-        proc_delay = None
-        if pre_proc_time is not None:
-            proc_delay = tstamp - pre_proc_time
-            if self.save_delay:
-                self.proc_delay.append(proc_delay)
-
-        return tstamp, proc_delay
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _log_proc(self, msg, tstamp, proc_delay):
-        msg += f";tstamp={tstamp}"
-        if proc_delay is not None:
-            msg += f";took {proc_delay:.4f}s"
-        self._logger.info(msg)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    @staticmethod
-    def _img_name(fmri_img):
-        """Filename (without the directory) of fmri_img."""
-        if fmri_img.get_filename():
-            return Path(fmri_img.get_filename()).name
-        return "unknown.nii.gz"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

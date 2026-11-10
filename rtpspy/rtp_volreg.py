@@ -56,6 +56,10 @@ class RtpVolreg(RTP):
     # library (the process aborts).
     reg_regmodes = ['linear', 'cubic', 'fourier', 'quintic', 'heptic']
 
+    # Log label and output filename prefix (see RTP.do_proc)
+    _proc_label = 'Volume registration'
+    _out_prefix = 'vr.'
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, ref_vol=0, regmode='heptic', max_scan_length=None,
                  **kwargs):
@@ -126,110 +130,52 @@ class RtpVolreg(RTP):
         return self._proc_ready
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
-        try:
-            self._vol_num += 1  # 1-based number of received volumes
-            if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-based index
-
-            if vol_idx < self.ignore_init:
-                return
-
-            if self._proc_start_idx < 0:
-                self._proc_start_idx = vol_idx
-
-            # --- Initialize --------------------------------------------------
-            # If self.ref_vol is an int (index of the reference volume in the
-            # current scan), wait for that volume and set it as the
-            # reference.
-            if type(self.ref_vol) is int:
-                if vol_idx < self.ref_vol:
-                    # No reference yet. The volume cannot be aligned.
-                    self._logger.warning(
-                        f"Volume {vol_idx} is before the reference volume "
-                        f"{self.ref_vol} and is not processed.")
-                    return
-
-                ref_vi = self.ref_vol
-                self.ref_vol = nib.Nifti1Image(
-                    np.asarray(fmri_img.dataobj, dtype=np.float32).reshape(
-                        fmri_img.shape[:3]), fmri_img.affine)
-                self.align_setup()
-                self._logger.info(
-                    f"Alignment reference is set to volume {ref_vi}"
-                    " of the current scan.")
-                # The reference volume itself is aligned (motion ~ 0) and
-                # passed to the next process below.
-
-            if vol_idx >= self._motion.shape[0]:
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
+        """Align the volume to the reference (see RTP.do_proc)."""
+        # --- Initialize ------------------------------------------------------
+        # If self.ref_vol is an int (index of the reference volume in the
+        # current scan), wait for that volume and set it as the reference.
+        if type(self.ref_vol) is int:
+            if vol_idx < self.ref_vol:
+                # No reference yet. The volume cannot be aligned.
                 self._logger.warning(
-                    "The scan is longer than max_scan_length "
-                    f"({self.max_scan_length}). The motion array is extended.")
-                self._motion = np.concatenate(
-                    [self._motion,
-                     np.zeros([max(100, vol_idx + 1 - self._motion.shape[0]),
-                               6], dtype=np.float32)])
+                    f"Volume {vol_idx} is before the reference volume "
+                    f"{self.ref_vol} and is not processed.")
+                return None
 
-            # --- Run the process ---------------------------------------------
-            aligned_data, motpar = self.align_one(fmri_img, vol_idx)
+            ref_vi = self.ref_vol
+            self.ref_vol = nib.Nifti1Image(
+                np.asarray(fmri_img.dataobj, dtype=np.float32).reshape(
+                    fmri_img.shape[:3]), fmri_img.affine)
+            self.align_setup()
+            self._logger.info(
+                f"Alignment reference is set to volume {ref_vi}"
+                " of the current scan.")
+            # The reference volume itself is aligned (motion ~ 0) and
+            # passed to the next process.
 
-            fmri_img.uncache()
-            fmri_img._dataobj = aligned_data
-            fmri_img.set_data_dtype(aligned_data.dtype)
+        if vol_idx >= self._motion.shape[0]:
+            self._logger.warning(
+                "The scan is longer than max_scan_length "
+                f"({self.max_scan_length}). The motion array is extended.")
+            self._motion = np.concatenate(
+                [self._motion,
+                 np.zeros([max(100, vol_idx + 1 - self._motion.shape[0]),
+                           6], dtype=np.float32)])
 
-            # (roll, pitch, yaw, dx, dy, dz) -> AFNI 3dvolreg output order
-            self._motion[vol_idx, :] = motpar[[0, 1, 2, 5, 3, 4]]
+        # --- Run the process -------------------------------------------------
+        aligned_data, motpar = self.align_one(fmri_img, vol_idx)
+        self._set_img_data(fmri_img, aligned_data)
 
-            # --- Post-process ------------------------------------------------
-            # Record the processing time and log
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
+        # (roll, pitch, yaw, dx, dy, dz) -> AFNI 3dvolreg output order
+        self._motion[vol_idx, :] = motpar[[0, 1, 2, 5, 3, 4]]
 
-            if fmri_img.get_filename():
-                fname = Path(fmri_img.get_filename()).name
-            else:
-                fname = "unknown.nii.gz"
-            msg = f"#{vol_idx+1};Volume registration;{fname};tstamp={tstamp}"
-            if pre_proc_time is not None:
-                proc_delay = tstamp - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
-                msg += f";took {proc_delay:.4f}s"
-            self._logger.info(msg)
+        # Update the motion plot
+        self._plt_xi.append(vol_idx+1)
+        for ii in range(6):
+            self._plt_motion[ii].append(self._motion[vol_idx, ii])
 
-            fmri_img.set_filename('vr.' + fname)
-
-            if self.next_proc is not None:
-                # Keep this module's output, as the next process replaces
-                # the data in fmri_img.
-                self.proc_data = np.asanyarray(fmri_img.dataobj)
-                save_name = fmri_img.get_filename()
-
-                self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=tstamp)
-
-            # Update the motion plot
-            self._plt_xi.append(vol_idx+1)
-            for ii in range(6):
-                self._plt_motion[ii].append(self._motion[vol_idx, ii])
-
-            if self.save_proc:
-                if self.next_proc is not None:
-                    # Restore this module's output
-                    fmri_img.uncache()
-                    fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype(self.proc_data.dtype)
-                    fmri_img.set_filename(save_name)
-
-                self.keep_processed_image(fmri_img, vol_num=vol_idx,
-                                          save_temp=self.online_saving)
-
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
-                     f':{exc_tb.tb_lineno}'
-            self._logger.error(errmsg)
-            traceback.print_exc(file=self._err_out)
+        return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

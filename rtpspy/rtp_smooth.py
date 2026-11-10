@@ -13,7 +13,6 @@ import re
 import time
 import ctypes
 import sys
-import traceback
 
 import numpy as np
 import nibabel as nib
@@ -45,6 +44,10 @@ class RtpSmooth(RTP):
 
     # Text shown when the mask is made from the first received volume
     _ZERO_OUT_MASK_TEXT = 'zero-out initial received volume'
+
+    # Log label and output filename prefix (see RTP.do_proc)
+    _proc_label = 'Smoothing'
+    _out_prefix = 'sm.'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, blur_fwhm=6.0, mask_file=0, **kwargs):
@@ -82,77 +85,19 @@ class RtpSmooth(RTP):
         return self._proc_ready
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
-        try:
-            self._vol_num += 1  # 1-based number of received volumes
-            if vol_idx is None:
-                vol_idx = self._vol_num - 1  # 0-based index
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
+        """Smooth the volume (see RTP.do_proc)."""
+        # --- Initialize ------------------------------------------------------
+        # If no mask is set, make it from this volume.
+        if self.mask_byte is None or not hasattr(self, 'maskV'):
+            self._logger.info(
+                f"Mask is set from the received volume {vol_idx}")
+            self.set_mask(np.asarray(fmri_img.dataobj))
 
-            if vol_idx < self.ignore_init:
-                return
+        # --- Run the process -------------------------------------------------
+        self._set_img_data(fmri_img, self.smooth(fmri_img))
 
-            if self._proc_start_idx < 0:
-                self._proc_start_idx = vol_idx
-
-            # --- Initialize --------------------------------------------------
-            # If no mask is set, make it from this volume.
-            if self.mask_byte is None or not hasattr(self, 'maskV'):
-                self._logger.info(
-                    f"Mask is set from the received volume {vol_idx}")
-                self.set_mask(np.asarray(fmri_img.dataobj))
-
-            # --- Run the process ---------------------------------------------
-            smoothed_data = self.smooth(fmri_img)
-
-            fmri_img.uncache()
-            fmri_img._dataobj = smoothed_data
-            fmri_img.set_data_dtype(smoothed_data.dtype)
-
-            # --- Post-process ------------------------------------------------
-            # Record the processing time and log
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
-
-            if fmri_img.get_filename():
-                fname = Path(fmri_img.get_filename()).name
-            else:
-                fname = "unknown.nii.gz"
-            msg = f"#{vol_idx+1};Smoothing;{fname};tstamp={tstamp}"
-            if pre_proc_time is not None:
-                proc_delay = tstamp - pre_proc_time
-                if self.save_delay:
-                    self.proc_delay.append(proc_delay)
-                msg += f";took {proc_delay:.4f}s"
-            self._logger.info(msg)
-
-            fmri_img.set_filename('sm.' + fname)
-
-            if self.next_proc is not None:
-                # Keep this module's output, as the next process replaces
-                # the data in fmri_img.
-                self.proc_data = np.asanyarray(fmri_img.dataobj)
-                save_name = fmri_img.get_filename()
-
-                self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=tstamp)
-
-            if self.save_proc:
-                if self.next_proc is not None:
-                    # Restore this module's output
-                    fmri_img.uncache()
-                    fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype(self.proc_data.dtype)
-                    fmri_img.set_filename(save_name)
-
-                self.keep_processed_image(fmri_img, vol_num=vol_idx,
-                                          save_temp=self.online_saving)
-
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errmsg = f'{exc_type}, {exc_tb.tb_frame.f_code.co_filename}' + \
-                     f':{exc_tb.tb_lineno}'
-            self._logger.error(errmsg)
-            traceback.print_exc(file=self._err_out)
+        return fmri_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

@@ -138,7 +138,7 @@ class RtpWatch(RTP):
 
         # Stop the observer, waiting for the running process to finish.
         self.stop_watching()
-        super().end_reset()
+        return super().end_reset()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_watching(self):
@@ -232,6 +232,15 @@ class RtpWatch(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, file_path):
         """
+        Read a new image file and pass the volume to the next process.
+
+        This overrides the template RTP.do_proc, as this module is the head
+        of the processing chain: it receives a file path (from the watchdog
+        observer) instead of an image, it counts only the files that make a
+        valid volume, and its processing time is the delay from the file
+        creation. The output steps are shared with RTP (_pass_to_next,
+        _keep_output).
+
         Parameters
         ----------
         file_path : str or Path
@@ -285,33 +294,17 @@ class RtpWatch(RTP):
             msg += f";interval {t_interval:.4f}s"
             self._logger.info(msg)
 
-            if self.next_proc:
-                # Keep a copy of the current processed data, as the next
-                # process may modify the array in place.
-                self.proc_data = np.array(fmri_img.dataobj)
-                save_name = fmri_img.get_filename()
-
-                # Run the next process
-                self.next_proc.do_proc(
-                    fmri_img,
-                    vol_idx=self._vol_num - 1,
-                    pre_proc_time=self._proc_time[-1],
-                )
+            # Run the next process. self.proc_data is a copy of the data,
+            # as the next process may modify the array in place.
+            save_name = self._pass_to_next(
+                fmri_img, self._vol_num - 1, self._proc_time[-1], copy=True)
 
             # Record the number of the processed volume
             self._done_proc = self._vol_num
 
-            # Save processed image
+            # Keep the image read in this module
             if self.save_proc:
-                if self.next_proc is not None:
-                    # Restore the data read in this module
-                    fmri_img.uncache()
-                    fmri_img._dataobj = self.proc_data
-                    fmri_img.set_data_dtype(self.proc_data.dtype)
-                    fmri_img.set_filename(save_name)
-
-                self.keep_processed_image(
-                    fmri_img, save_temp=self.online_saving)
+                self._keep_output(fmri_img, None, save_name)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()

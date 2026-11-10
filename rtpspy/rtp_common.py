@@ -127,26 +127,288 @@ class RTP(object):
 
         return self._proc_ready
 
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0):
-        """
-        Process a volume. If self.next_proc is set, its do_proc() is called.
+    # --- Volume processing ---------------------------------------------------
+    # do_proc() is a template method that runs the bookkeeping common to the
+    # modules of the processing chain. A module implements only its
+    # processing step in _process() and sets the two class attributes below.
+    # The other hooks (_next_proc_kwargs, _output, _proc_error) have defaults
+    # that a module overrides only when it needs to.
 
-        Subclasses should override this.
+    # Processing name in the log message
+    # ("#<volume number>;<_proc_label>;<filename>;tstamp=<time>;took <s>s")
+    _proc_label = "Process"
+    # Prefix added to the filename of the processed image (e.g., 'vr.')
+    _out_prefix = ""
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
+        """
+        Process a volume and pass the result to self.next_proc.
+
+        The steps are:
+        1. Count the received volume (self._vol_num); vol_idx is set from
+           the count if it is None. A volume with vol_idx < self.ignore_init
+           is skipped. self._proc_start_idx is set to the index of the first
+           volume that is not skipped.
+        2. self._process() processes the volume. If it returns None (e.g.,
+           the volume is held to be output later, or it cannot be
+           processed), the steps below are not done.
+        3. Record the processing time (self._proc_time, self.proc_delay with
+           save_delay) and log it. self._out_prefix is added to the
+           filename of the processed image.
+        4. self._output() passes the image to self.next_proc.do_proc(), with
+           the keyword arguments returned by self._next_proc_kwargs(), and
+           keeps it for saving if self.save_proc is True.
+
+        An exception is logged by self._proc_error() and not raised, so that
+        an error in one volume does not stop the real-time processing.
 
         Parameters
         ----------
         fmri_img : nibabel image object
             Volume to process.
         vol_idx : int, optional
-            0-based index of the volume. The default is None.
+            0-based index of the volume from the scan start. If None, the
+            number of received volumes - 1 is used.
         pre_proc_time : float, optional
-            Time stamp when the previous module finished. The default is 0.
+            Time stamp when the previous module finished. If None, the
+            processing time is not logged.
+        kwargs : dict
+            Additional information from the previous module (e.g., qc from
+            RtpRegress). It is not used here.
         """
+        try:
+            self._vol_num += 1  # 1-based number of received volumes
+            if vol_idx is None:
+                vol_idx = self._vol_num - 1  # 0-based index
 
+            if vol_idx < self.ignore_init:
+                return
+
+            if self._proc_start_idx < 0:
+                self._proc_start_idx = vol_idx
+
+            # --- Run the process ---------------------------------------------
+            fmri_img = self._process(fmri_img, vol_idx, pre_proc_time)
+            if fmri_img is None:
+                return
+
+            # --- Post-process ------------------------------------------------
+            tstamp, proc_delay = self._record_proc_time(pre_proc_time)
+            fname = self._img_name(fmri_img)
+            self._log_proc(f"#{vol_idx+1};{self._proc_label};{fname}",
+                           tstamp, proc_delay)
+            if self._out_prefix:
+                fmri_img.set_filename(self._out_prefix + fname)
+
+            self._output(fmri_img, vol_idx, tstamp,
+                         **self._next_proc_kwargs(vol_idx))
+
+        except Exception:
+            self._proc_error()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _process(self, fmri_img, vol_idx, pre_proc_time):
+        """
+        Processing step of the module, called by do_proc(). Subclasses in
+        the processing chain must override this.
+
+        Parameters
+        ----------
+        fmri_img : nibabel image object
+            Volume to process. The processed data are usually set in this
+            object (e.g., by self._set_img_data()).
+        vol_idx : int
+            0-based index of the volume (vol_idx >= self.ignore_init).
+        pre_proc_time : float or None
+            Time stamp when the previous module finished. It is needed only
+            to log the processing time of a volume that is not returned
+            (see self._record_proc_time and self._log_proc).
+
+        Returns
+        -------
+        nibabel image object or None
+            Processed image to be passed to the next process, or None if no
+            image is output for this volume. A module that outputs earlier
+            volumes retrospectively passes them with
+            self._output_earlier_volume() within this method.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement _process().")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _next_proc_kwargs(self, vol_idx):
+        """
+        Keyword arguments added to next_proc.do_proc() for volume vol_idx
+        (e.g., qc in RtpRegress). The default is none.
+        """
+        return {}
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _output(self, fmri_img, vol_idx, tstamp, **kwargs):
+        """
+        Pass the processed image to the next process and keep it for saving
+        (if self.save_proc). A module that is the end of the chain (e.g.,
+        RtpApp) overrides this.
+
+        Parameters
+        ----------
+        fmri_img : nibabel image object
+            Processed image.
+        vol_idx : int
+            0-based index of the volume.
+        tstamp : float
+            Time stamp when this module finished, passed to the next process
+            as pre_proc_time.
+        kwargs : dict
+            Keyword arguments added to next_proc.do_proc().
+        """
+        save_name = self._pass_to_next(fmri_img, vol_idx, tstamp, **kwargs)
+        if self.save_proc:
+            self._keep_output(fmri_img, vol_idx, save_name)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _pass_to_next(self, fmri_img, vol_idx, pre_proc_time, copy=False,
+                      **kwargs):
+        """
+        Pass the processed image to self.next_proc.do_proc().
+
+        This module's output is kept in self.proc_data (also read by other
+        modules, e.g., RtpRegress.mask_src_proc), as the next process
+        replaces the data in fmri_img.
+
+        Parameters
+        ----------
+        copy : bool, optional
+            Keep a copy of the data in self.proc_data, for a module whose
+            data array may be modified in place by the next process.
+
+        Returns
+        -------
+        str or None
+            Filename of fmri_img before it is passed, used by
+            self._keep_output() to restore the image. None if there is no
+            next process.
+        """
+        if not self.next_proc:
+            return None
+
+        if copy:
+            self.proc_data = np.array(fmri_img.dataobj)
+        else:
+            self.proc_data = np.asanyarray(fmri_img.dataobj)
+        save_name = fmri_img.get_filename()
+
+        self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
+                               pre_proc_time=pre_proc_time, **kwargs)
+
+        return save_name
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _keep_output(self, fmri_img, vol_idx, save_name):
+        """
+        Keep this module's output for saving (see keep_processed_image),
+        after it was passed by self._pass_to_next(). If there is a next
+        process, which may have changed fmri_img, the data and filename of
+        this module's output are restored first.
+
+        vol_idx : 0-based index of the volume (None: the latest received).
+        save_name : filename returned by self._pass_to_next().
+        """
         if self.next_proc is not None:
-            self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                   pre_proc_time=pre_proc_time)
+            self._set_img_data(fmri_img, self.proc_data)
+            fmri_img.set_filename(save_name)
+
+        self.keep_processed_image(fmri_img, vol_num=vol_idx,
+                                  save_temp=self.online_saving)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _output_earlier_volume(self, fmri_img, vol_idx, save_temp, **kwargs):
+        """
+        Output a volume before the current one, processed retrospectively
+        (e.g., by RtpTshift and RtpRegress) within self._process(). The
+        volume is kept for saving (if self.save_proc) before it is passed to
+        the next process, so it need not be restored. pre_proc_time of the
+        next process is the current time.
+
+        Parameters
+        ----------
+        fmri_img : nibabel image object
+            Processed image of the earlier volume.
+        vol_idx : int
+            0-based index of the earlier volume.
+        save_temp : bool
+            save_temp of keep_processed_image().
+        kwargs : dict
+            Keyword arguments added to next_proc.do_proc().
+        """
+        if self.save_proc:
+            self.keep_processed_image(fmri_img, vol_num=vol_idx,
+                                      save_temp=save_temp)
+
+        if self.next_proc:
+            self.next_proc.do_proc(fmri_img, vol_idx, time.time(), **kwargs)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _set_img_data(fmri_img, data):
+        """Replace the data of fmri_img with the array data."""
+        fmri_img.uncache()
+        fmri_img._dataobj = data
+        fmri_img.set_data_dtype(data.dtype)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _record_proc_time(self, pre_proc_time):
+        """
+        Record the time stamp of the end of the processing.
+
+        Returns
+        -------
+        tstamp : float
+            Time stamp.
+        proc_delay : float or None
+            Time from pre_proc_time; None if pre_proc_time is None.
+        """
+        tstamp = time.time()
+        self._proc_time.append(tstamp)
+        proc_delay = None
+        if pre_proc_time is not None:
+            proc_delay = tstamp - pre_proc_time
+            if self.save_delay:
+                self.proc_delay.append(proc_delay)
+
+        return tstamp, proc_delay
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _log_proc(self, msg, tstamp, proc_delay):
+        """Log msg with the time stamp and the processing time."""
+        msg += f";tstamp={tstamp}"
+        if proc_delay is not None:
+            msg += f";took {proc_delay:.4f}s"
+        self._logger.info(msg)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _img_name(fmri_img):
+        """Filename (without the directory) of fmri_img."""
+        if fmri_img.get_filename():
+            return Path(fmri_img.get_filename()).name
+        return "unknown.nii.gz"
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _proc_error(self):
+        """
+        Log the exception raised in do_proc(); called in its except block.
+        The error message gives the exception type and the location in the
+        module's code (the frame called from do_proc), and the traceback is
+        printed to self.err_out.
+        """
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        tb = exc_tb.tb_next if exc_tb.tb_next is not None else exc_tb
+        errmsg = f'{exc_type}, {tb.tb_frame.f_code.co_filename}' + \
+            f':{tb.tb_lineno}'
+        self._logger.error(errmsg)
+        traceback.print_exc(file=self._err_out)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):
