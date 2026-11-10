@@ -66,14 +66,14 @@ try:
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress, NORM_REGS, MOT_NAMES, DMOT_NAMES
-    from .rtp_retrots import RtpRetroTS
+    from .rtp_retrots import RtpRetroTS, SavedPhysio
 except ImportError:
     from rtpspy.rtp_volreg import RtpVolreg
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_smooth import RtpSmooth
     from rtpspy.rtp_regress import RtpRegress, NORM_REGS, MOT_NAMES, \
         DMOT_NAMES
-    from rtpspy.rtp_retrots import RtpRetroTS
+    from rtpspy.rtp_retrots import RtpRetroTS, SavedPhysio
 
 
 # %% Constants ================================================================
@@ -105,32 +105,8 @@ COLORS = {'online': '#2a78d6', 'offline': '#eb6834', 'fullGLM': '#1baf7a'}
 _logger = logging.getLogger('rtp_offline_compare')
 
 
-# %% Physio ===================================================================
-class CausalSavedPhysio():
-    """
-    RETROICOR regressors from saved physio signals, made at each volume only
-    from the samples recorded up to the end of that volume, as
-    RtpTTLPhysio.get_retrots does during a scan (the phases near the end of
-    the data are estimated without future samples).
-
-    Replaces RtpTTLPhysio as RtpRegress.rtp_physio.
-    """
-
-    def __init__(self, card, resp, sample_freq):
-        self.card = np.asarray(card, dtype=float)
-        self.resp = np.asarray(resp, dtype=float)
-        self.sample_freq = float(sample_freq)
-        self._retrots = RtpRetroTS()
-
-    def get_retrots(self, tr, n_vol=np.inf, tshift=0, timeout=None):
-        n_all = min(len(self.card), len(self.resp))
-        if np.isinf(n_vol):
-            n_vol = int(n_all / self.sample_freq / tr)
-        n_smp = int(round(n_vol * tr * self.sample_freq))
-        if n_smp > n_all:
-            return None  # Not recorded yet
-        return self._retrots.RetroTs(self.resp[:n_smp], self.card[:n_smp],
-                                     tr, self.sample_freq, tshift, n_vol)
+# Causal RETROICOR regressors from saved physio signals
+CausalSavedPhysio = SavedPhysio
 
 
 # %% Helpers ==================================================================

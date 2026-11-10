@@ -23,40 +23,11 @@ import numpy as np
 import nibabel as nib
 
 try:
-    from .rtp_retrots import RtpRetroTS
+    from .rtp_retrots import SavedPhysio
     from .rtp_app import RtpApp
 except Exception:
-    from rtpspy.rtp_retrots import RtpRetroTS
+    from rtpspy.rtp_retrots import SavedPhysio
     from rtpspy.rtp_app import RtpApp
-
-
-# %% SavedPhysio ==============================================================
-class SavedPhysio():
-    """RETROICOR regressors from saved physio signals.
-
-    Offline replacement of RtpTTLPhysio for RtpRegress (rtp_physio), which
-    calls get_retrots().
-    """
-
-    def __init__(self, card, resp, sample_freq):
-        self.card = card
-        self.resp = resp
-        self.sample_freq = sample_freq
-        self._retrots = RtpRetroTS()
-
-    def get_retrots(self, tr, n_vol=np.inf, tshift=0, timeout=None):
-        """Return the RETROICOR regressors of n_vol volumes from the scan
-        onset (the start of the signals). None if the signals are not long
-        enough."""
-        max_vol = int(min(len(self.card), len(self.resp)) /
-                      self.sample_freq / tr)
-        if np.isinf(n_vol):
-            n_vol = max_vol
-        elif n_vol > max_vol:
-            return None
-
-        return self._retrots.RetroTs(self.resp, self.card, tr,
-                                     self.sample_freq, tshift, n_vol)
 
 
 # %% RTP_SIM class ============================================================

@@ -232,6 +232,36 @@ class RtpRetroTS():
         return sosfiltfilt(sos, x)
 
 
+# %% SavedPhysio ==============================================================
+class SavedPhysio():
+    """
+    RETROICOR regressors from saved physio signals, for simulations.
+
+    Replaces RtpTTLPhysio as RtpRegress.rtp_physio. At each volume, only the
+    samples recorded up to the end of that volume are used, as
+    RtpTTLPhysio.get_retrots does during a scan, so the phases near the end
+    are estimated without future samples.
+    """
+
+    def __init__(self, card, resp, sample_freq):
+        self.card = np.asarray(card, dtype=float)
+        self.resp = np.asarray(resp, dtype=float)
+        self.sample_freq = float(sample_freq)
+        self._retrots = RtpRetroTS()
+
+    def get_retrots(self, tr, n_vol=np.inf, tshift=0, timeout=None):
+        """Regressors of n_vol volumes from the scan onset (the start of the
+        signals). None if the signals are not long enough."""
+        n_all = min(len(self.card), len(self.resp))
+        if np.isinf(n_vol):
+            n_vol = int(n_all / self.sample_freq / tr)
+        n_smp = int(round(n_vol * tr * self.sample_freq))
+        if n_smp > n_all:
+            return None  # Not recorded yet
+        return self._retrots.RetroTs(self.resp[:n_smp], self.card[:n_smp],
+                                     tr, self.sample_freq, tshift, n_vol)
+
+
 # %% __main__ (test) ==========================================================
 if __name__ == '__main__':
     from pathlib import Path
