@@ -14,11 +14,13 @@ import time
 import re
 import traceback
 import logging
+import inspect
 
 import numpy as np
 import nibabel as nib
 import psutil
 from PyQt5 import QtWidgets
+import pandas as pd
 import torch
 
 try:
@@ -46,6 +48,12 @@ NORM_REGS = MOT_NAMES + DMOT_NAMES + ROI_REGS
 MOT_REG_OPTS = ('None', 'mot6', 'mot12', 'dmot6')
 PHYS_REG_OPTS = ('None', 'RICOR8', 'RVT5', 'RVT+RICOR13')
 MASK0_TEXT = 'zero-out initial received volume'
+
+# Columns of the online QC table (see RtpRegress.get_qc_table)
+QC_COLS = ('vol_idx', 'FD', 'DVARS', 'tSNR', 'censored')
+# Radius (mm) of the sphere used to convert rotations to displacements in FD
+# (Power et al., 2012)
+FD_HEAD_RADIUS = 50.0
 
 
 # %% lstsq_SVDsolver ==========================================================
@@ -100,6 +108,53 @@ class RtpRegress(RTP):
     A cumulative GLM is used: the GLM is fitted again at each volume with all
     the available volumes (or the latest ones when the scan is longer than
     the buffers; see max_scan_length).
+
+    Online QC
+    ---------
+    At each received volume (after ignore_init), the following measures are
+    computed and kept in self.qc (arrays indexed by the 0-based volume
+    index; see get_qc_table). The latest values are in self.qc_last and are
+    passed to next_proc.do_proc as the keyword argument
+    qc={'FD', 'DVARS', 'tSNR', 'censored'} if next_proc.do_proc accepts it
+    (a 'qc' parameter or **kwargs).
+
+    FD : Framewise displacement (Power et al., 2012), mm.
+        FD_t = sum(|d translation_t|) + 50 * sum(|d rotation_t|),
+        where d is the difference from the previous received volume, the
+        translations (dS, dL, dP) are in mm, and the rotations (roll, pitch,
+        yaw; degrees in volreg._motion) are converted to radians (50 mm is
+        the head radius). 0 for the first volume. NaN if volreg is not set
+        or not enabled.
+    DVARS : Root mean square over the mask voxels of the volume-to-volume
+        difference of the REGRESS input data, as percent of the mean
+        in-mask signal of the current volume.
+        DVARS_t = 100 * sqrt(mean_v((y_t,v - y_t-1,v)^2)) / mean_v(y_t,v),
+        where v runs over the processing mask (maskV). NaN for the first
+        volume (and if the mean signal is ~0).
+    tSNR : Median over the mask voxels of the voxel-wise running temporal
+        SNR (mean / standard deviation with ddof=1) of the REGRESS input
+        data, from the first received volume to the current one (all
+        volumes, including censored ones). The running mean and variance
+        are updated with Welford's algorithm on the device. Voxels with zero
+        variance are excluded. With an even number of voxels, the lower of
+        the two middle values is used (torch.nanmedian). NaN until 3
+        volumes are received.
+    censored : True if FD > censor_FD (censor_FD > 0).
+
+    The QC table is saved as a CSV file at end_reset when save_proc is True
+    (next to the saved processed image; see end_reset).
+
+    Motion censoring
+    ----------------
+    When censor_FD > 0, a volume with FD > censor_FD is excluded from all
+    the GLM fits while it is in the window: its row of the design matrix
+    used for fitting is zeroed (a zero row does not change the
+    least-squares solution; the Y buffer is unchanged), and it is not used
+    for the standardization of the motion/ROI regressors nor for the
+    signal scaling mean (Y_mean). The censored volume itself is still
+    output: its residual is computed with its own regressors and the betas
+    fitted to the other volumes. The first fit waits until the number of
+    uncensored volumes in the window exceeds the number of regressors.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -109,7 +164,7 @@ class RtpRegress(RTP):
                  mask_src_proc=None, phys_reg='None', rtp_physio=None,
                  tshift=0.0, desMtx=None, wait_num=0, mask_file=0,
                  max_scan_length=800, onGPU=gpu_available, reg_retro_proc=True,
-                 **kwargs):
+                 censor_FD=0.0, **kwargs):
         """
         Parameters
         ----------
@@ -190,6 +245,10 @@ class RtpRegress(RTP):
         reg_retro_proc : bool, optional
             Process the volumes received before the regression started
             retrospectively at the first fit. The default is True.
+        censor_FD : float, optional
+            FD threshold (mm) for motion censoring. A volume with FD >
+            censor_FD is excluded from the GLM fits (see the class
+            docstring). 0 turns censoring off. The default is 0.0.
 
         """
         super(RtpRegress, self).__init__(**kwargs)
@@ -221,6 +280,7 @@ class RtpRegress(RTP):
         self.onGPU = onGPU
         self.reg_retro_proc = reg_retro_proc
         self.wait_num = wait_num
+        self.censor_FD = censor_FD
 
         # --- Initialize working data ---
         # Masks
@@ -243,6 +303,16 @@ class RtpRegress(RTP):
         # Memory budget (bytes) for the X and Y buffers. None: half of the
         # free GPU (or system) memory.
         self.max_buffer_bytes = None
+        # Censor flag of each buffer row (set when the row is written)
+        self._censor_row = None
+        self._censor_warned = False  # Warned that few volumes are left
+
+        # Online QC
+        self.qc = None  # {'FD', 'DVARS', 'tSNR', 'censored', 'received'}
+        self.qc_last = None  # QC of the latest volume
+        self._qc_init_state()
+        # (next_proc, whether its do_proc accepts the qc keyword)
+        self._qc_kw_cache = (None, False)
 
         # --- Set the number of volumes to wait ---
         self.set_wait_num()
@@ -309,6 +379,12 @@ class RtpRegress(RTP):
             self._error(errmsg)
             self._proc_ready = False
 
+        if self.censor_FD > 0 and not self._volreg_enabled():
+            self._logger.warning(
+                "Motion censoring is set (censor_FD > 0) but VOLREG is not"
+                " available. FD cannot be calculated and no volume is"
+                " censored.")
+
         if self.next_proc:
             self._proc_ready &= self.next_proc.ready_proc()
 
@@ -344,6 +420,9 @@ class RtpRegress(RTP):
             the number of received volumes - 1 is used.
         pre_proc_time : float, optional
             Time stamp when the previous module finished.
+
+        The online QC of the volume (see the class docstring) is computed
+        here and passed to next_proc.do_proc as the keyword argument qc.
         """
 
         try:
@@ -381,6 +460,9 @@ class RtpRegress(RTP):
             if self.YMtx is None:
                 self._init_Y_buffer()
 
+            if self._qc_M is None:
+                self._init_qc()
+
             # --- Store the volume in the buffers -----------------------------
             buf_len = self.YMtx.shape[0]
             row = vol_idx % buf_len  # Row of this volume in the buffers
@@ -403,6 +485,17 @@ class RtpRegress(RTP):
             # Y. Once Y_mean is set (at the first fit), the data are scaled
             # to percent of the mean.
             ydata = self._to_device(dataV[self.maskV])
+
+            # Online QC of this volume (ydata is not modified)
+            qc = self._update_qc(vol_idx, ydata)
+            if self._censor_row is None or len(self._censor_row) != buf_len:
+                self._censor_row = np.zeros(buf_len, dtype=bool)
+            self._censor_row[row] = qc['censored']  # Reset for a reused row
+            if qc['censored']:
+                self._logger.info(
+                    f"#{vol_idx+1};Censored;FD={qc['FD']:.4f}"
+                    f" > {self.censor_FD}")
+
             if self.Y_mean is not None:
                 ydata = torch.where(self.Y_mean_mask,
                                     ydata / self.Y_mean * 100,
@@ -463,6 +556,41 @@ class RtpRegress(RTP):
             # The rows are contiguous unless the buffer has wrapped.
             contiguous = win_rows_np[-1] - win_rows_np[0] == n_win - 1
 
+            # --- Censored volumes in the window ------------------------------
+            first_fit = self.Y_mean is None
+            n_cens = 0
+            if self.censor_FD > 0:
+                win_cens = self._censor_row[win_rows_np]
+                n_cens = int(win_cens.sum())
+
+            if n_cens > 0:
+                # Uncensored volumes must be more than the regressors
+                n_reg = reg0_num + \
+                    min(1 + int(n_win*self.TR/150), self.max_poly_order) + 1
+                n_keep = n_win - n_cens
+                if n_keep <= n_reg:
+                    if first_fit:
+                        tstamp, proc_delay = \
+                            self._record_proc_time(pre_proc_time)
+                        self._log_proc(
+                            f"#{vol_idx+1};Regression;"
+                            f"Wait for more uncensored volumes ({n_keep} <="
+                            f" {n_reg} regressors);"
+                            f"{self._img_name(fmri_img)}", tstamp,
+                            proc_delay)
+                        return
+                    elif not self._censor_warned:
+                        self._logger.warning(
+                            f"Only {n_keep} uncensored volumes for {n_reg}"
+                            " regressors in the GLM window. The fit is"
+                            " underdetermined (minimum-norm solution).")
+                        self._censor_warned = True
+                else:
+                    self._censor_warned = False
+
+                # Rows (in the window order) used in the fit
+                keep_t = torch.from_numpy(~win_cens).to(self.device)
+
             # --- Update the RETROICOR regressors -----------------------------
             retro_ok = True
             if self.phys_reg != 'None' and self.rtp_physio is not None:
@@ -470,11 +598,13 @@ class RtpRegress(RTP):
                                                   win_rows)
 
             # --- Fit the GLM -------------------------------------------------
-            first_fit = self.Y_mean is None
             if first_fit:
                 # Set Y_mean and scale the data in the window in place
                 Ywin = self.YMtx[win_rows]
-                self.Y_mean = Ywin.mean(axis=0)
+                if n_cens > 0:
+                    self.Y_mean = Ywin[keep_t].mean(axis=0)
+                else:
+                    self.Y_mean = Ywin.mean(axis=0)
                 self.Y_mean_mask = self.Y_mean.abs() > 1e-6
 
                 Ywin[:, self.Y_mean_mask] = \
@@ -498,8 +628,12 @@ class RtpRegress(RTP):
                          if reg_name in NORM_REGS]
             if len(norm_cols):
                 reg = Xp[:, norm_cols]
-                reg_mean = reg.mean(axis=0)
-                reg_std = reg.std(axis=0)
+                if n_cens > 0:
+                    reg_mean = reg[keep_t].mean(axis=0)
+                    reg_std = reg[keep_t].std(axis=0)
+                else:
+                    reg_mean = reg.mean(axis=0)
+                    reg_std = reg.std(axis=0)
                 # A constant regressor (std ~ 0) is zeroed out; the
                 # least-squares solver ignores a zero column.
                 valid = reg_std > 1e-6 * reg_mean.abs().clamp(min=1.0)
@@ -511,6 +645,16 @@ class RtpRegress(RTP):
                 # Exclude the physio regressors from this fit
                 Xp[:, self.retrocols] = 0.0
 
+            # Regressors for the fit: the rows of the censored volumes are
+            # zeroed, which removes them from the least-squares fit (a zero
+            # row adds a constant |y|^2 to the cost; with the SVD solver,
+            # the corresponding rows of U are zero). Xp itself (used for the
+            # residuals) is kept.
+            if n_cens > 0:
+                Xp_fit = Xp * keep_t[:, None].to(Xp.dtype)
+            else:
+                Xp_fit = Xp
+
             # Y of the window. Columns out of Y_mean_mask are zero, so their
             # residuals are 0.
             # The least-squares solution does not depend on the row order.
@@ -519,13 +663,13 @@ class RtpRegress(RTP):
             if n_win == buf_len:
                 Yp = self.YMtx
                 Xfit = torch.empty_like(Xp)
-                Xfit[win_rows] = Xp
+                Xfit[win_rows] = Xp_fit
             elif contiguous:
                 Yp = self.YMtx[win_rows_np[0]:win_rows_np[-1]+1]
-                Xfit = Xp
+                Xfit = Xp_fit
             else:
                 Yp = self.YMtx[win_rows]
-                Xfit = Xp
+                Xfit = Xp_fit
 
             # Beta minimizing ||Y - XB||^2
             Beta = lstsq_SVDsolver(Xfit, Yp)
@@ -567,7 +711,8 @@ class RtpRegress(RTP):
                 save_name = fmri_img.get_filename()
 
                 self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
-                                       pre_proc_time=self._proc_time[-1])
+                                       pre_proc_time=self._proc_time[-1],
+                                       **self._qc_kwargs(qc))
 
             if self.save_proc:
                 if self.next_proc is not None:
@@ -633,6 +778,222 @@ class RtpRegress(RTP):
             else:
                 self._error("Failed to allocate memory for Y.")
             raise e
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _volreg_enabled(self):
+        """True if the motion parameters of volreg can be used for FD."""
+        return self.volreg is not None and \
+            getattr(self.volreg, 'enabled', True) and \
+            hasattr(self.volreg, '_motion')
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _qc_init_state(self):
+        """Reset the running QC state (not the QC table self.qc)."""
+        self._qc_M = None  # Welford running mean (tensor, voxels)
+        self._qc_M2 = None  # Welford sum of squared deviations
+        self._qc_n = 0  # Number of volumes in the running statistics
+        self._qc_prev_y = None  # Input data of the previous volume (tensor)
+        self._qc_prev_mot = None  # Motion of the previous volume
+        self._qc_first_idx = -1  # First and last volume indices in self.qc
+        self._qc_last_idx = -1
+        self._qc_nomot_warned = False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_qc(self):
+        """
+        Allocate the QC table (self.qc) for max_scan_length volumes (or the
+        length of the design matrix) and the running statistics on the
+        device. Called at the first received volume of a run.
+        """
+        self._qc_init_state()
+        n = max(self.max_scan_length,
+                self.desMtx0.shape[0] if self.desMtx0 is not None else 0)
+        self.qc = {
+            'FD': np.full(n, np.nan),
+            'DVARS': np.full(n, np.nan),
+            'tSNR': np.full(n, np.nan),
+            'censored': np.zeros(n, dtype=bool),
+            'received': np.zeros(n, dtype=bool)}
+        vox_num = int(np.sum(self.maskV))
+        self._qc_M = torch.zeros(vox_num, dtype=torch.float32,
+                                 device=self.device)
+        self._qc_M2 = torch.zeros_like(self._qc_M)
+        self.qc_last = None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _update_qc(self, vol_idx, ydata):
+        """
+        Compute the QC measures (FD, DVARS, tSNR, censored; see the class
+        docstring) of volume vol_idx and store them in self.qc.
+
+        Parameters
+        ----------
+        vol_idx : int
+            0-based volume index.
+        ydata : 1D tensor
+            Input data of the volume in the mask (not scaled). It is not
+            modified.
+
+        Returns
+        -------
+        dict
+            {'FD': float, 'DVARS': float, 'tSNR': float, 'censored': bool}
+        """
+        # Extend the table if the scan is longer than max_scan_length
+        nq = len(self.qc['FD'])
+        if vol_idx >= nq:
+            n = max(vol_idx + 1, int(nq * 1.25) + 100)
+            self._logger.warning(
+                f"The scan is longer than max_scan_length ({nq}). The QC"
+                f" table is extended to {n} volumes.")
+            for k, arr in self.qc.items():
+                ext = np.full(n, np.nan) if arr.dtype.kind == 'f' else \
+                    np.zeros(n, dtype=arr.dtype)
+                ext[:nq] = arr
+                self.qc[k] = ext
+
+        # --- FD ---
+        FD = np.nan
+        if self._volreg_enabled() and \
+                vol_idx < self.volreg._motion.shape[0]:
+            mot = self.volreg._motion[vol_idx, :].astype(np.float64)
+            if self._qc_prev_mot is None:
+                FD = 0.0
+            else:
+                dmot = np.abs(mot - self._qc_prev_mot)
+                # Columns: roll, pitch, yaw (degrees), dS, dL, dP (mm)
+                FD = float(dmot[3:].sum() +
+                           FD_HEAD_RADIUS * np.deg2rad(dmot[:3]).sum())
+            self._qc_prev_mot = mot
+        elif self.censor_FD > 0 and not self._qc_nomot_warned:
+            self._logger.warning(
+                "FD is not available (no VOLREG). Motion censoring is not"
+                " applied.")
+            self._qc_nomot_warned = True
+
+        censored = bool(self.censor_FD > 0 and FD > self.censor_FD)
+
+        # --- Running mean and variance (Welford) ---
+        self._qc_n += 1
+        delta = ydata - self._qc_M
+        self._qc_M.add_(delta / self._qc_n)
+        self._qc_M2.addcmul_(delta, ydata - self._qc_M)
+        del delta
+
+        # --- DVARS and tSNR (one device-to-host copy) ---
+        nan_t = torch.tensor(float('nan'), device=ydata.device)
+        if self._qc_prev_y is not None:
+            ymean = ydata.mean()
+            diff = ydata - self._qc_prev_y
+            dvars = torch.sqrt(torch.mean(diff * diff)) / ymean * 100
+            dvars = torch.where(ymean.abs() > 1e-6, dvars, nan_t)
+            del diff
+        else:
+            dvars = nan_t
+        # The input tensor is not modified later; keep the reference.
+        self._qc_prev_y = ydata
+
+        if self._qc_n >= 3:
+            sd = torch.sqrt(self._qc_M2 / (self._qc_n - 1))
+            tsnr_v = torch.where(sd > 0, self._qc_M / sd,
+                                 torch.full_like(sd, float('nan')))
+            tsnr = torch.nanmedian(tsnr_v)
+            del sd, tsnr_v
+        else:
+            tsnr = nan_t
+
+        DVARS, tSNR = torch.stack([dvars, tsnr]).cpu().tolist()
+
+        # --- Store ---
+        self.qc['FD'][vol_idx] = FD
+        self.qc['DVARS'][vol_idx] = DVARS
+        self.qc['tSNR'][vol_idx] = tSNR
+        self.qc['censored'][vol_idx] = censored
+        self.qc['received'][vol_idx] = True
+        if self._qc_first_idx < 0:
+            self._qc_first_idx = vol_idx
+        self._qc_last_idx = max(self._qc_last_idx, vol_idx)
+
+        self.qc_last = {'FD': FD, 'DVARS': DVARS, 'tSNR': tSNR,
+                        'censored': censored}
+        return self.qc_last
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _qc_at(self, vol_idx):
+        """QC dict of volume vol_idx from self.qc."""
+        return {'FD': float(self.qc['FD'][vol_idx]),
+                'DVARS': float(self.qc['DVARS'][vol_idx]),
+                'tSNR': float(self.qc['tSNR'][vol_idx]),
+                'censored': bool(self.qc['censored'][vol_idx])}
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _qc_kwargs(self, qc):
+        """
+        Keyword arguments for next_proc.do_proc: {'qc': qc} if its do_proc
+        accepts a 'qc' keyword (or **kwargs), otherwise {} (e.g., an
+        application class overriding do_proc without **kwargs; it can read
+        the QC from this object's qc_last or qc).
+        """
+        nproc, ok = self._qc_kw_cache
+        if nproc is not self.next_proc:
+            ok = False
+            try:
+                params = inspect.signature(
+                    self.next_proc.do_proc).parameters.values()
+                ok = any(pp.kind == pp.VAR_KEYWORD or pp.name == 'qc'
+                         for pp in params)
+            except (TypeError, ValueError):
+                pass
+            self._qc_kw_cache = (self.next_proc, ok)
+        return {'qc': qc} if ok else {}
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_qc_table(self):
+        """
+        Return the QC table of the received volumes as a pandas DataFrame
+        with the columns vol_idx (0-based), FD, DVARS, tSNR, and censored
+        (0/1). None if no volume has been received. The table of the last
+        run is kept after end_reset until the next run starts.
+        """
+        if self.qc is None or self._qc_first_idx < 0:
+            return None
+        idx = np.arange(self._qc_first_idx, self._qc_last_idx + 1)
+        idx = idx[self.qc['received'][idx]]
+        return pd.DataFrame({
+            'vol_idx': idx,
+            'FD': self.qc['FD'][idx],
+            'DVARS': self.qc['DVARS'][idx],
+            'tSNR': self.qc['tSNR'][idx],
+            'censored': self.qc['censored'][idx].astype(int)},
+            columns=QC_COLS)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def save_qc(self, image_file=None):
+        """
+        Save the QC table as a CSV file. If image_file (the saved processed
+        image) is given, the file is <image_file without .nii*>_QC.csv;
+        otherwise, work_dir/RTP/RtpRegress_QC_<date_time>.csv.
+
+        Returns
+        -------
+        Path or None
+            Saved file (None if there is no QC data).
+        """
+        qc_df = self.get_qc_table()
+        if qc_df is None or len(qc_df) == 0:
+            return None
+
+        if image_file is not None:
+            save_f = Path(re.sub(r'\.nii(\.gz)?$', '', str(image_file)) +
+                          '_QC.csv')
+        else:
+            save_f = Path(self.work_dir) / 'RTP' / \
+                f"{self.__class__.__name__}_QC_" \
+                f"{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        save_f.parent.mkdir(parents=True, exist_ok=True)
+        qc_df.to_csv(save_f, index=False, float_format='%.6g')
+        self._logger.info(f"Saved the QC table as {save_f}")
+        return save_f
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _update_retroicor(self, vol_idx, win_vols, win_rows):
@@ -707,7 +1068,8 @@ class RtpRegress(RTP):
                 self.keep_processed_image(retro_fmri_img, vol_num=vi)
 
             if self.next_proc:
-                self.next_proc.do_proc(retro_fmri_img, vi, time.time())
+                self.next_proc.do_proc(retro_fmri_img, vi, time.time(),
+                                       **self._qc_kwargs(self._qc_at(vi)))
 
             time.sleep(0.005)  # Not to send the data too fast
 
@@ -768,8 +1130,32 @@ class RtpRegress(RTP):
         self.GS_maskdata = None
         self.WM_maskdata = None
         self.Vent_maskdata = None
+        self._censor_row = None
+        self._censor_warned = False
 
-        return super(RtpRegress, self).end_reset()
+        out_files = super(RtpRegress, self).end_reset()
+
+        # Save the QC table next to the processed image (when save_proc is
+        # True, as the processed image). The table (self.qc) is kept until
+        # the next run starts; the running state is reset.
+        try:
+            if self.save_proc:
+                if out_files is None:
+                    out_files = {}
+                key = f"{self.__class__.__name__}:processed image"
+                qc_f = self.save_qc(out_files.get(key))
+                if qc_f is not None:
+                    out_files[f"{self.__class__.__name__}:QC"] = qc_f
+        except Exception:
+            self._logger.error("Failed to save the QC table:\n"
+                               + traceback.format_exc())
+
+        first_idx, last_idx = self._qc_first_idx, self._qc_last_idx
+        self._qc_init_state()
+        # Keep the range of the table for get_qc_table
+        self._qc_first_idx, self._qc_last_idx = first_idx, last_idx
+
+        return out_files
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_mask(self, maskdata, sub_i=0, method='zero_out'):
@@ -1527,6 +1913,20 @@ class RtpRegress(RTP):
 
             return
 
+        elif attr == 'censor_FD':
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                val = np.nan
+            if not np.isfinite(val) or val < 0:
+                self._logger.error(
+                    f"censor_FD must be >= 0 (0: off). Got {val}.")
+                if reset_fn:
+                    reset_fn(self.censor_FD)
+                return
+            if reset_fn is None and hasattr(self, 'ui_censorFD_spBx'):
+                self.ui_censorFD_spBx.setValue(val)
+
         elif attr == 'reg_retro_proc':
             if hasattr(self, 'ui_retroProc_chb'):
                 self.ui_retroProc_chb.setChecked(val)
@@ -1713,6 +2113,24 @@ class RtpRegress(RTP):
         self.ui_showDesMtx_btn.setText('Show design matrix')
         self.ui_showDesMtx_btn.setEnabled(self.desMtx_read is not None)
 
+        # censor_FD
+        var_lb = QtWidgets.QLabel("Censor FD > (mm, 0: off) :")
+        self.ui_censorFD_spBx = QtWidgets.QDoubleSpinBox()
+        self.ui_censorFD_spBx.setMinimum(0.0)
+        self.ui_censorFD_spBx.setMaximum(10.0)
+        self.ui_censorFD_spBx.setDecimals(2)
+        self.ui_censorFD_spBx.setSingleStep(0.1)
+        self.ui_censorFD_spBx.setValue(self.censor_FD)
+        self.ui_censorFD_spBx.setToolTip(
+            "Exclude volumes with framewise displacement (Power et al., 2012)"
+            " larger than this value from the GLM fits.")
+        self.ui_censorFD_spBx.editingFinished.connect(
+            lambda: self.set_param('censor_FD',
+                                   self.ui_censorFD_spBx.value(),
+                                   self.ui_censorFD_spBx.setValue))
+        ui_rows.append((var_lb, self.ui_censorFD_spBx))
+        self.ui_objs.extend([var_lb, self.ui_censorFD_spBx])
+
         # --- Checkbox row ----------------------------------------------------
         # Retrospective process
         self.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
@@ -1777,7 +2195,7 @@ class RtpRegress(RTP):
                          'col_names_read', 'Y_mean', 'Y_mean_mask',
                          'GS_maskdata', 'WM_maskdata', 'Vent_maskdata',
                          'GS_col', 'WM_col', 'Vent_col', 'desMtx_read',
-                         'mask_src_proc', 'work_dir')
+                         'mask_src_proc', 'work_dir', 'qc', 'qc_last')
         # Path values are already converted to str by RTP.get_params
         return {k: v for k, v in all_opts.items() if k not in excluded_opts}
 

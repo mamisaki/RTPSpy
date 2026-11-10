@@ -294,6 +294,9 @@ class RtpApp(RTP):
         self._plt_xi = []
 
         self._roi_sig = [[] for _ in range(self.num_ROIs)]
+
+        # Online QC of the latest volume passed from REGRESS (see do_proc)
+        self.qc_last = None
         # endregion
 
         # region: RTP module instances ----------------------------------------
@@ -381,8 +384,22 @@ class RtpApp(RTP):
         return self._proc_ready
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0):
-        """Process the RTP image (e.g., extracting the ROI signal)."""
+    def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=0, **kwargs):
+        """Process the RTP image (e.g., extracting the ROI signal).
+
+        kwargs can include qc, the online QC of the volume from RtpRegress
+        ({'FD': mm, 'DVARS': %, 'tSNR': median tSNR, 'censored': bool};
+        see RtpRegress). It is kept in self.qc_last. The message sent to the
+        external application is not changed; an application class
+        overriding this method can use self.qc_last (or accept the qc
+        keyword) to use the QC, e.g., to skip the feedback of a censored
+        volume. If the overriding do_proc has no qc parameter or **kwargs,
+        REGRESS does not pass qc; the QC is then available in
+        self.rtp_objs["REGRESS"].qc_last.
+        """
+        if "qc" in kwargs:
+            self.qc_last = kwargs["qc"]
+
         try:
             # Increment the number of received volumes
             self._vol_num += 1  # 1-based number of volumes received
@@ -3212,6 +3229,7 @@ class RtpApp(RTP):
             "scan_onset",
             "extApp_isAlive",
             "ROI_resample_opts",
+            "qc_last",
         )
 
         for k in excld_opts:
