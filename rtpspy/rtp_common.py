@@ -34,6 +34,11 @@ import matplotlib.backends.qt_compat as qt_compat
 from matplotlib.backends.backend_qt5agg import FigureCanvas
 from matplotlib.figure import Figure
 
+try:
+    from .rtp_volume import RtpVolume
+except Exception:
+    from rtpspy.rtp_volume import RtpVolume
+
 
 # %% RTP base class ===========================================================
 # Default maximum scan length (number of volumes) used to pre-allocate the
@@ -150,12 +155,16 @@ class RTP(object):
            the count if it is None. A volume with vol_idx < self.ignore_init
            is skipped. self._proc_start_idx is set to the index of the first
            volume that is not skipped.
-        2. self._process() processes the volume. If it returns None (e.g.,
+        2. A nibabel image that is not an RtpVolume is converted to an
+           RtpVolume (sharing the data; the given image is not changed).
+           self._process() processes the volume. If it returns None (e.g.,
            the volume is held to be output later, or it cannot be
            processed), the steps below are not done.
         3. Record the processing time (self._proc_time, self.proc_delay with
            save_delay) and log it. self._out_prefix is added to the
-           filename of the processed image.
+           filename of the processed image, and its vol_idx and proc_time
+           are set. The received volume is not changed: if _process()
+           returns it and a prefix is to be added, a new volume is made.
         4. self._output() passes the image to self.next_proc.do_proc(), with
            the keyword arguments returned by self._next_proc_kwargs(), and
            keeps it for saving if self.save_proc is True.
@@ -165,7 +174,7 @@ class RTP(object):
 
         Parameters
         ----------
-        fmri_img : nibabel image object
+        fmri_img : RtpVolume or nibabel image object
             Volume to process.
         vol_idx : int, optional
             0-based index of the volume from the scan start. If None, the
@@ -189,19 +198,31 @@ class RTP(object):
                 self._proc_start_idx = vol_idx
 
             # --- Run the process ---------------------------------------------
-            fmri_img = self._process(fmri_img, vol_idx, pre_proc_time)
-            if fmri_img is None:
+            in_img = RtpVolume.as_volume(fmri_img, vol_idx=vol_idx)
+            out_img = self._process(in_img, vol_idx, pre_proc_time)
+            if out_img is None:
                 return
 
             # --- Post-process ------------------------------------------------
             tstamp, proc_delay = self._record_proc_time(pre_proc_time)
-            fname = self._img_name(fmri_img)
+            fname = self._img_name(out_img)
             self._log_proc(f"#{vol_idx+1};{self._proc_label};{fname}",
                            tstamp, proc_delay)
-            if self._out_prefix:
-                fmri_img.set_filename(self._out_prefix + fname)
+            # The received volume is not changed. in_img is made here if
+            # fmri_img was converted.
+            own = out_img is not in_img or in_img is not fmri_img
+            if not own and self._out_prefix:
+                out_img = in_img.with_data(np.asanyarray(in_img.dataobj))
+                own = True
+            if own:
+                # A volume made by this module
+                out_img = RtpVolume.as_volume(out_img)
+                if self._out_prefix:
+                    out_img.set_filename(self._out_prefix + fname)
+                out_img.vol_idx = vol_idx
+                out_img.proc_time = tstamp
 
-            self._output(fmri_img, vol_idx, tstamp,
+            self._output(out_img, vol_idx, tstamp,
                          **self._next_proc_kwargs(vol_idx))
 
         except Exception:
@@ -215,9 +236,9 @@ class RTP(object):
 
         Parameters
         ----------
-        fmri_img : nibabel image object
-            Volume to process. The processed data are usually set in this
-            object (e.g., by self._set_img_data()).
+        fmri_img : RtpVolume
+            Volume to process. It must not be changed; the processed data
+            are returned in a new volume (e.g., fmri_img.with_data(data)).
         vol_idx : int
             0-based index of the volume (vol_idx >= self.ignore_init).
         pre_proc_time : float or None
@@ -227,7 +248,7 @@ class RTP(object):
 
         Returns
         -------
-        nibabel image object or None
+        RtpVolume or None
             Processed image to be passed to the next process, or None if no
             image is output for this volume. A module that outputs earlier
             volumes retrospectively passes them with
@@ -253,7 +274,7 @@ class RTP(object):
 
         Parameters
         ----------
-        fmri_img : nibabel image object
+        fmri_img : RtpVolume
             Processed image.
         vol_idx : int
             0-based index of the volume.
@@ -263,9 +284,10 @@ class RTP(object):
         kwargs : dict
             Keyword arguments added to next_proc.do_proc().
         """
-        save_name = self._pass_to_next(fmri_img, vol_idx, tstamp, **kwargs)
+        self._pass_to_next(fmri_img, vol_idx, tstamp, **kwargs)
         if self.save_proc:
-            self._keep_output(fmri_img, vol_idx, save_name)
+            self.keep_processed_image(fmri_img, vol_num=vol_idx,
+                                      save_temp=self.online_saving)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _pass_to_next(self, fmri_img, vol_idx, pre_proc_time, copy=False,
@@ -273,54 +295,25 @@ class RTP(object):
         """
         Pass the processed image to self.next_proc.do_proc().
 
-        This module's output is kept in self.proc_data (also read by other
-        modules, e.g., RtpRegress.mask_src_proc), as the next process
-        replaces the data in fmri_img.
+        The data of this module's output are kept in self.proc_data (read
+        by other modules, e.g., RtpRegress.mask_src_proc).
 
         Parameters
         ----------
         copy : bool, optional
             Keep a copy of the data in self.proc_data, for a module whose
             data array may be modified in place by the next process.
-
-        Returns
-        -------
-        str or None
-            Filename of fmri_img before it is passed, used by
-            self._keep_output() to restore the image. None if there is no
-            next process.
         """
         if not self.next_proc:
-            return None
+            return
 
         if copy:
             self.proc_data = np.array(fmri_img.dataobj)
         else:
             self.proc_data = np.asanyarray(fmri_img.dataobj)
-        save_name = fmri_img.get_filename()
 
         self.next_proc.do_proc(fmri_img, vol_idx=vol_idx,
                                pre_proc_time=pre_proc_time, **kwargs)
-
-        return save_name
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _keep_output(self, fmri_img, vol_idx, save_name):
-        """
-        Keep this module's output for saving (see keep_processed_image),
-        after it was passed by self._pass_to_next(). If there is a next
-        process, which may have changed fmri_img, the data and filename of
-        this module's output are restored first.
-
-        vol_idx : 0-based index of the volume (None: the latest received).
-        save_name : filename returned by self._pass_to_next().
-        """
-        if self.next_proc is not None:
-            self._set_img_data(fmri_img, self.proc_data)
-            fmri_img.set_filename(save_name)
-
-        self.keep_processed_image(fmri_img, vol_num=vol_idx,
-                                  save_temp=self.online_saving)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _output_earlier_volume(self, fmri_img, vol_idx, save_temp, **kwargs):
@@ -328,13 +321,13 @@ class RTP(object):
         Output a volume before the current one, processed retrospectively
         (e.g., by RtpTshift and RtpRegress) within self._process(). The
         volume is kept for saving (if self.save_proc) before it is passed to
-        the next process, so it need not be restored. pre_proc_time of the
-        next process is the current time.
+        the next process. pre_proc_time of the next process is the current
+        time, which is also set to fmri_img.proc_time.
 
         Parameters
         ----------
-        fmri_img : nibabel image object
-            Processed image of the earlier volume.
+        fmri_img : RtpVolume
+            Processed image of the earlier volume, made by this module.
         vol_idx : int
             0-based index of the earlier volume.
         save_temp : bool
@@ -346,16 +339,10 @@ class RTP(object):
             self.keep_processed_image(fmri_img, vol_num=vol_idx,
                                       save_temp=save_temp)
 
+        tstamp = time.time()
+        fmri_img.proc_time = tstamp
         if self.next_proc:
-            self.next_proc.do_proc(fmri_img, vol_idx, time.time(), **kwargs)
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    @staticmethod
-    def _set_img_data(fmri_img, data):
-        """Replace the data of fmri_img with the array data."""
-        fmri_img.uncache()
-        fmri_img._dataobj = data
-        fmri_img.set_data_dtype(data.dtype)
+            self.next_proc.do_proc(fmri_img, vol_idx, tstamp, **kwargs)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _record_proc_time(self, pre_proc_time):

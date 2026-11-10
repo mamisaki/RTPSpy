@@ -1,4 +1,5 @@
 from .rtp_common import RTP
+from .rtp_volume import RtpVolume
 from .rtp_watch import RtpWatch
 from .rtp_tshift import RtpTshift
 from .rtp_volreg import RtpVolreg

@@ -28,13 +28,16 @@ from PyQt5 import QtWidgets
 
 try:
     from .rtp_common import RTP
+    from .rtp_volume import RtpVolume
 except Exception:
     # For DEBUG environment
     try:
         sys.path.append("./")
         from rtpspy.rtp_common import RTP
+        from rtpspy.rtp_volume import RtpVolume
     except Exception:
         from rtp_common import RTP
+        from rtp_volume import RtpVolume
 
 
 # %% class RtpWatch ===========================================================
@@ -238,8 +241,9 @@ class RtpWatch(RTP):
         of the processing chain: it receives a file path (from the watchdog
         observer) instead of an image, it counts only the files that make a
         valid volume, and its processing time is the delay from the file
-        creation. The output steps are shared with RTP (_pass_to_next,
-        _keep_output).
+        creation. The image is passed as an RtpVolume (with vol_idx,
+        acq_time = file creation time, and proc_time = time stamp set). The
+        output step is shared with RTP (_pass_to_next).
 
         Parameters
         ----------
@@ -279,7 +283,8 @@ class RtpWatch(RTP):
             # Record process time
             tstamp = time.time()
             self._proc_time.append(tstamp)
-            proc_delay = tstamp - file_path.stat().st_ctime
+            acq_time = file_path.stat().st_ctime
+            proc_delay = tstamp - acq_time
             if self.save_delay:
                 self.proc_delay.append(proc_delay)
 
@@ -294,17 +299,28 @@ class RtpWatch(RTP):
             msg += f";interval {t_interval:.4f}s"
             self._logger.info(msg)
 
+            # The volume made in this module (an image returned by an
+            # overridden reader is converted)
+            fmri_img = RtpVolume.as_volume(fmri_img)
+            fmri_img.vol_idx = self._vol_num - 1
+            fmri_img.acq_time = acq_time
+            fmri_img.proc_time = tstamp
+
             # Run the next process. self.proc_data is a copy of the data,
             # as the next process may modify the array in place.
-            save_name = self._pass_to_next(
+            self._pass_to_next(
                 fmri_img, self._vol_num - 1, self._proc_time[-1], copy=True)
 
             # Record the number of the processed volume
             self._done_proc = self._vol_num
 
-            # Keep the image read in this module
+            # Keep the image read in this module (its data copy, if it was
+            # passed to the next process)
             if self.save_proc:
-                self._keep_output(fmri_img, None, save_name)
+                if self.next_proc:
+                    fmri_img = fmri_img.with_data(self.proc_data)
+                self.keep_processed_image(fmri_img, vol_num=None,
+                                          save_temp=self.online_saving)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -501,7 +517,7 @@ class RtpWatch(RTP):
             save_filename = re.sub(r"\+orig.*", "", save_filename) + ".nii.gz"
             self.nii_save_filename = self._make_path_safe(save_filename)
 
-            fmri_img = nib.Nifti1Image(
+            fmri_img = RtpVolume(
                 load_img.dataobj, load_img.affine, header=load_img.header
             )
             fmri_img.set_filename(self.nii_save_filename)
@@ -567,7 +583,7 @@ class RtpWatch(RTP):
         img_array = np.transpose(img_array, (2, 1, 0))
         img_array = np.flip(img_array, axis=1)
 
-        nii_img = nib.Nifti1Image(img_array, affine)
+        nii_img = RtpVolume(img_array, affine)
 
         # Set TR (seconds) in pixdim
         if TR is not None:

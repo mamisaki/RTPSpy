@@ -95,9 +95,7 @@ class RtpSmooth(RTP):
             self.set_mask(np.asarray(fmri_img.dataobj))
 
         # --- Run the process -------------------------------------------------
-        self._set_img_data(fmri_img, self.smooth(fmri_img))
-
-        return fmri_img
+        return fmri_img.with_data(self.smooth(fmri_img))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

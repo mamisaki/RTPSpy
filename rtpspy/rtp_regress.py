@@ -427,8 +427,8 @@ class RtpRegress(RTP):
 
         Parameters
         ----------
-        fmri_img : nibabel image object
-            Volume to process. Its data are replaced with the residual.
+        fmri_img : RtpVolume
+            Volume to process. The residual is returned in a new volume.
         vol_idx : int
             0-based index of the volume from the scan start.
         pre_proc_time : float or None
@@ -688,12 +688,11 @@ class RtpRegress(RTP):
 
         del Beta
 
-        # Replace the data of fmri_img with the residual
+        # Output the residual in a new volume
         vol_data = np.zeros_like(self.maskV, dtype=np.float32)
         vol_data[self.maskV] = Resid
-        self._set_img_data(fmri_img, vol_data)
 
-        return fmri_img
+        return fmri_img.with_data(vol_data)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _init_X_buffer(self):
@@ -1023,8 +1022,6 @@ class RtpRegress(RTP):
             vi = vi0 + ii  # 0-based volume index
             vol_data = np.zeros_like(self.maskV, dtype=np.float32)
             vol_data[self.maskV] = Resids[ii, :]
-            retro_fmri_img = nib.Nifti1Image(vol_data, fmri_img.affine,
-                                             header=fmri_img.header)
             if vol_str is not None:
                 save_name = save_name_temp.replace(
                     vol_str, f"{vi+1}".zfill(len(vol_str)))
@@ -1032,7 +1029,8 @@ class RtpRegress(RTP):
                 save_name = save_name_temp.replace(
                     '.nii', f"_{vi+1:04d}.nii")
 
-            retro_fmri_img.set_filename(save_name)
+            retro_fmri_img = fmri_img.with_data(
+                vol_data, filename=save_name, vol_idx=vi)
 
             # The volumes output retrospectively are not saved as
             # single-volume files (save_temp=False).

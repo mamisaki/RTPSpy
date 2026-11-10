@@ -165,7 +165,7 @@ class RtpVolreg(RTP):
 
         # --- Run the process -------------------------------------------------
         aligned_data, motpar = self.align_one(fmri_img, vol_idx)
-        self._set_img_data(fmri_img, aligned_data)
+        out_img = fmri_img.with_data(aligned_data)
 
         # (roll, pitch, yaw, dx, dy, dz) -> AFNI 3dvolreg output order
         self._motion[vol_idx, :] = motpar[[0, 1, 2, 5, 3, 4]]
@@ -175,7 +175,7 @@ class RtpVolreg(RTP):
         for ii in range(6):
             self._plt_motion[ii].append(self._motion[vol_idx, ii])
 
-        return fmri_img
+        return out_img
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def end_reset(self):

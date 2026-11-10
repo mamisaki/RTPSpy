@@ -10,7 +10,6 @@ RTP online slice-timing correction
 # %% import ===================================================================
 from pathlib import Path
 import time
-import copy
 import json
 
 import numpy as np
@@ -121,7 +120,7 @@ class RtpTshift(RTP):
         # The first volume cannot be corrected alone. Keep it and correct it
         # retrospectively when the next volume arrives.
         if len(self.pre_data) == 0:
-            self.pre_fmri_img = copy.deepcopy(fmri_img)
+            self.pre_fmri_img = fmri_img  # not changed by other modules
             self.pre_data.append(dataV)
             return None
 
@@ -135,7 +134,7 @@ class RtpTshift(RTP):
                 # current volume too and correct it retrospectively when the
                 # next volume arrives.
                 self.pre_data.append(dataV)
-                self.pre_fmri_img = copy.deepcopy(fmri_img)
+                self.pre_fmri_img = fmri_img
                 return None
 
             del self.pre_fmri_img
@@ -151,14 +150,12 @@ class RtpTshift(RTP):
                 self.wm1 * self.pre_data[-1] + \
                 self.w0p1 * dataV
 
-        # Set the corrected data in fmri_img
-        self._set_img_data(fmri_img, shift_dataV)
-
         # Update the previous volume list
         self.pre_data.append(dataV)
         self.pre_data.pop(0)
 
-        return fmri_img
+        # Output the corrected data in a new volume
+        return fmri_img.with_data(shift_dataV)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _correct_previous_volume(self, dataV, vol_idx):
@@ -188,7 +185,6 @@ class RtpTshift(RTP):
                     self.r1w0p1 * dataV
 
         pre_img = self.pre_fmri_img
-        self._set_img_data(pre_img, retro_shft_dataV)
 
         # Log message
         fname = pre_img.get_filename() or "unknown.nii.gz"
@@ -197,14 +193,16 @@ class RtpTshift(RTP):
         msg += f"Retrospective slice-timing correction;{fname}"
         self._logger.info(msg)
 
-        # Set the save filename
-        pre_img.set_filename(self._out_prefix + fname + '.nii.gz')
+        # The corrected volume with the save filename
+        out_img = pre_img.with_data(
+            retro_shft_dataV, filename=self._out_prefix + fname + '.nii.gz',
+            vol_idx=vol_idx-1)
 
         # Keep this module's output (see RTP._pass_to_next), and output the
         # corrected volume.
         if self.next_proc:
-            self.proc_data = np.asanyarray(pre_img.dataobj)
-        self._output_earlier_volume(pre_img, vol_idx-1,
+            self.proc_data = np.asanyarray(out_img.dataobj)
+        self._output_earlier_volume(out_img, vol_idx-1,
                                     save_temp=self.online_saving)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
