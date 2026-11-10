@@ -4571,9 +4571,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--save_ttl",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Save the TTL onset and offset times (default: True)",
+        action="store_true",
+        help="Save the TTL onset and offset times (off by default when "
+        "run from the command line)",
     )
     parser.add_argument("--debug", action="store_true",
                         help="Log DEBUG messages to the console")
