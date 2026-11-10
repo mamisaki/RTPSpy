@@ -136,49 +136,69 @@ class RtpTTLPhysio(RTP):
             ):
                 time.sleep(0.1)
 
-            self.init_rbuf_access()
+            # The ring buffers may not be made yet just after the start:
+            # retry quietly until init_timeout, then warn if still not ready.
+            while (
+                not self.init_rbuf_access(quiet=True) and
+                (time.time() - st) < self.init_timeout
+            ):
+                time.sleep(0.1)
+            if not self._rbuf:
+                self.init_rbuf_access()
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(f"Failed to connect to rt_physio: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def init_rbuf_access(self):
+    def init_rbuf_access(self, quiet=False):
         """Attach to the shared-memory buffers of rt_physio (the scan onset
-        and the signal ring buffers) and get its sampling frequency."""
-        if self.TTLPhysioCom is None:
-            return
+        and the signal ring buffers) and get its sampling frequency.
 
+        Parameters
+        ----------
+        quiet : bool
+            Log a failure at DEBUG instead of WARNING (for a retried call).
+
+        Returns
+        -------
+        bool
+            True if the buffers are attached.
+        """
+        if self.TTLPhysioCom is None:
+            return False
+
+        log_fail = self._logger.debug if quiet else self._logger.warning
         if not self.TTLPhysioCom.rpc_ping():
-            self._logger.warning("rt_physio RPC server does not respond.")
-            return
+            log_fail("rt_physio RPC server does not respond.")
+            return False
 
         # Scan onset
         scan_onset = self.TTLPhysioCom.call_rt_proc(
-            "GET_SCAN_ONSET", get_return=True
+            "GET_SCAN_ONSET", get_return=True, quiet=quiet
         )
         if scan_onset is None:
-            self._logger.warning(
+            log_fail(
                 "Failed to get the scan onset from the rt_physio RPC server."
             )
-            return
+            return False
 
         self._scan_onset = SharedMemoryRingBuffer(**scan_onset)
 
         # Signal ring buffers
         physio_rbufs = self.TTLPhysioCom.call_rt_proc(
-            "GET_RBUF", get_return=True
+            "GET_RBUF", get_return=True, quiet=quiet
         )
         if physio_rbufs is None or not set(self.RBUF_NAMES).issubset(
             physio_rbufs
         ):
             # Not ready yet (e.g., rt_physio is making the buffers). The
             # available property tries again later.
-            self._logger.warning(
+            log_fail(
                 "Failed to get the ring buffers from the rt_physio RPC "
                 "server."
             )
-            return
+            return False
 
         self._rbuf = {
             lab: SharedMemoryRingBuffer(**rb)
@@ -191,6 +211,7 @@ class RtpTTLPhysio(RTP):
         )
         if physio_params is not None:
             self.sample_freq = physio_params.get("sample_freq", None)
+        return True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # getter, setter

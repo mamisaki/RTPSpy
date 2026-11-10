@@ -273,7 +273,8 @@ class RPCSocketCom:
         data,
         pkl=False,
         get_return=False,
-        timeout=1.5
+        timeout=1.5,
+        quiet=False
     ):
         """
         Call a remote procedure.
@@ -336,7 +337,10 @@ class RPCSocketCom:
             rcv_data = self.rpc_recv_data(sock)
             if rcv_data is None:
                 errmsg = f'No response for call {data}'
-                self._logger.warning(errmsg)
+                if quiet:
+                    self._logger.debug(errmsg)
+                else:
+                    self._logger.warning(errmsg)
 
             self._logger.debug(f"Received data: {rcv_data}")
             sock.close()
