@@ -55,10 +55,11 @@ FD_HEAD_RADIUS = 50.0
 
 
 # %% lstsq_SVDsolver ==========================================================
-def lstsq_SVDsolver(A, B, rcond=None):
+def lstsq_SVDsolver(A, B, rcond=None, pen=None):
     """
     Solve a linear system AX = B in the least-squares sense (minimize
-    ||AX - B||^2) with SVD.
+    ||AX - B||^2) with SVD. With pen, the ridge-penalized solution
+    (minimize ||AX - B||^2 + sum_j (pen_j X_j)^2) is returned.
 
     Parameters
     ----------
@@ -74,6 +75,10 @@ def lstsq_SVDsolver(A, B, rcond=None):
         determination, singular values are treated as zero if they are smaller
         than rcond times the largest singular value.
         The default is the float32 machine precision times min(A.shape).
+    pen : 1D tensor (m), optional
+        Ridge penalty of each column (0: not penalized). The rows diag(pen)
+        are appended to A (with zero rows of B), so only the first n rows of
+        U are used and B is not copied.
 
     Returns
     -------
@@ -82,11 +87,16 @@ def lstsq_SVDsolver(A, B, rcond=None):
         cut-off (including an all-zero A) give zero contribution.
     """
 
+    n = A.shape[0]
+    if pen is not None:
+        A = torch.cat([A, torch.diag(pen)], dim=0)
+
     if rcond is None:
         rcond = np.finfo(np.float32).eps * min(A.shape)
 
     # Thin SVD for A: A = U diag(S) Vh
     U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+    U = U[:n]
 
     # Pseudo-inverse of the singular values; values <= S.max() * rcond are
     # treated as zero (no Python loop, no GPU-host sync).
@@ -169,7 +179,7 @@ class RtpRegress(RTP):
                  mask_src_proc=None, phys_reg='None', rtp_physio=None,
                  tshift=0.0, desMtx=None, wait_num=0, mask_file=0,
                  max_scan_length=800, onGPU=gpu_available, reg_retro_proc=True,
-                 censor_FD=0.0, **kwargs):
+                 censor_FD=0.0, ridge_c=0.5, **kwargs):
         """
         Parameters
         ----------
@@ -234,6 +244,13 @@ class RtpRegress(RTP):
             receive before starting the regression. If it is smaller than the
             number of regressors + 1, the regression waits for that number of
             volumes instead. The default is 0.
+        ridge_c : float, optional
+            Ridge regularization of the early fits. The nuisance regressors
+            (motion, physio, GS/WM/Vent; not the polynomials or desMtx) are
+            penalized by alpha * ||x_j||^2 with alpha = ridge_c * (p/n)^2
+            (p: number of regressors, n: number of volumes in the fit), so
+            the penalty is strong when the GLM starts with n close to p and
+            vanishes as n grows. 0 disables it. The default is 0.5.
         mask_file : 0 or str (Path), optional
             Mask of the processing region. 0 means a mask of the non-zero
             voxels in the first received volume. The default is 0.
@@ -286,6 +303,7 @@ class RtpRegress(RTP):
         self.reg_retro_proc = reg_retro_proc
         self.wait_num = wait_num
         self.censor_FD = censor_FD
+        self.ridge_c = ridge_c
 
         # --- Initialize working data ---
         # Masks
@@ -671,8 +689,26 @@ class RtpRegress(RTP):
             Yp = self.YMtx[win_rows]
             Xfit = Xp_fit
 
-        # Beta minimizing ||Y - XB||^2
-        Beta = lstsq_SVDsolver(Xfit, Yp)
+        # Ridge penalty of the nuisance regressors for the early fits
+        # (alpha = ridge_c * (p/n)^2, relative to each column's energy)
+        pen = None
+        n_fit = n_win - n_cens
+        if self.ridge_c > 0 and n_fit > 0:
+            alpha = self.ridge_c * (Xp.shape[1] / n_fit) ** 2
+            phys_names = PHYS_REG_NAMES.get(self.phys_reg, [])
+            nuis = [ii for ii, nm in enumerate(self.reg_names[:reg0_num])
+                    if nm in NORM_REGS or nm in phys_names]
+            if len(nuis):
+                pen = torch.zeros(Xfit.shape[1], dtype=Xfit.dtype,
+                                  device=Xfit.device)
+                pen[nuis] = torch.sqrt(
+                    alpha * (Xfit[:, nuis] ** 2).sum(axis=0))
+
+        # Beta minimizing ||Y - XB||^2 (+ the ridge penalty)
+        if pen is None:
+            Beta = lstsq_SVDsolver(Xfit, Yp)
+        else:
+            Beta = lstsq_SVDsolver(Xfit, Yp, pen=pen)
 
         if self.reg_retro_proc and first_fit:
             # Residuals of all the volumes in the window. The volumes
@@ -1807,16 +1843,16 @@ class RtpRegress(RTP):
             self._ui_call('show_design_matrix')
             return
 
-        elif attr == 'censor_FD':
+        elif attr in ('censor_FD', 'ridge_c'):
             try:
                 val = float(val)
             except (TypeError, ValueError):
                 val = np.nan
             if not np.isfinite(val) or val < 0:
                 self._logger.error(
-                    f"censor_FD must be >= 0 (0: off). Got {val}.")
+                    f"{attr} must be >= 0 (0: off). Got {val}.")
                 if reset_fn:
-                    reset_fn(self.censor_FD)
+                    reset_fn(getattr(self, attr))
                 return
             if reset_fn is None:
                 self._ui_update(attr, val)

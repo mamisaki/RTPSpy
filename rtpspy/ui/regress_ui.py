@@ -38,6 +38,7 @@ class RtpRegressUI(RtpModuleUI):
         "phys_reg": ("ui_physReg_cmbBx", "setCurrentIndex",
                      PHYS_REG_OPTS.index),
         "censor_FD": ("ui_censorFD_spBx", "setValue"),
+        "ridge_c": ("ui_ridgeC_spBx", "setValue"),
         "reg_retro_proc": ("ui_retroProc_chb", "setChecked"),
     }
 
@@ -284,6 +285,25 @@ class RtpRegressUI(RtpModuleUI):
                                 o.ui_censorFD_spBx.setValue))
         ui_rows.append((var_lb, o.ui_censorFD_spBx))
         o.ui_objs.extend([var_lb, o.ui_censorFD_spBx])
+
+        # ridge_c
+        var_lb = QtWidgets.QLabel("Early-fit ridge (0: off) :")
+        o.ui_ridgeC_spBx = QtWidgets.QDoubleSpinBox()
+        o.ui_ridgeC_spBx.setMinimum(0.0)
+        o.ui_ridgeC_spBx.setMaximum(10.0)
+        o.ui_ridgeC_spBx.setDecimals(2)
+        o.ui_ridgeC_spBx.setSingleStep(0.1)
+        o.ui_ridgeC_spBx.setValue(o.ridge_c)
+        o.ui_ridgeC_spBx.setToolTip(
+            "Ridge penalty of the nuisance regressors, ridge_c * (p/n)^2,"
+            " which reduces overfitting while the number of volumes n is"
+            " close to the number of regressors p. 0: least squares.")
+        o.ui_ridgeC_spBx.editingFinished.connect(
+            lambda: o.set_param('ridge_c',
+                                o.ui_ridgeC_spBx.value(),
+                                o.ui_ridgeC_spBx.setValue))
+        ui_rows.append((var_lb, o.ui_ridgeC_spBx))
+        o.ui_objs.extend([var_lb, o.ui_ridgeC_spBx])
 
         # --- Checkbox row ----------------------------------------------------
         # Retrospective process

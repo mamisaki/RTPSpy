@@ -87,7 +87,7 @@ def new_rtp(work_dir, device, mot, ph, msl, retro, ign, censor=0.0,
     kw = dict(TR=TR, mot_reg=mot_reg, volreg=FakeVolreg(mot),
               max_scan_length=msl, onGPU=(device == "cuda"),
               reg_retro_proc=retro, ignore_init=ign, wait_num=0,
-              censor_FD=censor)
+              censor_FD=censor, ridge_c=0.0)
     if ph is not None:
         kw.update(phys_reg="RICOR8", rtp_physio=FakePhysio(ph, none_at))
     rtp = RtpRegress(**kw)
@@ -418,3 +418,29 @@ def test_fd_censoring(case, device, tmp_path, monkeypatch):
         if zr.any():
             Xd = orig_solver(A[~zr], B[~zr])
             assert float((Xd - X).abs().max() / X.abs().max()) < 1e-3
+
+
+# --- Ridge regularization of the early fits ----------------------------------
+def test_ridge_solver_matches_closed_form(device):
+    g = torch.Generator().manual_seed(0)
+    A = torch.randn(30, 6, generator=g, dtype=torch.float64).to(device)
+    B = torch.randn(30, 50, generator=g, dtype=torch.float64).to(device)
+    pen = torch.tensor([0, 0, 1.5, 0.5, 2.0, 0], dtype=torch.float64,
+                       device=device)
+    x = lstsq_SVDsolver(A, B, pen=pen)
+    ref = torch.linalg.solve(A.T @ A + torch.diag(pen ** 2), A.T @ B)
+    assert torch.allclose(x, ref, atol=1e-8)
+    # No penalty: plain least squares
+    x0 = lstsq_SVDsolver(A, B, pen=torch.zeros(6, dtype=torch.float64,
+                                               device=device))
+    assert torch.allclose(x0, lstsq_SVDsolver(A, B), atol=1e-10)
+
+
+def test_ridge_c_param():
+    rtp = RtpRegress(TR=TR)
+    assert rtp.ridge_c == 0.5
+    rtp.set_param('ridge_c', 0)
+    assert rtp.ridge_c == 0.0
+    rtp.set_param('ridge_c', -1)
+    assert rtp.ridge_c == 0.0
+    assert rtp.get_params()['ridge_c'] == 0.0

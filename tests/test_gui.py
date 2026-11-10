@@ -62,7 +62,7 @@ def test_panels(gui_app):
     qt_app, app, gui, _ = gui_app
     assert isinstance(nt.get_notifier(), QtNotifier)
     n_rows = {"WATCH": 8, "VOLREG": 7, "TSHIFT": 8, "SMOOTH": 5,
-              "REGRESS": 13}
+              "REGRESS": 14}
     for proc, n in n_rows.items():
         obj = app.rtp_objs[proc]
         assert isinstance(obj._ui, RtpModuleUI)
