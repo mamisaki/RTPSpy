@@ -16,14 +16,17 @@ import shutil
 from functools import partial
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import logging
 
 import torch
-from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt6 import QtCore, QtWidgets, QtGui
 
 from ..rtp_common import save_parameters, load_parameters
 from ..notifier import set_notifier
+from .. import gui_theme
 from .qt_notifier import QtNotifier
+from . import window_place
 
 GPU_available = (
     torch.cuda.is_available() or torch.backends.mps.is_available()
@@ -33,8 +36,30 @@ GPU_available = (
 # order
 _RTP_PROCS = ("WATCH", "VOLREG", "TSHIFT", "SMOOTH", "REGRESS", "EXTSIG")
 
-# Background color of the selected module button
-_SELECTED_BTN_STYLE = "background-color: rgb(255,201,32)"
+# Log console: font size (pt) and the minimum number of characters per line
+LOG_FONT_SIZE = 9
+LOG_MIN_COLUMNS = 80
+
+# Style of the selected module button
+_SELECTED_BTN_STYLE = gui_theme.qt_button_style("selected")
+
+
+# %% _same_geometry ===========================================================
+def _same_geometry(geo, target, pos_tol=60, size_tol=10):
+    """True if Tk geometry strings 'WxH+X+Y' geo and target agree (the
+    position within pos_tol, as the window frame offsets depend on the
+    window manager)."""
+    import re
+
+    def parse(g):
+        m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", g or "")
+        return tuple(int(v) for v in m.groups()) if m else None
+
+    a, b = parse(geo), parse(target)
+    if a is None or b is None:
+        return False
+    return (abs(a[0] - b[0]) <= size_tol and abs(a[1] - b[1]) <= size_tol
+            and abs(a[2] - b[2]) <= pos_tol and abs(a[3] - b[3]) <= pos_tol)
 
 
 # %% RtpGUI class =============================================================
@@ -71,6 +96,9 @@ class RtpGUI(QtWidgets.QMainWindow):
         self._notifier = QtNotifier()
         set_notifier(self._notifier)
 
+        # Colors of the rt_physio window (gui_theme)
+        gui_theme.apply_qt(QtWidgets.QApplication.instance())
+
         self.rtp_objs = rtp_objs
         self.rtp_apps = rtp_apps
 
@@ -101,52 +129,152 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         self._logger.info("=== Start application ===\n")
 
-        self.resize(self.sizeHint())
-        self.move(50, 0)
+        # Main window at the top left of the primary monitor; the other
+        # windows are placed next to it (window_place.py). It is placed
+        # before and after show(), as the window manager may move it.
+        window_place.place_main(self)
         self.show()
+        window_place.place_main(self)
 
-        self.set_physio_geometry()
+        # rt_physio is started at its place (RtpTTLPhysio passes
+        # --geometry). Check it and move it if the window manager placed it
+        # elsewhere.
+        self.ensure_physio_geometry()
+        # Keep the 'Physio' box in sync with the physio window, which
+        # rt_physio opens by itself and its close button hides
+        self._start_physio_watch()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _start_physio_watch(self, interval_ms=1000):
+        """
+        Check the state of the physio window (GET_WINDOW_STATE RPC of
+        rt_physio) every interval_ms and set the 'Physio' check box to it,
+        without showing or hiding the window. The state is read in a worker
+        thread, so that a slow RPC never blocks the GUI.
+        """
+        if (
+            self.rtp_objs.get("TTLPHYSIO") is None
+            or not hasattr(self, "chbShowPhysio")
+            or getattr(self, "_physio_watch_timer", None) is not None
+        ):
+            return
+        self._physio_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="physio_state")
+        self._physio_query = None  # (submit time, future)
+        self._physio_chk_time = 0.0  # Last change of the box by the user
+        self._physio_watch_timer = QtCore.QTimer(self)
+        self._physio_watch_timer.timeout.connect(self._watch_physio_state)
+        self._physio_watch_timer.start(interval_ms)
+        self._watch_physio_state()
+
+    def _watch_physio_state(self):
+        """Timer callback of _start_physio_watch: apply the last state read
+        and start the next read."""
+        ttl = self.rtp_objs.get("TTLPHYSIO")
+        if ttl is None:
+            return
+        if self._physio_query is not None:
+            t_submit, fut = self._physio_query
+            if not fut.done():
+                return
+            try:
+                state = fut.result()
+            except Exception:
+                state = None
+            # A state read before the user's last click may be stale
+            if state is not None and t_submit > self._physio_chk_time:
+                checked = state in ("normal", "iconic")
+                if self.chbShowPhysio.isChecked() != checked:
+                    self.chbShowPhysio.blockSignals(True)
+                    self.chbShowPhysio.setChecked(checked)
+                    self.chbShowPhysio.blockSignals(False)
+        self._physio_query = (
+            time.monotonic(),
+            self._physio_pool.submit(ttl.get_window_state))
+
+    def _stop_physio_watch(self):
+        timer = getattr(self, "_physio_watch_timer", None)
+        if timer is not None:
+            timer.stop()
+            self._physio_watch_timer = None
+            self._physio_pool.shutdown(wait=False, cancel_futures=True)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @staticmethod
+    def _scroll_area(widget):
+        """Put widget in a vertical scroll area (shown only when the window
+        is shorter than the widget)."""
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setWidget(widget)
+        # Width of the content and the scroll bar, so that no horizontal
+        # scroll is needed
+        area.setMinimumWidth(
+            widget.minimumSizeHint().width()
+            + area.verticalScrollBar().sizeHint().width())
+        return area
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def ensure_physio_geometry(self, tries=10, interval_ms=500):
+        """
+        Check the physio window geometry (GET_GEOMETRY RPC of rt_physio)
+        and send SET_GEOMETRY until it is at its place in the layout. A
+        geometry sent before the window opens is ignored by rt_physio, so
+        this is repeated every interval_ms, up to tries times.
+        """
+        ttl = self.rtp_objs.get("TTLPHYSIO")
+        if ttl is None or tries <= 0:
+            return
+        target = window_place.tk_geometry(self, "physio")
+        if not _same_geometry(ttl.get_geometry(), target):
+            ttl.move(target)
+            QtCore.QTimer.singleShot(
+                interval_ms,
+                lambda: self.ensure_physio_geometry(tries - 1, interval_ms))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_physio_geometry(self):
-        """Place the physio window to the right of the main window."""
+        """Place the physio window to the right of the main window
+        (window_place.py). rt_physio ignores it while its plot window is not
+        open, so show_physio_chk calls this again after opening it."""
         if (
             "TTLPHYSIO" in self.rtp_objs and
             self.rtp_objs["TTLPHYSIO"] is not None
         ):
-            geo = self.geometry()
-            x = geo.x() + geo.width() + 5
-            y = geo.y()
-            physio_geometry = f"450x450+{x}+{y}"
-            self.rtp_objs["TTLPHYSIO"].move(physio_geometry)
+            self.rtp_objs["TTLPHYSIO"].move(
+                window_place.tk_geometry(self, "physio"))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_menu(self):
         """Make the File menu."""
         # Save parameters
-        saveOptAct = QtWidgets.QAction(QtGui.QIcon("save.png"), "&Save", self)
+        saveOptAct = QtGui.QAction(QtGui.QIcon("save.png"), "&Save", self)
         saveOptAct.setShortcut("Ctrl+S")
         saveOptAct.setStatusTip("Save current parameters")
         saveOptAct.triggered.connect(self.ui_save_parameters)
 
         # Load parameters
-        loadOptAct = QtWidgets.QAction(QtGui.QIcon("load.png"), "&Load", self)
+        loadOptAct = QtGui.QAction(QtGui.QIcon("load.png"), "&Load", self)
         loadOptAct.setShortcut("Ctrl+L")
         loadOptAct.setStatusTip("Load parameters")
         loadOptAct.triggered.connect(self.ui_load_parameters)
 
         # Exit without saving
-        exitNosaveAct = QtWidgets.QAction(
+        exitNosaveAct = QtGui.QAction(
             QtGui.QIcon("exit.png"), "Exit&WithoutSaving", self
         )
         exitNosaveAct.setShortcut("Ctrl+W")
         exitNosaveAct.setStatusTip(
             "Exit application without saving parameters"
         )
-        exitNosaveAct.triggered.connect(lambda: QtWidgets.qApp.exit(1))
+        exitNosaveAct.triggered.connect(
+            lambda: QtWidgets.QApplication.instance().exit(1))
 
         # Exit
-        exitAct = QtWidgets.QAction(QtGui.QIcon("exit.png"), "&Exit", self)
+        exitAct = QtGui.QAction(QtGui.QIcon("exit.png"), "&Exit", self)
         exitAct.setShortcut("Ctrl+Q")
         exitAct.setStatusTip("Exit application")
         exitAct.triggered.connect(self.close)
@@ -167,13 +295,13 @@ class RtpGUI(QtWidgets.QMainWindow):
         rtp_objs : dict
             RTP module objects.
         onGPU : bool, optional
-            Initial state of the 'Use GPU' checkbox.
+            Initial state of the 'GPU' checkbox.
         """
 
         # region: Watch/Work dir controls -------------------------------------
         # Watching directory
         self.labelWatchDir = QtWidgets.QLabel(self.mainWidget)
-        self.labelWatchDir.setText("rtfMRI watching directory")
+        self.labelWatchDir.setText("Watch directory")
 
         self.lineEditWatchDir = QtWidgets.QLineEdit(self.mainWidget)
         self.lineEditWatchDir.setReadOnly(True)
@@ -198,9 +326,9 @@ class RtpGUI(QtWidgets.QMainWindow):
         # Show motion
         if "VOLREG" in rtp_objs:
             self.chbShowMotion = QtWidgets.QCheckBox(
-                "Show motion", self.mainWidget
+                "Motion", self.mainWidget
             )
-            self.chbShowMotion.setCheckState(0)
+            self.chbShowMotion.setChecked(False)
             self.chbShowMotion.stateChanged.connect(
                 lambda x: self.show_mot_chk(x)
             )
@@ -211,9 +339,9 @@ class RtpGUI(QtWidgets.QMainWindow):
             self.rtp_objs["TTLPHYSIO"] is not None
         ):
             self.chbShowPhysio = QtWidgets.QCheckBox(
-                "Show physio", self.mainWidget
+                "Physio", self.mainWidget
             )
-            self.chbShowPhysio.setCheckState(0)
+            self.chbShowPhysio.setChecked(False)
             self.chbShowPhysio.stateChanged.connect(
                 lambda x: self.show_physio_chk(x)
             )
@@ -227,9 +355,10 @@ class RtpGUI(QtWidgets.QMainWindow):
             elif torch.backends.mps.is_available():
                 dev_name = torch.device("mps")
             self.chbUseGPU = QtWidgets.QCheckBox(
-                f"Use GPU\n{dev_name}", self.mainWidget
+                "GPU", self.mainWidget
             )
-            self.chbUseGPU.setCheckState(onGPU * 2)
+            self.chbUseGPU.setToolTip(str(dev_name))
+            self.chbUseGPU.setChecked(bool(onGPU))
             self.chbUseGPU.stateChanged.connect(self.enable_GPU)
 
         # endregion: Devices and plot checkbox --------------------------------
@@ -315,10 +444,23 @@ class RtpGUI(QtWidgets.QMainWindow):
         self.logOutput_txtEd = QtWidgets.QTextEdit(self.mainWidget)
         self.logOutput_txtEd.setReadOnly(True)
         self.logOutput_txtEd.setAcceptRichText(True)
-        self.logOutput_txtEd.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self.logOutput_txtEd.setLineWrapMode(
+            QtWidgets.QTextEdit.LineWrapMode.NoWrap)
 
-        self.logOutput_txtEd.font().setFamily("Courier")
-        self.logOutput_txtEd.font().setPointSize(9)
+        # Fixed-width font; the console shows at least LOG_MIN_COLUMNS
+        # characters per line (the main window is widened to fit it)
+        log_font = QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont)
+        log_font.setPointSize(LOG_FONT_SIZE)
+        self.logOutput_txtEd.setFont(log_font)
+        self.logOutput_txtEd.document().setDefaultFont(log_font)
+        fm = QtGui.QFontMetrics(log_font)
+        self.logOutput_txtEd.setMinimumWidth(
+            fm.horizontalAdvance("x" * LOG_MIN_COLUMNS)
+            + self.logOutput_txtEd.verticalScrollBar().sizeHint().width()
+            + 2 * self.logOutput_txtEd.frameWidth()
+            + 2 * int(self.logOutput_txtEd.document().documentMargin())
+        )
         self.logOutput_txtEd.setMinimumHeight(128)
         # endregion: log console ----------------------------------------------
 
@@ -327,12 +469,13 @@ class RtpGUI(QtWidgets.QMainWindow):
         """Layout GUI controls"""
 
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Policy.Fixed
         )
 
         # Root vertical box layout
         vBoxRoot = QtWidgets.QVBoxLayout(self.mainWidget)
-        vSplitterRoot = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        vSplitterRoot = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         vBoxRoot.addWidget(vSplitterRoot)
 
         topWidget = QtWidgets.QWidget(self.mainWidget)
@@ -356,12 +499,21 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         # --- Checkboxes ------------------------------------------------------
         self.grpBoxChkBoxes = QtWidgets.QGroupBox(
-            "GPU/Signal/Plot", self.mainWidget
+            "Use / Show", self.mainWidget
         )
         vBoxTop.addWidget(self.grpBoxChkBoxes)
         self.ui_hChkBoxes = QtWidgets.QHBoxLayout(self.grpBoxChkBoxes)
         if hasattr(self, "chbUseGPU"):
             self.ui_hChkBoxes.addWidget(self.chbUseGPU)
+
+        if hasattr(self, "chbUseGPU"):
+            # A separator between 'Use' (GPU) and 'Show' (plots)
+            sep = QtWidgets.QFrame()
+            sep.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+            sep.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+            self.ui_hChkBoxes.addSpacing(6)
+            self.ui_hChkBoxes.addWidget(sep)
+            self.ui_hChkBoxes.addSpacing(6)
 
         if hasattr(self, "chbShowPhysio"):
             self.ui_hChkBoxes.addWidget(self.chbShowPhysio)
@@ -369,11 +521,17 @@ class RtpGUI(QtWidgets.QMainWindow):
         if hasattr(self, "chbShowMotion"):
             self.ui_hChkBoxes.addWidget(self.chbShowMotion)
 
+        for app_obj in self.rtp_apps.values():
+            if hasattr(app_obj, "ui_showLatency_cbx"):
+                self.ui_hChkBoxes.addWidget(app_obj.ui_showLatency_cbx)
+        # The ROI signal at the right end
         for app_name, app_obj in self.rtp_apps.items():
             if hasattr(app_obj, "ui_showROISig_cbx"):
                 ui_cbx = app_obj.ui_showROISig_cbx
-                ui_cbx.setText(f"{app_name}:{ui_cbx.text()}")
+                if len(self.rtp_apps) > 1:  # Which app's signal
+                    ui_cbx.setText(f"{app_name}: {ui_cbx.text()}")
                 self.ui_hChkBoxes.addWidget(ui_cbx)
+        self.ui_hChkBoxes.addStretch(1)  # Pack the check boxes to the left
 
         # --- Parameter tabs --------------------------------------------------
         vBoxTop.addWidget(self.options_tab)
@@ -389,7 +547,8 @@ class RtpGUI(QtWidgets.QMainWindow):
         for btn in self.Apps_btn.values():
             hBoxAppBtns.addWidget(btn)
 
-        vBoxAppSet.addWidget(self.stackedAppSetPanes)
+        # In a scroll area, so that the main window fits a small screen
+        vBoxAppSet.addWidget(self._scroll_area(self.stackedAppSetPanes))
 
         # --- RTP setting ---
         RTPSetWidget = QtWidgets.QWidget(self.mainWidget)
@@ -402,7 +561,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         for btn in self.RTP_btn.values():
             hBoxRTPBtns.addWidget(btn)
 
-        vBoxRTPSet.addWidget(self.stackedRTPSetPanes)
+        vBoxRTPSet.addWidget(self._scroll_area(self.stackedRTPSetPanes))
 
         # --- Parameter list ---
         vBoxListParam = QtWidgets.QVBoxLayout(self.listAllParams)
@@ -544,7 +703,8 @@ class RtpGUI(QtWidgets.QMainWindow):
 
         new_entries = self._log_fd.read()
         if new_entries:
-            self.logOutput_txtEd.moveCursor(QtGui.QTextCursor.End)
+            self.logOutput_txtEd.moveCursor(
+                QtGui.QTextCursor.MoveOperation.End)
             log_lines = new_entries.split("\n")
             for ii, log_line in enumerate(log_lines):
                 # The last item is the rest after the last newline.
@@ -554,16 +714,19 @@ class RtpGUI(QtWidgets.QMainWindow):
                     add_line = log_line
 
                 if "!!!" in add_line or "ERROR" in add_line:
-                    self.logOutput_txtEd.setTextColor(QtGui.QColor(255, 0, 0))
+                    self.logOutput_txtEd.setTextColor(
+                        QtGui.QColor(gui_theme.COLORS["red"]))
                     add_line = add_line.replace("!!!", "")
                 else:
-                    self.logOutput_txtEd.setTextColor(QtGui.QColor(0, 0, 0))
+                    self.logOutput_txtEd.setTextColor(
+                        QtGui.QColor(gui_theme.COLORS["fg"]))
 
                 if "<B>" in add_line:
-                    self.logOutput_txtEd.setFontWeight(QtGui.QFont.Bold)
+                    self.logOutput_txtEd.setFontWeight(QtGui.QFont.Weight.Bold)
                     add_line = add_line.replace("<B>", "")
                 else:
-                    self.logOutput_txtEd.setFontWeight(QtGui.QFont.Normal)
+                    self.logOutput_txtEd.setFontWeight(
+                        QtGui.QFont.Weight.Normal)
 
                 self.logOutput_txtEd.insertPlainText(add_line)
 
@@ -618,15 +781,18 @@ class RtpGUI(QtWidgets.QMainWindow):
         ):
             return
 
+        self._physio_chk_time = time.monotonic()
         if state > 0:
             self.rtp_objs["TTLPHYSIO"].show()
+            # Keep it at its place in the layout
+            self.ensure_physio_geometry()
         else:
             self.rtp_objs["TTLPHYSIO"].hide()
 
         # Sync the checkbox when this is called from the program
         if hasattr(self, "chbShowPhysio"):
             self.chbShowPhysio.blockSignals(True)
-            self.chbShowPhysio.setCheckState(2 if state > 0 else 0)
+            self.chbShowPhysio.setChecked(state > 0)
             self.chbShowPhysio.blockSignals(False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -634,7 +800,7 @@ class RtpGUI(QtWidgets.QMainWindow):
         """Set the GPU use of all modules from the checkbox."""
         for obj in self._all_objs().values():
             if hasattr(obj, "onGPU"):
-                obj.onGPU = self.chbUseGPU.checkState() > 0
+                obj.onGPU = self.chbUseGPU.isChecked()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_options_list(self, html=True, hide_sham=True):
@@ -704,6 +870,7 @@ class RtpGUI(QtWidgets.QMainWindow):
                 return
 
         # Stop physio
+        self._stop_physio_watch()
         if (
             "TTLPHYSIO" in self.rtp_objs
             and self.rtp_objs["TTLPHYSIO"] is not None

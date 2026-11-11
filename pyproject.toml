@@ -10,36 +10,41 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Masaya Misaki", email = "mamisaki@gmail.com" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: POSIX :: Linux",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
-# Imported by rtpspy (excluding rtpspy/FastSurfer). The tested versions are
-# those of RTPSpy.yml (Python 3.12). AFNI and dcm2niix are external tools and
-# are not installed by pip.
+# Imported by rtpspy (excluding rtpspy/FastSurfer), tested with Python 3.13
+# and the newest versions available for it (2026-11). Python 3.14 and later
+# are not used yet: antspyx has no wheels for them (antspyx 0.6.3 also caps
+# numpy < 2.4 and scipy < 1.16).
+# install.sh installs these with uv (PyTorch for the detected GPU driver) and
+# pulls the AFNI and FastSurfer containers. dcm2niix is the PyPI package that
+# ships the dcm2niix program.
 dependencies = [
-    "numpy>=1.26",
-    "scipy>=1.11",
-    "nibabel>=5.2",
-    "pandas>=2.1",
-    "torch>=2.2",
-    "pydicom>=3.0",
-    "watchdog>=4.0",
-    "psutil>=5.9",
+    "numpy>=2.3",
+    "scipy>=1.15",
+    "nibabel>=5.5",
+    "pandas>=3.0",
+    "torch>=2.14",
+    "pydicom>=3.0.2",
+    "watchdog>=7.0",
+    "psutil>=7.2",
     "pyserial>=3.5",
-    "PyQt5>=5.15",
-    "matplotlib>=3.8",
-    "cycler>=0.11",
-    "antspyx>=0.5",
+    "PyQt6>=6.12",
+    "matplotlib>=3.11",
+    "cycler>=0.12",
+    "antspyx>=0.6.3",
+    "dcm2niix>=1.0.20261029",
 ]
 
 [project.optional-dependencies]
-# Segmentation with FastSurfer (rtpspy.fast_seg). FastSurfer itself is not
-# a pip package: clone it into rtpspy/FastSurfer (see README) and install
-# its pinned requirements with
+# Segmentation with a local FastSurfer clone instead of the FastSurfer
+# container (install.sh). FastSurfer itself is not a pip package: clone it
+# into rtpspy/FastSurfer and install its pinned requirements with
 #   pip install -r rtpspy/FastSurfer/requirements.txt
 # The list below is the core of FastSurfer v2.6.0 requirements.
 fastseg = [
@@ -55,8 +60,8 @@ fastseg = [
     "yacs>=0.1.8",
 ]
 # Optional: monitor geometry for the window layout (falls back to tkinter)
-gui = ["screeninfo>=0.8"]
-test = ["pytest>=7.4"]
+gui = ["screeninfo>=0.8.1"]
+test = ["pytest>=9.0"]
 
 [project.urls]
 Homepage = "https://github.com/mamisaki/RTPSpy"
@@ -64,7 +69,8 @@ Repository = "https://github.com/mamisaki/RTPSpy"
 
 [tool.setuptools]
 # The rtpspy package and its GUI subpackage (rtpspy.ui). rtpspy/FastSurfer
-# (a separate clone) and rtpspy/lib_RetroTS are not packaged.
+# (a separate clone) is not packaged.
+# rtpspy/containers.py is also run as a script by the AFNI wrappers.
 packages = ["rtpspy", "rtpspy.ui"]
 include-package-data = false
 # Installed as a command (rtp_imgproc looks for ants_run.py on PATH)

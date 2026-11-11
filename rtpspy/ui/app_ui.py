@@ -16,15 +16,16 @@ import subprocess
 from functools import partial
 
 import numpy as np
-from PyQt5 import QtWidgets, QtCore
-import matplotlib.pyplot as plt
+from PyQt6 import QtWidgets, QtCore
 
 from ..rtp_app import _FILE_PARAM_LABELS, _send_scan_start
 from .module_ui import RtpModuleUI
 from .widgets import MatplotlibWindow
+from . import window_place
+from .. import gui_theme
 
-# Set button color in the UI
-_SET_BTN_STYLE = "background-color: rgb(151,217,235);"
+# Style of the 'Set' buttons in the UI
+_SET_BTN_STYLE = gui_theme.qt_button_style("accent")
 
 
 # %% RtpAppUI =================================================================
@@ -52,9 +53,9 @@ class RtpAppUI(RtpModuleUI):
         if attr == "enable_RTP":
             if hasattr(o, "ui_enableRTP_chb"):
                 if val == 0:
-                    o.ui_enableRTP_chb.setCheckState(0)
+                    o.ui_enableRTP_chb.setChecked(False)
                 else:
-                    o.ui_enableRTP_chb.setCheckState(2)
+                    o.ui_enableRTP_chb.setChecked(True)
 
         elif attr == "extApp_addr":
             # Show the address without calling set_param again
@@ -82,8 +83,8 @@ class RtpAppUI(RtpModuleUI):
         """'Create masks' button: run make_masks with the progress dialog.
         Shift-click: overwrite. Ctrl-click: ask_cmd."""
         o = self.obj
-        shift = QtCore.Qt.ShiftModifier
-        ctrl = QtCore.Qt.ControlModifier
+        shift = QtCore.Qt.KeyboardModifier.ShiftModifier
+        ctrl = QtCore.Qt.KeyboardModifier.ControlModifier
         modifiers = QtWidgets.QApplication.keyboardModifiers()
         overwrite = modifiers in (shift, ctrl | shift)
         ask_cmd = modifiers in (ctrl, ctrl | shift)
@@ -111,7 +112,8 @@ class RtpAppUI(RtpModuleUI):
             msgBox = QtWidgets.QMessageBox(o.main_win)
             msgBox.setWindowTitle("dcm2niix")
             msgBox.setText("Converting DICOM to NIfTI ...")
-            msgBox.setStandardButtons(QtWidgets.QMessageBox.NoButton)
+            msgBox.setStandardButtons(
+                QtWidgets.QMessageBox.StandardButton.NoButton)
             msgBox.show()
             time.sleep(0.1)
             msgBox.repaint()
@@ -136,7 +138,8 @@ class RtpAppUI(RtpModuleUI):
 
             msgBox.accept()
             QtWidgets.QMessageBox.information(
-                o.main_win, "dcm2niix", ostr, QtWidgets.QMessageBox.Ok
+                o.main_win, "dcm2niix", ostr,
+                QtWidgets.QMessageBox.StandardButton.Ok
             )
 
         except Exception as e:
@@ -192,13 +195,13 @@ class RtpAppUI(RtpModuleUI):
         """Show the motion and physio plots of the enabled modules."""
         o = self.obj
         if o.rtp_objs["VOLREG"].enabled:
-            o.main_win.chbShowMotion.setCheckState(2)
+            o.main_win.chbShowMotion.setChecked(True)
 
         if (
             o.rtp_objs["REGRESS"].enabled
             and o.rtp_objs["REGRESS"].phys_reg != "None"
         ):
-            o.main_win.chbShowPhysio.setCheckState(2)
+            o.main_win.chbShowPhysio.setChecked(True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_run_check(self):
@@ -295,7 +298,7 @@ class RtpAppUI(RtpModuleUI):
             and "waiting" in o.ui_ready_btn.text().lower()
         ):
             if o._scanning:
-                o.ui_ready_btn.setText("Session is running")
+                o.ui_ready_btn.setText("Running")
                 o.ui_manStart_btn.setEnabled(False)
 
         # Schedule the next check
@@ -329,6 +332,67 @@ class RtpAppUI(RtpModuleUI):
         """Clear the ROI signal plot."""
         if hasattr(self, "pltROISig"):
             self.pltROISig.reset_plot()
+
+    # --- Image viewer --------------------------------------------------------
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def show_images(self, base_f, ovl_f=None, title=None, choices=None,
+                    start_dir=None):
+        """Show base_f with the overlay ovl_f in the image viewer
+        (rtpspy.ui.image_viewer). One viewer window is reused; it opens
+        right of the main window. choices: {name: file} of the Base and
+        Overlay menus of the viewer."""
+        from .image_viewer import ImageViewer
+
+        viewer = getattr(self, "_viewer", None)
+        try:
+            if viewer is None:
+                viewer = ImageViewer(base_f, ovl_f, title=title,
+                                     choices=choices, start_dir=start_dir)
+                x, y, _, _ = window_place.geometry(
+                    self.obj.main_win, "physio")
+                viewer.setGeometry(x, y, 900, 440)
+                self._viewer = viewer  # Keep a reference
+            else:
+                viewer.set_choices(choices, start_dir)
+                viewer.set_images(base_f, ovl_f, title)
+        except Exception as e:
+            self.obj.err_popup(f"Failed to show the image: {e}")
+            return
+        if viewer.isMinimized():
+            viewer.showNormal()
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
+
+    def open_image_dialog(self, start_dir):
+        """Choose an image file and show it in the viewer."""
+        fname, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.obj.main_win, "Image to show", str(start_dir),
+            "Images (*.nii *.nii.gz *.HEAD);;All files (*)")
+        if fname:
+            self.show_images(fname, start_dir=start_dir)
+
+    # --- Latency plot --------------------------------------------------------
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def open_latency_plot(self):
+        """Open the plot of the latency of each volume (rtp_latency.py)."""
+        if hasattr(self, "pltLatency") and self.pltLatency.isRunning():
+            return
+        self.pltLatency = PlotLatency(self.obj, main_win=self.obj.main_win)
+        self.pltLatency.run()
+
+    def close_latency_plot(self):
+        if hasattr(self, "pltLatency"):
+            pltLatency = self.pltLatency
+            del self.pltLatency
+            pltLatency.end_thread()
+
+    def show_latency_chk(self, state):
+        """Checkbox to show or hide the latency plot."""
+        if state == 2:
+            self.open_latency_plot()
+        else:
+            self.close_latency_plot()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_ROIsig_chk(self, state):
@@ -442,7 +506,7 @@ class RtpAppUI(RtpModuleUI):
         )
 
         # region: dcm2nii --
-        o.ui_dcm2nii_btn = QtWidgets.QPushButton("dcm2niix")
+        o.ui_dcm2nii_btn = QtWidgets.QPushButton("DICOM to NIfTI (dcm2niix)")
         o.ui_dcm2nii_btn.clicked.connect(lambda: self.run_dcm2nii())
         o.ui_preprocessing_fLayout.addRow(o.ui_dcm2nii_btn)
         o.ui_objs.append(o.ui_dcm2nii_btn)
@@ -459,7 +523,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_anat_orig_lnEd, o.ui_anat_orig_btn,
             o.ui_anat_orig_del_btn
         ) = self._add_file_row(
-            RefImg_gLayout, 0, "Anatomy image :", "anat_orig", default_dir,
+            RefImg_gLayout, 0, "Anatomy :", "anat_orig", default_dir,
             show_value=False, highlight=True,
         )
         if o.anat_orig and Path(o.anat_orig).exists():
@@ -470,7 +534,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_func_orig_lnEd, o.ui_func_orig_btn,
             o.ui_func_orig_del_btn
         ) = self._add_file_row(
-            RefImg_gLayout, 1, "Base function image : ", "func_orig",
+            RefImg_gLayout, 1, "Base function :", "func_orig",
             default_dir, show_value=False, highlight=True,
         )
 
@@ -479,13 +543,13 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_func_param_ref_lnEd, o.ui_param_ref_btn,
             o.ui_param_ref_del_btn
         ) = self._add_file_row(
-            RefImg_gLayout, 2, "fMRI parameter reference : ",
+            RefImg_gLayout, 2, "fMRI parameters :",
             "func_param_ref", default_dir, show_value=False, highlight=True,
         )
         # endregion
 
         # region: Fieldmap PEPOLAR images group --
-        o.ui_Fmap_grpBx = QtWidgets.QGroupBox("Fieldmap PEPOLAR images")
+        o.ui_Fmap_grpBx = QtWidgets.QGroupBox("Fieldmaps (PEPOLAR)")
         Fmap_gLayout = QtWidgets.QGridLayout(o.ui_Fmap_grpBx)
         o.ui_preprocessing_fLayout.addRow(o.ui_Fmap_grpBx)
         o.ui_objs.append(o.ui_Fmap_grpBx)
@@ -495,7 +559,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_fieldmap_posi_lnEd, o.ui_fieldmap_posi_btn,
             o.ui_fieldmap_posi_del_btn
         ) = self._add_file_row(
-            Fmap_gLayout, 0, "Same PE direction :", "fieldmap_posi",
+            Fmap_gLayout, 0, "Same PE :", "fieldmap_posi",
             default_dir, show_value=False, highlight=True,
         )
 
@@ -504,7 +568,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_fieldmap_nega_lnEd, o.ui_fieldmap_nega_btn,
             o.ui_fieldmap_nega_del_btn
         ) = self._add_file_row(
-            Fmap_gLayout, 1, "Opposite PE direction :", "fieldmap_nega",
+            Fmap_gLayout, 1, "Opposite PE :", "fieldmap_nega",
             default_dir, show_value=False, highlight=True,
         )
         # endregion
@@ -513,11 +577,13 @@ class RtpAppUI(RtpModuleUI):
         ui_CreateMasks_hLayout = QtWidgets.QHBoxLayout()
         o.ui_preprocessing_fLayout.addRow(ui_CreateMasks_hLayout)
 
-        o.ui_CreateMasks_btn = QtWidgets.QPushButton(
-            "Create masks (+shift=overwrite)"
-        )
+        o.ui_CreateMasks_btn = QtWidgets.QPushButton("Create masks")
+        o.ui_CreateMasks_btn.setToolTip(
+            "Shift+click: make all images again, overwriting the existing"
+            " files")
         o.ui_CreateMasks_btn.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed)
         o.ui_CreateMasks_btn.clicked.connect(
             lambda x: self.create_masks()
         )
@@ -526,7 +592,7 @@ class RtpAppUI(RtpModuleUI):
         o.ui_objs.append(o.ui_CreateMasks_btn)
 
         # no_FastSeg checkbox
-        o.ui_no_FastSeg_chb = QtWidgets.QCheckBox("No FastSeg")
+        o.ui_no_FastSeg_chb = QtWidgets.QCheckBox("Skip FastSeg")
         o.ui_no_FastSeg_chb.setChecked(o.no_FastSeg)
         o.ui_no_FastSeg_chb.stateChanged.connect(
             lambda x: o.set_param(
@@ -538,58 +604,59 @@ class RtpAppUI(RtpModuleUI):
         # endregion
 
         # region: Check masks group ---
-        o.ui_ChkMask_grpBx = QtWidgets.QGroupBox(
-            "Display the masks in AFNI"
-        )
+        o.ui_ChkMask_grpBx = QtWidgets.QGroupBox("Check the images")
         ChkMask_gLayout = QtWidgets.QGridLayout(o.ui_ChkMask_grpBx)
         o.ui_preprocessing_fLayout.addRow(o.ui_ChkMask_grpBx)
         o.ui_objs.append(o.ui_ChkMask_grpBx)
 
-        o.ui_openAFNI_btn = QtWidgets.QPushButton("Open AFNI")
-        o.ui_openAFNI_btn.clicked.connect(lambda: o.check_onAFNI())
-        ChkMask_gLayout.addWidget(o.ui_openAFNI_btn, 0, 0)
+        o.ui_openImage_btn = QtWidgets.QPushButton("Image viewer")
+        o.ui_openImage_btn.setToolTip(
+            "Show the base function image (choose the base and overlay"
+            " images in the menus of the viewer)")
+        o.ui_openImage_btn.clicked.connect(lambda: o.show_images())
+        ChkMask_gLayout.addWidget(o.ui_openImage_btn, 0, 0)
 
-        o.ui_chkFuncAnat_btn = QtWidgets.QPushButton("func-anat align")
+        o.ui_chkFuncAnat_btn = QtWidgets.QPushButton("Function on anatomy")
         o.ui_chkFuncAnat_btn.clicked.connect(
-            lambda: o.check_onAFNI("anat", "func")
+            lambda: o.show_images("anat", "func")
         )
         ChkMask_gLayout.addWidget(o.ui_chkFuncAnat_btn, 0, 1)
 
         o.ui_chkROIFunc_btn = QtWidgets.QPushButton("ROI on function")
         o.ui_chkROIFunc_btn.clicked.connect(
-            lambda: o.check_onAFNI("func", "roi")
+            lambda: o.show_images("func", "roi")
         )
         ChkMask_gLayout.addWidget(o.ui_chkROIFunc_btn, 0, 2)
 
         o.ui_chkROIAnat_btn = QtWidgets.QPushButton("ROI on anatomy")
         o.ui_chkROIAnat_btn.clicked.connect(
-            lambda: o.check_onAFNI("anat", "roi")
+            lambda: o.show_images("anat", "roi")
         )
-        ChkMask_gLayout.addWidget(o.ui_chkROIAnat_btn, 0, 3)
+        ChkMask_gLayout.addWidget(o.ui_chkROIAnat_btn, 1, 0)
 
         o.ui_chkWMFunc_btn = QtWidgets.QPushButton("WM on anatomy")
         o.ui_chkWMFunc_btn.clicked.connect(
-            lambda: o.check_onAFNI("anat", "wm")
+            lambda: o.show_images("anat", "wm")
         )
-        ChkMask_gLayout.addWidget(o.ui_chkWMFunc_btn, 1, 0)
+        ChkMask_gLayout.addWidget(o.ui_chkWMFunc_btn, 1, 1)
 
-        o.ui_chkVentFunc_btn = QtWidgets.QPushButton("Vent on anatomy")
+        o.ui_chkVentFunc_btn = QtWidgets.QPushButton("Ventricle on anatomy")
         o.ui_chkVentFunc_btn.clicked.connect(
-            lambda: o.check_onAFNI("anat", "vent")
+            lambda: o.show_images("anat", "vent")
         )
-        ChkMask_gLayout.addWidget(o.ui_chkVentFunc_btn, 1, 1)
+        ChkMask_gLayout.addWidget(o.ui_chkVentFunc_btn, 1, 2)
 
         o.ui_chkGSRmask_btn = QtWidgets.QPushButton("GSR mask")
         o.ui_chkGSRmask_btn.clicked.connect(
-            lambda: o.check_onAFNI("func", "GSRmask")
+            lambda: o.show_images("func", "GSRmask")
         )
-        ChkMask_gLayout.addWidget(o.ui_chkGSRmask_btn, 1, 2)
+        ChkMask_gLayout.addWidget(o.ui_chkGSRmask_btn, 2, 0)
 
         o.ui_chkRTPmask_btn = QtWidgets.QPushButton("RTP mask")
         o.ui_chkRTPmask_btn.clicked.connect(
-            lambda: o.check_onAFNI("func", "RTPmask")
+            lambda: o.show_images("func", "RTPmask")
         )
-        ChkMask_gLayout.addWidget(o.ui_chkRTPmask_btn, 1, 3)
+        ChkMask_gLayout.addWidget(o.ui_chkRTPmask_btn, 2, 1)
         # endregion
 
         # endregion: Preprocessing tab ----------------------------------------
@@ -611,7 +678,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_template_lnEd, o.ui_template_btn,
             o.ui_template_del_btn
         ) = self._add_file_row(
-            Template_gLayout, 0, "Template brain :", "template",
+            Template_gLayout, 0, "Template :", "template",
             lambda: os.path.dirname(o.ui_template_lnEd.text()),
         )
 
@@ -620,7 +687,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_ROI_template_lb, o.ui_ROI_template_lnEd,
             o.ui_ROI_template_btn, o.ui_ROI_template_del_btn
         ) = self._add_file_row(
-            Template_gLayout, 1, "ROI on template :", "ROI_template",
+            Template_gLayout, 1, "ROI :", "ROI_template",
             lambda: os.path.dirname(o.ui_ROI_template_lnEd.text()),
         )
 
@@ -645,7 +712,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_WM_template_lb, o.ui_WM_template_lnEd,
             o.ui_WM_template_btn, o.ui_WM_template_del_btn
         ) = self._add_file_row(
-            Template_gLayout, 3, "White matter on template :", "WM_template",
+            Template_gLayout, 3, "WM :", "WM_template",
             lambda: os.path.dirname(o.ui_WM_template_lnEd.text()),
         )
 
@@ -654,7 +721,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_Vent_template_lb, o.ui_Vent_template_lnEd,
             o.ui_Vent_template_btn, o.ui_Vent_template_del_btn
         ) = self._add_file_row(
-            Template_gLayout, 4, "Ventricle on template :", "Vent_template",
+            Template_gLayout, 4, "Ventricle :", "Vent_template",
             lambda: os.path.dirname(o.ui_Vent_template_lnEd.text()),
         )
 
@@ -690,7 +757,7 @@ class RtpAppUI(RtpModuleUI):
         o.ui_objs.extend(alAnat_row)
 
         # -- Warped images --
-        o.ui_wrpImg_grpBx = QtWidgets.QGroupBox("Warped images")
+        o.ui_wrpImg_grpBx = QtWidgets.QGroupBox("Masks in the function space")
         wrpImg_gLayout = QtWidgets.QGridLayout(o.ui_wrpImg_grpBx)
         procImg_gLayout.addWidget(o.ui_wrpImg_grpBx, 3, 0, 1, 4)
         o.ui_objs.append(o.ui_wrpImg_grpBx)
@@ -700,7 +767,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_WM_orig_lnEd, o.ui_WM_orig_btn,
             o.ui_WM_orig_del_btn
         ) = self._add_file_row(
-            wrpImg_gLayout, 0, "WM mask in original :", "WM_orig", work_dir
+            wrpImg_gLayout, 0, "WM :", "WM_orig", work_dir
         )
 
         # -- Vent in the original space --
@@ -708,7 +775,7 @@ class RtpAppUI(RtpModuleUI):
             _, o.ui_Vent_orig_lnEd, o.ui_Vent_orig_btn,
             o.ui_Vent_orig_del_btn
         ) = self._add_file_row(
-            wrpImg_gLayout, 1, "Vent mask in original :", "Vent_orig",
+            wrpImg_gLayout, 1, "Ventricle :", "Vent_orig",
             work_dir,
         )
 
@@ -717,7 +784,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_ROI_orig_lb, o.ui_ROI_orig_lnEd, o.ui_ROI_orig_btn,
             o.ui_ROI_orig_del_btn
         ) = self._add_file_row(
-            wrpImg_gLayout, 2, "ROI mask in original :", "ROI_orig", work_dir
+            wrpImg_gLayout, 2, "ROI :", "ROI_orig", work_dir
         )
 
         # -- RTP mask --
@@ -741,10 +808,9 @@ class RtpAppUI(RtpModuleUI):
         o.ui_objs.extend(GSR_mask_row)
 
         # -- Delete all processed images --
-        o.ui_delAllProcImgs_btn = QtWidgets.QPushButton("Delete All")
+        o.ui_delAllProcImgs_btn = QtWidgets.QPushButton("Delete all")
         o.ui_delAllProcImgs_btn.setStyleSheet(
-            "background-color: rgb(255,0,0);"
-        )
+            gui_theme.qt_button_style("stop"))
         o.ui_delAllProcImgs_btn.clicked.connect(
             lambda: o.delete_file("AllProc")
         )
@@ -754,11 +820,11 @@ class RtpAppUI(RtpModuleUI):
         if o.run_extApp:
             # --- External App tab ------------------------------------------
             o.ui_extAppTab = QtWidgets.QWidget()
-            o.ui_top_tabs.addTab(o.ui_extAppTab, "Ext App")
+            o.ui_top_tabs.addTab(o.ui_extAppTab, "External app")
             o.ui_extApp_fLayout = QtWidgets.QFormLayout(o.ui_extAppTab)
 
             # Command line
-            var_lb = QtWidgets.QLabel("App command:")
+            var_lb = QtWidgets.QLabel("Command :")
             o.ui_extApp_cmd_lnEd = QtWidgets.QLineEdit()
             o.ui_extApp_cmd_lnEd.setText(str(o.extApp_cmd))
             o.ui_extApp_cmd_lnEd.editingFinished.connect(
@@ -770,7 +836,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_objs.append(o.ui_extApp_cmd_lnEd)
 
             # Boot App
-            o.ui_extApp_run_btn = QtWidgets.QPushButton("Run App")
+            o.ui_extApp_run_btn = QtWidgets.QPushButton("Start the app")
             o.ui_extApp_run_btn.clicked.connect(
                 lambda x: o.boot_extApp()
             )
@@ -778,7 +844,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_objs.append(o.ui_extApp_run_btn)
 
             # Address
-            var_lb = QtWidgets.QLabel("App server address\n(host:port):")
+            var_lb = QtWidgets.QLabel("Address (host:port) :")
             o.ui_extApp_addr_lnEd = QtWidgets.QLineEdit()
             o.ui_extApp_addr_lnEd.editingFinished.connect(
                 lambda: o.set_param(
@@ -816,7 +882,7 @@ class RtpAppUI(RtpModuleUI):
             o.ui_extApp_gLayout = QtWidgets.QGridLayout(o.ui_extAppTab)
 
             # Real-time signal output file
-            var_lb = QtWidgets.QLabel("Real-time output file :")
+            var_lb = QtWidgets.QLabel("Signal file :")
             o.ui_extApp_gLayout.addWidget(var_lb, 0, 0)
 
             o.ui_sigSaveFile_lnEd = QtWidgets.QLineEdit()
@@ -842,18 +908,29 @@ class RtpAppUI(RtpModuleUI):
         # --- RTP setup button ------------------------------------------------
         o.ui_setRTP_btn = QtWidgets.QPushButton("RTP setup")
         o.ui_setRTP_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);height: 20px;"
+            gui_theme.qt_button_style("accent", "height: 20px;")
         )
 
         o.ui_setRTP_btn.clicked.connect(o.RTP_setup)
         ui_rows.append((o.ui_setRTP_btn,))
         o.ui_objs.append(o.ui_setRTP_btn)
 
-        # --- Show Extracted Signal checkbox ----------------------------------
-        o.ui_showROISig_cbx = QtWidgets.QCheckBox("Show Extracted Signal")
-        o.ui_showROISig_cbx.setCheckState(0)
+        # --- ROI signal plot checkbox ---------------------------------------
+        o.ui_showROISig_cbx = QtWidgets.QCheckBox("ROI signal")
+        o.ui_showROISig_cbx.setChecked(False)
         o.ui_showROISig_cbx.stateChanged.connect(
             lambda x: self.show_ROIsig_chk(x)
+        )
+        # RtpGUI.layout_ui places this checkbox.
+
+        # --- Latency plot checkbox -------------------------------------------
+        o.ui_showLatency_cbx = QtWidgets.QCheckBox("Latency")
+        o.ui_showLatency_cbx.setChecked(False)
+        o.ui_showLatency_cbx.setToolTip(
+            "Plot the latency of each volume: scanner TTL onset -> image"
+            " read, and image read -> feedback sent")
+        o.ui_showLatency_cbx.stateChanged.connect(
+            lambda x: self.show_latency_chk(x)
         )
         # RtpGUI.layout_ui places this checkbox.
 
@@ -865,25 +942,26 @@ class RtpAppUI(RtpModuleUI):
         # -- Ready button --
         o.ui_ready_btn = QtWidgets.QPushButton("Ready")
         o.ui_ready_btn.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed
         )
         o.ui_ready_btn.clicked.connect(o.ready_to_run)
         o.ui_ready_btn.setEnabled(False)
         o.ui_ready_btn.setStyleSheet(
-            "background-color: rgb(255,201,32);height: 20px;"
+            gui_theme.qt_button_style("ready", "height: 20px;")
         )
         readyQuit_gLayout.addWidget(o.ui_ready_btn, 0, 0, 1, 4)
 
         # -- Manual start button --
         o.ui_manStart_btn = QtWidgets.QPushButton("Manual start")
-        o.ui_manStart_btn.setStyleSheet("background-color: rgb(94,63,153);")
+        o.ui_manStart_btn.setStyleSheet(gui_theme.qt_button_style("start"))
         o.ui_manStart_btn.clicked.connect(o.manual_start)
         o.ui_manStart_btn.setEnabled(False)
         readyQuit_gLayout.addWidget(o.ui_manStart_btn, 0, 4, 1, 1)
 
         # -- Quit button --
         o.ui_quit_btn = QtWidgets.QPushButton("Cancel")
-        o.ui_quit_btn.setStyleSheet("background-color: rgb(255,0,0);")
+        o.ui_quit_btn.setStyleSheet(gui_theme.qt_button_style("stop"))
         o.ui_quit_btn.clicked.connect(partial(o.end_run, True))
         o.ui_quit_btn.setEnabled(False)
         readyQuit_gLayout.addWidget(o.ui_quit_btn, 0, 5, 1, 1)
@@ -907,25 +985,21 @@ class PlotROISignal(QtCore.QObject):
         self.plt_win = MatplotlibWindow()
         self.plt_win.setWindowTitle("ROI signal")
 
-        # Place the window to the right of the main window
-        if main_win is not None:
-            main_geom = main_win.geometry()
-            x = main_geom.x() + main_geom.width() + 10
-            y = main_geom.y() + 735
-        else:
-            x, y = (0, 0)
-        win_height = 80 + 70 * num_ROIs
-        self.plt_win.setGeometry(x, y, 500, win_height)
+        # Next to the main window (window_place.py)
+        window_place.set_geometry(self.plt_win, main_win, "roi",
+                                  num_ROIs=num_ROIs)
 
         self.roi_labels = roi_labels
         self._axes = self.plt_win.canvas.figure.subplots(num_ROIs, 1)
         if num_ROIs == 1:
             self._axes = [self._axes]
 
-        self.plt_win.canvas.figure.subplots_adjust(
-            left=0.15, bottom=0.18, right=0.95, top=0.96, hspace=0.35
-        )
-        self._color_cycle = plt.get_cmap("tab10")
+        # Margins fitted to the tick and axis labels (they are not cut in a
+        # narrow window)
+        self.plt_win.canvas.figure.set_layout_engine(
+            "constrained", w_pad=0.04, h_pad=0.03)
+        self._color_cycle = (
+            lambda i: gui_theme.LINE_CYCLE[i % len(gui_theme.LINE_CYCLE)])
 
         self.reset_plot()
 
@@ -948,7 +1022,7 @@ class PlotROISignal(QtCore.QObject):
             if len(self.roi_labels) > ii:
                 ax.set_ylabel(self.roi_labels[ii])
             ax.set_xlim(0, 10)
-            self._ln.append(ax.plot(0, 0, color=self._color_cycle(ii + 1)))
+            self._ln.append(ax.plot(0, 0, color=self._color_cycle(ii)))
         self._axes[-1].set_xlabel("TR")
 
     # ---------------------------------------------------------------------
@@ -1031,7 +1105,174 @@ class PlotROISignal(QtCore.QObject):
         self.finished.emit()
 
         if hasattr(self.root, "ui_showROISig_cbx"):
-            self.root.ui_showROISig_cbx.setCheckState(0)
+            self.root.ui_showROISig_cbx.setChecked(False)
+
+
+# %% PlotLatency ==============================================================
+class PlotLatency(QtCore.QObject):
+    """
+    Window to plot the latency of each volume in real time (from
+    RtpApp.latency, see rtp_latency.py):
+      top   : TTL onset -> image read (reconstruction and transfer)
+      middle: image read -> feedback sent (RTPSpy processing)
+      bottom: TTL onset -> feedback sent (total)
+    Hollow markers: no TTL pulse matched, the onset is estimated.
+    Gray points: volumes processed retrospectively (e.g., the wait period
+    of RtpRegress); they are not included in the y range and the median
+    of the middle and bottom panels. The first real-time volume (its
+    processing includes the initial fit) is not included in their y range.
+    The y range is fitted to the values (it does not start at 0).
+    """
+
+    finished = QtCore.pyqtSignal()
+    # (key, y label, color, affected by the processing, uses the onset)
+    _PANELS = (
+        ("acq_to_read", "TTL \u2192 image (s)", "cyan", False, True),
+        ("read_to_fb", "image \u2192 fb (s)", "magenta", True, False),
+        ("acq_to_fb", "TTL \u2192 fb (s)", "green", True, True),
+    )
+
+    def __init__(self, root, main_win=None):
+        super().__init__()
+        self.root = root
+        self.main_win = main_win
+        self.abort = False
+
+        self.plt_win = MatplotlibWindow()
+        self.plt_win.setWindowTitle("Latency")
+        window_place.set_geometry(self.plt_win, main_win, "latency")
+
+        self._axes = self.plt_win.canvas.figure.subplots(
+            len(self._PANELS), 1, sharex=True)
+        # Margins fitted to the tick and axis labels (they are not cut in a
+        # narrow window)
+        self.plt_win.canvas.figure.set_layout_engine(
+            "constrained", w_pad=0.04, h_pad=0.02)
+        self.reset_plot()
+
+        self.plt_win.show()
+        self.plt_win.canvas.draw()
+
+        # Updated by a timer in the GUI thread
+        self._n_drawn = -1
+        self._running = False
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(200)
+        self._timer.timeout.connect(self._update_plot)
+
+    # ---------------------------------------------------------------------
+    def reset_plot(self):
+        c = gui_theme.COLORS
+        self._art = []
+        for ax, (_, label, col, _, _) in zip(self._axes, self._PANELS):
+            ax.cla()
+            ax.set_ylabel(label, fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(True, lw=0.5)
+            ln, = ax.plot([], [], "-", color=c[col], lw=1)
+            pt, = ax.plot([], [], "o", color=c[col], ms=2.5)
+            est, = ax.plot([], [], "o", mfc="none", mec=c[col], ms=3.5)
+            retro, = ax.plot([], [], "o", color=c["dim"], ms=2)
+            self._art.append((ln, pt, est, retro))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 1)
+        self._axes[-1].set_xlabel("Volume", fontsize=8)
+        self._n_drawn = -1
+
+    # ---------------------------------------------------------------------
+    def run(self):
+        self._running = True
+        self._timer.start()
+
+    def isRunning(self):
+        return self._running
+
+    # ---------------------------------------------------------------------
+    def _update_plot(self):
+        main_closed = (
+            self.main_win is not None and not self.main_win.isVisible()
+        )
+        if not self.plt_win.isVisible() or self.abort or main_closed:
+            self.end_thread()
+            return
+
+        lat = self.root.latency
+        n = len(lat)
+        if n == self._n_drawn:
+            return
+        if n < self._n_drawn:
+            self.reset_plot()  # A new run
+        self._n_drawn = n
+        if n == 0:
+            self.plt_win.canvas.draw()
+            return
+
+        try:
+            d = {k: np.asarray(v[:n]) for k, v in lat.data.items()}
+            x = d["vol"] + 1
+            retro = d["retrospective"].astype(bool)
+            est = d["onset_estimated"].astype(bool)
+            no = np.zeros_like(retro)
+            for ax, art, (key, _, _, proc, onset) in zip(
+                    self._axes, self._art, self._PANELS):
+                y = d[key].astype(float)
+                # Retrospective processing affects only the panels with the
+                # processing time; the image was read in real time.
+                rtr = retro if proc else no
+                rt = ~rtr & ~np.isnan(y)
+                hollow = est if onset else no
+                ln, pt, est_pt, retro_pt = art
+                ln.set_data(x[rt], y[rt])
+                pt.set_data(x[rt & ~hollow], y[rt & ~hollow])
+                est_pt.set_data(x[rt & hollow], y[rt & hollow])
+                retro_pt.set_data(x[rtr], y[rtr])
+
+                yv = y[rt]
+                if len(yv):
+                    # y range fitted to the values, without the first
+                    # real-time volume of the processing panels
+                    rng = rt.copy()
+                    if proc and rng.sum() > 1:
+                        rng[np.argmax(rng)] = False
+                    y_rng = y[rng]
+                    lo, hi = np.nanmin(y_rng), np.nanmax(y_rng)
+                    pad = max((hi - lo) * 0.15, 0.005)
+                    lo, hi = lo - pad, hi + pad
+                    ax.set_ylim(lo, hi)
+
+                    title = (f"last {yv[-1]:.3f} s, median "
+                             f"{np.nanmedian(yv):.3f} s")
+                    if onset and est[rt].all():
+                        title += "  (no TTL: onset estimated)"
+                    above = []
+                    n_rt = int(np.sum(rt & (y > hi)))
+                    n_retro = int(np.sum(rtr & (y > hi)))
+                    if n_rt:
+                        above.append(f"{n_rt} initial")
+                    if n_retro:
+                        above.append(f"{n_retro} retrospective")
+                    if above:
+                        title += f"  ({', '.join(above)} above)"
+                    ax.set_title(title, fontsize=7, pad=2,
+                                 color=gui_theme.COLORS["fg"])
+                xmax = max(10, (int(x.max()) // 10 + 1) * 10)
+                ax.set_xlim(0, xmax)
+            self.plt_win.canvas.draw()
+
+        except Exception as e:
+            self.root._logger.error(f"Latency plot: {e}")
+
+    # ---------------------------------------------------------------------
+    def end_thread(self):
+        if not self._running:
+            return
+        self._running = False
+        self._timer.stop()
+        if self.plt_win.isVisible():
+            self.plt_win.close()
+        self.finished.emit()
+        if hasattr(self.root, "ui_showLatency_cbx"):
+            self.root.ui_showLatency_cbx.setChecked(False)
 
 
 # %% WAIT_ONSET ===============================================================

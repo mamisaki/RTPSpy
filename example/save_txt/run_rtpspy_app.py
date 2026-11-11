@@ -13,7 +13,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
@@ -66,7 +66,7 @@ if __name__ == '__main__':
     sys.excepthook = excepthook
     try:
         rtp_ui.show()
-        exit_code = app.exec_()
+        exit_code = app.exec()
 
     except Exception as e:
         with open('rtpspy.error', 'w') as fd:

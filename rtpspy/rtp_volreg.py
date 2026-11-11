@@ -9,7 +9,6 @@ RTP volume registration for motion correction
 
 # %% import ===================================================================
 from pathlib import Path
-import sys
 import time
 import re
 import ctypes
@@ -19,18 +18,44 @@ import nibabel as nib
 
 try:
     from .rtp_common import RTP
+    from .containers import librtp_file
 except Exception:
     from rtpspy.rtp_common import RTP
+    from rtpspy.containers import librtp_file
 
-if sys.platform == 'linux':
-    lib_name = 'librtp.so'
-elif sys.platform == 'darwin':
-    lib_name = 'librtp.dylib'
+# librtp library (see rtpspy.containers.librtp_file)
+librtp_path = librtp_file()
 
-try:
-    librtp_path = str(Path(__file__).absolute().parent / lib_name)
-except Exception:
-    librtp_path = f'./{lib_name}'
+# Radius (mm) of the sphere used to convert rotations to displacements in
+# the framewise displacement (Power et al., 2012)
+FD_HEAD_RADIUS = 50.0
+
+
+# %% framewise_displacement ===================================================
+def framewise_displacement(motion):
+    """
+    Framewise displacement (Power et al., 2012) of motion parameters.
+
+    Parameters
+    ----------
+    motion : array (n_volumes, 6)
+        Motion parameters in the AFNI 3dvolreg order (RtpVolreg._motion):
+        roll, pitch, yaw (degrees), dS, dL, dP (mm).
+
+    Returns
+    -------
+    FD : array (n_volumes,)
+        FD_t = sum(|d translation_t|) + FD_HEAD_RADIUS * sum(|d rotation_t|)
+        with the rotations in radians and d the difference from the
+        previous volume (mm). 0 for the first volume.
+    """
+    motion = np.asarray(motion, dtype=np.float64).reshape(-1, 6)
+    FD = np.zeros(motion.shape[0])
+    if motion.shape[0] > 1:
+        d = np.abs(np.diff(motion, axis=0))
+        FD[1:] = d[:, 3:].sum(axis=1) + \
+            FD_HEAD_RADIUS * np.deg2rad(d[:, :3]).sum(axis=1)
+    return FD
 
 
 # %% RtpVolreg ===============================================================
@@ -461,7 +486,7 @@ class RtpVolreg(RTP):
             if type(val) is int:
                 self.set_ref_vol(val)
                 self._ui_update('ref_vol_text',
-                                f"Internal run volume index {val}")
+                                f"Volume {val} of this run")
 
             elif isinstance(val, nib.filebasedimages.SerializableImage):
                 setattr(self, attr, val)
@@ -476,7 +501,7 @@ class RtpVolreg(RTP):
 
                 self.set_ref_vol(num)
                 self._ui_update('ref_vol_text',
-                                f"Internal run volume index {num}")
+                                f"Volume {num} of this run")
                 self.ref_fname = ''
 
             elif val == 'external file':

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-GUI front end of RTPSpy (PyQt5)
+GUI front end of RTPSpy (PyQt6)
 
 The processing modules (rtpspy.rtp_*) do not import Qt. Their GUI panels
 are here, one module per processing module (watch_ui, volreg_ui, tshift_ui,

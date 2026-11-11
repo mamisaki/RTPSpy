@@ -6,7 +6,7 @@ GUI panel of RtpTshift
 """
 
 # %% import ===================================================================
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from .module_ui import RtpModuleUI
 
@@ -30,7 +30,7 @@ class RtpTshiftUI(RtpModuleUI):
         ui_rows = [self.enabled_row()]
 
         # method
-        var_lb = QtWidgets.QLabel("Temporal interpolation method :")
+        var_lb = QtWidgets.QLabel("Interpolation :")
         o.ui_method_cmbBx = QtWidgets.QComboBox()
         o.ui_method_cmbBx.addItems(['linear', 'cubic'])
         o.ui_method_cmbBx.setCurrentText(o.method)
@@ -58,7 +58,7 @@ class RtpTshiftUI(RtpModuleUI):
 
         # Load from sample button
         o.ui_setfrmSample_btn = QtWidgets.QPushButton(
-                'Get parameters from a sample file')
+                'Read TR and slice timing from an image...')
         o.ui_setfrmSample_btn.clicked.connect(
                 lambda: o.set_param('set_from_sample'))
         ui_rows.append((o.ui_setfrmSample_btn,))
@@ -78,8 +78,10 @@ class RtpTshiftUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_TR_dSpBx])
 
         # slice_timing
-        var_lb = QtWidgets.QLabel("Slice timings (sec.) :\n[1st, 2nd, ...]")
+        var_lb = QtWidgets.QLabel("Slice timing :")
         o.ui_SlTiming_lnEd = QtWidgets.QLineEdit()
+        o.ui_SlTiming_lnEd.setToolTip(
+            "Acquisition time (s) of each slice: [1st, 2nd, ...]")
         o.ui_SlTiming_lnEd.setText("{}".format(o.slice_timing))
         o.ui_SlTiming_lnEd.editingFinished.connect(
                 lambda: o.set_param('slice_timing',

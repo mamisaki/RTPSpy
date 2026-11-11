@@ -8,7 +8,7 @@ import numpy as np
 import nibabel as nib
 import pytest
 
-QtWidgets = pytest.importorskip("PyQt5.QtWidgets")
+QtWidgets = pytest.importorskip("PyQt6.QtWidgets")
 
 from rtpspy import RtpApp, RtpGUI  # noqa: E402
 from rtpspy import notifier as nt  # noqa: E402
@@ -62,7 +62,7 @@ def test_panels(gui_app):
     qt_app, app, gui, _ = gui_app
     assert isinstance(nt.get_notifier(), QtNotifier)
     n_rows = {"WATCH": 8, "VOLREG": 7, "TSHIFT": 8, "SMOOTH": 5,
-              "REGRESS": 14}
+              "REGRESS": 15}
     for proc, n in n_rows.items():
         obj = app.rtp_objs[proc]
         assert isinstance(obj._ui, RtpModuleUI)
@@ -169,14 +169,14 @@ def test_param_to_widget(gui_app):
     assert S.ui_mask_cmbBx.currentIndex() == 0
     assert R.ui_motReg_cmbBx.currentIndex() == 1
     assert R.ui_maxPoly_cmbBx.currentIndex() == 1
-    assert R.ui_maxPoly_lb.text().endswith("up to 3")
+    assert R.ui_maxPoly_lb.text().endswith("(up to 3)")
     assert R.ui_waitNum_cmbBx.currentIndex() == 1
     assert R.ui_waitNum_lb.text() == \
-        "Wait REGRESS until receiving 40 volumes"
+        "40 volumes"
     assert R.ui_loadDesMtx_btn.text() == "Unset"
     assert R.ui_showDesMtx_btn.isEnabled()
     assert R.ui_GS_mask_lnEd.text() == str(mask_f)
-    assert app.ui_enableRTP_chb.checkState() == 0
+    assert not app.ui_enableRTP_chb.isChecked()
     assert app.ui_ROI_orig_lnEd.text() == str(mask_f)
 
     S.set_param("mask_file", 0)
@@ -198,16 +198,85 @@ def test_param_to_widget(gui_app):
 def test_plot_windows(gui_app):
     qt_app, app, gui, _ = gui_app
     vr_ui = app.rtp_objs["VOLREG"]._ui
-    gui.chbShowMotion.setCheckState(2)
+    gui.chbShowMotion.setChecked(True)
     qt_app.processEvents()
-    assert vr_ui.thPltMotion.isRunning()
-    gui.chbShowMotion.setCheckState(0)
+    assert vr_ui.pltMotion.isRunning()
+    gui.chbShowMotion.setChecked(False)
     qt_app.processEvents()
-    assert not hasattr(vr_ui, "thPltMotion")
+    assert not hasattr(vr_ui, "pltMotion")
 
-    app.ui_showROISig_cbx.setCheckState(2)
+    app.ui_showROISig_cbx.setChecked(True)
     qt_app.processEvents()
     assert app._ui.pltROISig.isRunning()
-    app.ui_showROISig_cbx.setCheckState(0)
+    app.ui_showROISig_cbx.setChecked(False)
     qt_app.processEvents()
     assert not hasattr(app._ui, "pltROISig")
+
+
+def test_motion_plot_updates(gui_app):
+    """The motion plot is updated by a timer in the GUI thread."""
+    qt_app, app, gui, _ = gui_app
+    vr = app.rtp_objs["VOLREG"]
+    gui.chbShowMotion.setChecked(True)
+    qt_app.processEvents()
+    plt = vr._ui.pltMotion
+    try:
+        for v in range(5):
+            vr._plt_xi.append(v + 1)
+            for ii in range(6):
+                vr._plt_motion[ii].append(0.01 * v * (ii + 1))
+        t0 = time.time()
+        while time.time() - t0 < 3 and len(plt._ln[0][0].get_xdata()) < 5:
+            qt_app.processEvents()
+            time.sleep(0.05)
+        assert list(plt._ln[0][0].get_xdata()) == [1, 2, 3, 4, 5]
+        # FD (Power et al., 2012): each step changes roll, pitch, yaw by
+        # 0.01, 0.02, 0.03 deg and dS, dL, dP by 0.04, 0.05, 0.06 mm
+        fd_step = 0.15 + 50 * np.deg2rad(0.06)
+        assert np.allclose(plt._ln[6][0].get_ydata(),
+                           [0] + [fd_step] * 4)
+        assert len(plt._fd_alarm_bands) == 0  # All below FD_WARN_MM
+
+        # A 1 mm shift (FD >= 0.5 mm) is marked
+        vr._plt_xi.append(6)
+        for ii in range(6):
+            vr._plt_motion[ii].append(vr._plt_motion[ii][-1] +
+                                      (1.0 if ii == 3 else 0.0))
+        t0 = time.time()
+        while time.time() - t0 < 3 and len(plt._fd_alarm_bands) == 0:
+            qt_app.processEvents()
+            time.sleep(0.05)
+        assert len(plt._fd_alarm_bands) == 1
+    finally:
+        gui.chbShowMotion.setChecked(False)
+        qt_app.processEvents()
+        vr._plt_xi[:] = []
+        for m in vr._plt_motion:
+            m[:] = []
+    assert not hasattr(vr._ui, "pltMotion")
+
+
+def test_latency_plot(gui_app):
+    """The latency plot shows RtpApp.latency (updated by a GUI timer)."""
+    qt_app, app, gui, _ = gui_app
+    app.ui_showLatency_cbx.setChecked(True)
+    qt_app.processEvents()
+    plt = app._ui.pltLatency
+    try:
+        for v in range(12):
+            app.latency.record(v, 100.0 + 2 * v, False, 101.2 + 2 * v,
+                               101.3 + 2 * v + (5 if v < 4 else 0), v < 4)
+        t0 = time.time()
+        while time.time() - t0 < 3 and plt._n_drawn < 12:
+            qt_app.processEvents()
+            time.sleep(0.05)
+        # top: all 12 volumes; bottom: 8 real-time + 4 retrospective
+        assert len(plt._art[0][0].get_xdata()) == 12
+        assert len(plt._art[1][0].get_xdata()) == 8
+        assert len(plt._art[1][3].get_xdata()) == 4
+        assert "retrospective" in plt._axes[1].get_title()
+    finally:
+        app.ui_showLatency_cbx.setChecked(False)
+        qt_app.processEvents()
+        app.latency.reset()
+    assert not hasattr(app._ui, "pltLatency")

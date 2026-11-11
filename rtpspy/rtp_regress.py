@@ -24,8 +24,10 @@ import torch
 
 try:
     from .rtp_common import RTP
+    from .rtp_volreg import framewise_displacement
 except Exception:
     from rtpspy.rtp_common import RTP
+    from rtpspy.rtp_volreg import framewise_displacement
 
 gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
@@ -49,9 +51,6 @@ PHYS_REG_OPTS = ('None', 'RICOR8', 'RVT5', 'RVT+RICOR13')
 
 # Columns of the online QC table (see RtpRegress.get_qc_table)
 QC_COLS = ('vol_idx', 'FD', 'DVARS', 'tSNR', 'censored')
-# Radius (mm) of the sphere used to convert rotations to displacements in FD
-# (Power et al., 2012)
-FD_HEAD_RADIUS = 50.0
 
 
 # %% lstsq_SVDsolver ==========================================================
@@ -303,6 +302,8 @@ class RtpRegress(RTP):
         self.reg_retro_proc = reg_retro_proc
         self.wait_num = wait_num
         self.censor_FD = censor_FD
+        # True while the retrospective outputs are passed (see _retro_proc)
+        self.in_retro_proc = False
         self.ridge_c = ridge_c
 
         # --- Initialize working data ---
@@ -859,10 +860,8 @@ class RtpRegress(RTP):
             if self._qc_prev_mot is None:
                 FD = 0.0
             else:
-                dmot = np.abs(mot - self._qc_prev_mot)
-                # Columns: roll, pitch, yaw (degrees), dS, dL, dP (mm)
-                FD = float(dmot[3:].sum() +
-                           FD_HEAD_RADIUS * np.deg2rad(dmot[:3]).sum())
+                FD = float(framewise_displacement(
+                    np.stack([self._qc_prev_mot, mot]))[1])
             self._qc_prev_mot = mot
         elif self.censor_FD > 0 and not self._qc_nomot_warned:
             self._logger.warning(
@@ -1055,6 +1054,18 @@ class RtpRegress(RTP):
         ma = re.search(f"0*{vol_idx+1}", save_name_temp)
         vol_str = ma.group() if ma is not None else None
 
+        # The volumes output here are marked as retrospective in the latency
+        # record of RtpApp (rtp_latency.py)
+        self.in_retro_proc = True
+        try:
+            self._retro_output(fmri_img, vi0, Resids, save_name_temp,
+                               vol_str)
+        finally:
+            self.in_retro_proc = False
+
+    def _retro_output(self, fmri_img, vi0, Resids, save_name_temp, vol_str):
+        """Output the residuals of the retrospective regression (see
+        _retro_proc)."""
         for ii in range(Resids.shape[0]):
             vi = vi0 + ii  # 0-based volume index
             vol_data = np.zeros_like(self.maskV, dtype=np.float32)
@@ -1545,9 +1556,9 @@ class RtpRegress(RTP):
     @staticmethod
     def _poly_order_text(max_order):
         """Label text for the maximum polynomial order."""
-        txt = 'Increase the polynomial order with the scan length'
+        txt = 'Increases with the scan length'
         if not np.isinf(max_order):
-            txt += f' up to {max_order}'
+            txt += f' (up to {max_order})'
         return txt
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1881,7 +1892,8 @@ class RtpRegress(RTP):
                          'col_names_read', 'Y_mean', 'Y_mean_mask',
                          'GS_maskdata', 'WM_maskdata', 'Vent_maskdata',
                          'GS_col', 'WM_col', 'Vent_col', 'desMtx_read',
-                         'mask_src_proc', 'work_dir', 'qc', 'qc_last')
+                         'mask_src_proc', 'work_dir', 'qc', 'qc_last',
+                         'in_retro_proc')
         # Path values are already converted to str by RTP.get_params
         return {k: v for k, v in all_opts.items() if k not in excluded_opts}
 

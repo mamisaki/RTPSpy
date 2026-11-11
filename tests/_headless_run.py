@@ -1,6 +1,6 @@
-"""Run RTPSpy without PyQt5 (helper of test_headless.py).
+"""Run RTPSpy without PyQt6 (helper of test_headless.py).
 
-PyQt5 imports are blocked with a sys.meta_path finder before rtpspy is
+PyQt6 imports are blocked with a sys.meta_path finder before rtpspy is
 imported, so any Qt import in the processing code raises ImportError.
 
 usage: python _headless_run.py <chain|make_masks> <work_dir>
@@ -24,11 +24,11 @@ import shutil
 from pathlib import Path
 
 
-# %% Block PyQt5 ==============================================================
+# %% Block PyQt6 ==============================================================
 class _BlockQt:
     def find_spec(self, name, path=None, target=None):
-        if name == "PyQt5" or name.startswith("PyQt5."):
-            raise ImportError(f"PyQt5 is blocked ({name})")
+        if name == "PyQt6" or name.startswith("PyQt6."):
+            raise ImportError(f"PyQt6 is blocked ({name})")
         return None
 
 
@@ -244,5 +244,5 @@ if __name__ == "__main__":
         res = run_make_masks(work_dir)
     res["rtpspy"] = rtpspy.__file__
     res["qt_modules"] = sorted(m for m in sys.modules
-                               if m.startswith("PyQt5"))
+                               if m.startswith("PyQt6"))
     print(json.dumps(res))

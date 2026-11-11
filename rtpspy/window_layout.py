@@ -151,3 +151,92 @@ if __name__ == "__main__":
     print("Screen area:", screen_area())
     for name in MIN_SIZE:
         print(f"{name}: {default_geometry(name)}")
+
+
+# %% RTPSpy layout ============================================================
+# Windows of RTPSpy (RtpGUI and the plots, and rt_physio started by
+# RtpTTLPhysio), side by side on the primary monitor within HDTV size:
+#
+#    +--------+----------+------------+
+#    |        | Physio   | Latency    |
+#    |  Main  +----------+------------+
+#    |        |          | ROI signal |
+#    |        | Motion   +------------+
+#    +--------+----------+
+#
+# The positions depend only on the primary monitor (not on where a window
+# happens to be), so rt_physio can be started at its place before the main
+# window opens.
+RTPSPY_HDTV = (1920, 1080)
+RTPSPY_GAP = 6
+RTPSPY_MAIN_WIDTH = 620        # Width of the main window slot (client)
+RTPSPY_COLUMN_WIDTHS = (440, 440)
+# (slot, client height); None: the rest of the column ('roi' is computed)
+RTPSPY_COLUMNS = ((("physio", 377), ("motion", 539)),
+                  (("latency", 377), ("roi", None)))
+RTPSPY_ROI_HEIGHT = (80, 70)   # ROI plot height = a + b * number of ROIs
+
+
+def rtpspy_area():
+    """Usable area (x, y, w, h) of the primary monitor within HDTV size."""
+    x0, y0, W, H = screen_area()
+    mx, my, _, _ = _primary_monitor()
+    x1 = min(x0 + W, mx + RTPSPY_HDTV[0])
+    y1 = min(y0 + H, my + RTPSPY_HDTV[1])
+    return x0, y0, x1 - x0, y1 - y0
+
+
+def rtpspy_layout(main_width=None, num_ROIs=1, area=None):
+    """
+    Client rectangles {name: (x, y, w, h)} of the RTPSpy windows: 'main',
+    'physio', 'motion', 'roi', 'latency'.
+
+    Parameters
+    ----------
+    main_width : int, optional
+        Width of the main window if it is wider than RTPSPY_MAIN_WIDTH.
+    num_ROIs : int
+        Number of ROIs (the height of the ROI signal plot).
+    area : tuple, optional
+        (x, y, w, h) to use instead of rtpspy_area().
+    """
+    x0, y0, W, H = area if area is not None else rtpspy_area()
+    title = TITLE_BAR
+    main_w = max(RTPSPY_MAIN_WIDTH, main_width or 0)
+    rects = {"main": (x0, y0 + title, main_w, H - title)}
+
+    left = x0 + main_w + RTPSPY_GAP
+    right = x0 + W
+    tot = sum(RTPSPY_COLUMN_WIDTHS)
+    scale = min(1.0, (right - left - RTPSPY_GAP) / tot)
+    pref = {"roi": RTPSPY_ROI_HEIGHT[0] + RTPSPY_ROI_HEIGHT[1] * num_ROIs}
+
+    x = left
+    for column, cw in zip(RTPSPY_COLUMNS, RTPSPY_COLUMN_WIDTHS):
+        col_w = int(cw * scale)
+        x = min(x, right - col_w)  # On the monitor (overlaps if too small)
+        n = len(column)
+        avail_h = H - n * title - (n - 1) * RTPSPY_GAP
+        hs = [h if h is not None else pref.get(slot) for slot, h in column]
+        fixed = sum(h for h in hs if h is not None)
+        n_rest = sum(h is None for h in hs)
+        min_rest = 150 * n_rest
+        if fixed + min_rest > avail_h:  # Scale down to fit the column
+            s = max(avail_h - min_rest, 0) / fixed
+            hs = [None if h is None else int(h * s) for h in hs]
+            fixed = sum(h for h in hs if h is not None)
+        rest = (avail_h - fixed) // n_rest if n_rest else 0
+        y = y0 + title
+        for (slot, _), h in zip(column, hs):
+            h = rest if h is None else h
+            rects[slot] = (x, y, col_w, h)
+            y += h + RTPSPY_GAP + title
+        x += col_w + RTPSPY_GAP
+    return rects
+
+
+def rtpspy_tk_geometry(name, **kwargs):
+    """Tk geometry 'WxH+X+Y' of an RTPSpy window (Tk places the frame with
+    the title bar at +X+Y; WxH is the client size)."""
+    x, y, w, h = rtpspy_layout(**kwargs)[name]
+    return f"{w}x{h}+{x}+{y - TITLE_BAR}"

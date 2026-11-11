@@ -18,12 +18,12 @@ RTP._ui_call (run a GUI action). Without a bound panel these do nothing.
 # %% import ===================================================================
 import importlib
 
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 
 # Text of a mask file field when the mask is made from the first received
 # volume (mask_file 0; RtpSmooth and RtpRegress)
-ZERO_OUT_MASK_TEXT = 'zero-out initial received volume'
+ZERO_OUT_MASK_TEXT = ''  # The combo box shows 'First received volume'
 
 
 def mask_text(mask_file):
@@ -31,6 +31,24 @@ def mask_text(mask_file):
     if type(mask_file) is int and mask_file == 0:
         return ZERO_OUT_MASK_TEXT
     return str(mask_file)
+
+
+# Items of the mask source combo box: (label, value for set_param)
+MASK_ITEMS = [("File...", "external file"),
+              ("First received volume", "initial volume of internal run")]
+
+
+# %% value_combo ==============================================================
+def value_combo(items):
+    """
+    Combo box showing the labels of items [(label, value), ...]. The value
+    of the current item (the text that set_param takes) is
+    combo.currentData().
+    """
+    combo = QtWidgets.QComboBox()
+    for label, value in items:
+        combo.addItem(label, value)
+    return combo
 
 
 # %% bind_ui ==================================================================
@@ -110,7 +128,7 @@ class RtpModuleUI:
         """'Save processed image' check box row (obj.ui_saveProc_chb) at the
         right, with the widget left at the left."""
         o = self.obj
-        o.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed image")
+        o.ui_saveProc_chb = QtWidgets.QCheckBox("Save processed images")
         o.ui_saveProc_chb.setChecked(o.save_proc)
         o.ui_saveProc_chb.stateChanged.connect(
             lambda state: setattr(o, "save_proc", state > 0))

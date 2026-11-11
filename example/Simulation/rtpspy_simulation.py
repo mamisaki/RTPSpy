@@ -88,6 +88,11 @@ if __name__ == '__main__':
 
     saved_fnames = rtp_app.end_run(scan_name='sim_test')
 
+    # Stop the physio recording process (rt_physio) explicitly; at the
+    # interpreter exit the QUIT message cannot be sent, and it is terminated
+    # only after a timeout.
+    rtp_app.rtp_objs['TTLPHYSIO'].quit()
+
     print('-' * 80)
     print('End process')
     for k, pp in saved_fnames.items():

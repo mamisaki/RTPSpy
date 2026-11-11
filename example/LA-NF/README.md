@@ -8,11 +8,10 @@ This is an example application with RTPSpy GUI for the left amygdala neurofeedba
 ## Operations
 ### 1. Start
 1. Open a console (Ubuntu console if you are working on the Windows WSL, or Terminal application on Max OSX).  
-2. Activate the RTPSpy env and run the boot script.  
+2. Run the boot script (it uses the environments made by `~/RTPSpy/install.sh`).  
 ```
-conda activate RTPSpy
 cd ~/RTPSpy/example/LA-NF
-./run_RTPSpyApp.py
+./boot_LANF_RTPSpy.sh
 ```
 * On Mac OSX, if you run the 'run_RTPSpyApp.py' as a background job (with '&'), the process may be stacked at booting a PsychoPy application.
 
@@ -31,12 +30,12 @@ The LA-NF App window opens.
 Start MRI scan for taking anatomical and reference functional images.   
 
 #### Set files for 'Anatomy image' and 'Base function image'.  
-Once the images are ready, press the 'Go to mask creation' button and set the 'Anatomy image' and 'Base function image'.  
+Once the images are ready, press the 'Go to mask creation' button and set the 'Anatomy' and 'Base function' images.  
 <img src="/example/LA-NF/doc/LA-NF_MaskCreation.png" height=400>  
 
 #### Create masks
-Press the 'Create masks ...' button.  
-If GPU is not available, 'No FastSeg' is checked. Then, 3dSkullStrip and template white-matter and ventricle masks will be used, instead of FastSeg.  
+Press the 'Create masks' button.  
+If GPU is not available, 'Skip FastSeg' is checked. Then, 3dSkullStrip and template white-matter and ventricle masks will be used, instead of FastSeg.  
 The 'Mask image creation' dialog will open to show the progress.  
 Once the process finishes, all the result images are automatically set as masks for the real-time processing.  
 <img src="/example/LA-NF/doc/MaskCreationDlg.png" height=200>  
@@ -56,7 +55,7 @@ Press one of the session setup buttons (e.g., resting state, baseline run withou
 The neurofeedback presentation window opens with the task instruction screen.   
 <img src="/example/LA-NF/doc/TaskInstruction.png" height=400>  
 
-The size and the position of the application screen can be adjusted by command line variables in the 'App command:' field on the 'Ext App' tab.  
+The size and the position of the application screen can be adjusted by command line variables in the 'Command' field on the 'External app' tab.  
 Add '--fullscr' option to the command line to make it full screen.  
 <img src="/example/LA-NF/doc/LA-NF_ExtApp.png" height=400>  
 

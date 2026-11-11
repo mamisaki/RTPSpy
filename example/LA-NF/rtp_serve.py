@@ -11,6 +11,7 @@ RTP_SERVE: Server for an external application to communicate with RtpApp
 import socket
 import threading
 import socketserver
+from datetime import datetime
 import queue
 import subprocess
 import re
@@ -20,7 +21,6 @@ import time
 import traceback
 import shlex
 import zlib
-import logging
 
 import pandas as pd
 
@@ -31,10 +31,22 @@ _PKL_HEADER = re.compile(rb'(Z?)PKL_(\d+)_')
 _PKL_HEADER_PART = re.compile(rb'Z?(P(K(L(_\d*)?)?)?)?')
 
 
+# %% _get_ip_address =========================================================
+def _get_ip_address():
+    """Return the IP address of this PC on the network.
+
+    Connecting a UDP socket sends no packet; it only selects the network
+    interface used to reach an external address.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+
+
 # %% RTPMsgHandler ============================================================
 class RTPMsgHandler(socketserver.StreamRequestHandler):
-    """
-    RTP message handling class
+    """Request handler that receives messages from and sends messages to
+    RtpApp.
     """
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -43,11 +55,10 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
         Keep running until a client closes the connection.
         """
 
-        self._logger = logging.getLogger('RTP_SERVE')
-
         # --- Initialize ------------------------------------------------------
         addr_str = self.client_address[0]
-        self._logger.debug(f"Open:{addr_str.encode('utf-8')}")
+        if self.server.verb:
+            self._log(addr_str.encode('utf-8'), prefix='Open:')
 
         self.server.connected = True
         self.server.client_address_str = addr_str
@@ -56,11 +67,13 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
 
         # --- Request handling loop -------------------------------------------
         recv_buf = b''  # Received bytes not yet processed
-        self.request.settimeout(0.001)
+        idle_timeout = 0.05  # Wait for a message (s); also the send interval
+        burst_timeout = 0.005  # Wait for the following messages in a burst
 
         connected = True
         while not self.server.kill and connected:
             # --- Receiving data ----------------------------------------------
+            self.request.settimeout(idle_timeout)
             while True:  # Receive until no more data arrives (timeout)
                 # Processing each message as it arrives at very short
                 # intervals (e.g., NF signals sent during retrospective
@@ -69,22 +82,23 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                 # To avoid this, messages arriving at short intervals are
                 # processed together as one chunk.
                 try:
-                    recv_data = self.request.recv(4096)
+                    recv_data = self.request.recv(102400)
                     if not recv_data:
                         # Empty data means the connection was closed.
                         connected = False
                         break
                     recv_buf += recv_data
 
-                    time.sleep(0.001)  # Wait for the following messages
+                    # Wait briefly for the following messages to concatenate
+                    self.request.settimeout(burst_timeout)
 
                 except socket.timeout:
                     break
 
             recvs, recv_buf = self._split_messages(recv_buf)
 
-            if len(recvs):
-                self._logger.debug(f'Recv:{recvs}')
+            if self.server.verb and len(recvs):
+                self._log(recvs, prefix='Recv:')
 
             # Process the received messages
             NF_data = []
@@ -102,7 +116,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                             pkldata = zlib.decompress(pkldata)
                         data = pickle.loads(pkldata)
                     except Exception as e:
-                        self._logger.error(
+                        self._err(
                             f"Failed to unpack the received data: {e}")
                         continue
                 else:
@@ -114,7 +128,7 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                             add_row = {'Time': vals[0], 'TR': int(vals[1]),
                                        'Signal': vals[2:]}
                         except (ValueError, IndexError):
-                            self._logger.error(
+                            self._err(
                                 f"Skip a malformed NF message: '{data}'")
                             continue
 
@@ -124,29 +138,32 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
                 self.proc_recv_data(data)
 
             if len(NF_data):
-                self.server.NF_signal_lock.acquire()
-                self.server.NF_signals.extend(NF_data)
-                self.server.NF_signal_lock.release()
+                with self.server.NF_signal_lock:
+                    self.server.NF_signals.extend(NF_data)
 
             # --- Sending data ------------------------------------------------
             if not self.server.send_queue.empty():
                 send_data = self.server.send_queue.get()
 
                 try:
-                    self._logger.debug(f'Send:{send_data}')
-                    self.request.send(send_data)
+                    if self.server.verb:
+                        self._log(send_data, prefix='Send:')
+                    self.request.settimeout(1)
+                    self.request.sendall(send_data)
 
                 except socket.timeout:
-                    self._logger.error(f'Failed_Send:{send_data}')
+                    if self.server.verb:
+                        self._log(send_data, prefix='Failed_Send:')
 
         # --- End request handling loop ---------------------------------------
         self.server.client_address_str = ''
         self.server.connected = False
         time.sleep(1)  # Wait before closing the connection
 
-        self._logger.debug(f'Close:{addr_str}')
-        self._logger.debug(
-            f"client_address_str={self.server.client_address_str}")
+        if self.server.verb:
+            self._log(addr_str.encode('utf-8'), prefix='Close:')
+            self._log(
+                f"client_address_str={self.server.client_address_str}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _split_messages(self, buf):
@@ -195,15 +212,44 @@ class RTPMsgHandler(socketserver.StreamRequestHandler):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def proc_recv_data(self, data):
+        """Answer an 'IsAlive?' inquiry, or put data in recv_queue."""
         sys.stdout.flush()
-        if type(data) is str:
-            if 'IsAlive?' in data:
-                # Return 'Yes.' to an 'IsAlive?' inquiry.
-                self.request.send('Yes.'.encode('utf-8'))
-                self._logger.debug('Send:Yes.')
-                return
+        if type(data) is str and 'IsAlive?' in data:
+            self.request.send('Yes.'.encode('utf-8'))
+            if self.server.verb:
+                self._log('Yes.', prefix='Send:')
+            return
 
         self.server.recv_queue.put(data)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _err(self, errmsg):
+        """Report an error regardless of the verb flag."""
+        sys.stderr.write(f"RTP_SERVE: {errmsg}\n")
+        if self.server.verb:
+            self._log(errmsg, prefix='Error:')
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _log(self, datas, prefix=''):
+        """Print the data and append it to RTP_SERVE_debug.log."""
+        if type(datas) is not list:
+            datas = [datas]
+
+        logstrs = []
+        for data in datas:
+            if type(data) is str:
+                logstrs.append(data)
+            else:
+                try:
+                    logstrs.append(data.decode('utf-8', 'strict'))
+                except Exception:
+                    logstrs.append('encoded binary data')
+
+        logstr = prefix + ';'.join(logstrs)
+        dt = datetime.isoformat(datetime.now())
+        print(f"RTP_SERVE,{dt},{logstr}")
+        with open('RTP_SERVE_debug.log', 'a') as fd:
+            print(f"RTP_SERVE,{dt},{logstr}", file=fd)
 
 
 # %% RTP_SERVE ================================================================
@@ -215,7 +261,7 @@ class RTP_SERVE():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(self, allow_remote_access=False, request_host=None,
-                 handler_class=RTPMsgHandler, data_sep=';'):
+                 handler_class=RTPMsgHandler, data_sep=';', verb=False):
         """
         Parameters
         ----------
@@ -223,7 +269,7 @@ class RTP_SERVE():
             Allow remote access (connection from other than localhost).
             The default is False.
         request_host : str, optional
-            'host:port' to which the server address:port is sent.
+            'host:port' to which the server address:port is sent (UDP).
             The default is None.
         handler_class : RTPMsgHandler class, optional
             Request handler class. The default is RTPMsgHandler.
@@ -231,21 +277,28 @@ class RTP_SERVE():
             Delimiter between messages. When multiple messages are
             received at once, they are split by this delimiter.
             The default is ';'.
-        """
-        self._logger = logging.getLogger('RTP_SERVE')
+        verb : bool, optional
+            Flag to print logs. The default is False.
 
+        """
         if allow_remote_access:
             host = '0.0.0.0'
-            host_addr = self._get_ip_address()
+            host_addr = _get_ip_address()
         else:
             host = 'localhost'
             host_addr = 'localhost'
 
-        # Server
+        # Start the server
         socketserver.TCPServer.allow_reuse_address = True
-        self.server = socketserver.TCPServer((host, 0),  RTPMsgHandler)
+        try:
+            self.server = socketserver.TCPServer((host, 0), handler_class)
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            sys.stderr.write(f"Error starting RTP server: {errstr}\n")
+            self.server = None
+            return
 
-        # Set properties on self.server for access from a handler.
+        # Set attributes on self.server so that the handler can access them.
         self.server.data_sep = data_sep
         self.server.parent = self
         self.server.connected = False
@@ -254,14 +307,15 @@ class RTP_SERVE():
         self.server.recv_queue = queue.Queue()
         self.server.NF_signals = []
         self.server.NF_signal_lock = threading.Lock()
+        self.server.verb = verb
         self.server.kill = False
 
         self._NF_signal = pd.DataFrame(columns=('Time', 'TR', 'Signal'))
 
-        # Start the server on another thread.
+        # Run the server on a daemon thread so that it exits with the main
+        # thread.
         self.server_thread = threading.Thread(
-            target=self.server.serve_forever,  args=(0.1,))
-        # Make the server thread exit when the main thread terminates
+            target=self.server.serve_forever, args=(0.1,))
         self.server_thread.daemon = True
         self.server_thread.start()
 
@@ -287,44 +341,45 @@ class RTP_SERVE():
 
     @property
     def NF_signal(self):
-        self.server.NF_signal_lock.acquire()
-        if len(self.server.NF_signals) != len(self._NF_signal):
-            self._NF_signal = pd.DataFrame(self.server.NF_signals)
-        self.server.NF_signal_lock.release()
+        """Received NF signals as a DataFrame (columns: Time, TR, Signal).
+        The DataFrame is rebuilt only when new signals have arrived.
+        """
+        with self.server.NF_signal_lock:
+            if len(self.server.NF_signals) != len(self._NF_signal):
+                self._NF_signal = pd.DataFrame(self.server.NF_signals)
 
         return self._NF_signal
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send(self, data):
         """
-        Send data to RtpApp
-        The data in send_queue will be sent by a handler.
+        Send data to RtpApp.
+        The data is put in send_queue and sent by the handler.
 
         Parameters
         ----------
-        data : byte
-            Sending data.
+        data : bytes
+            Data to send.
 
         """
-
         self.server.send_queue.put(data)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_recv_queue(self, timeout=0):
         """
         Get data from recv_queue.
-        The data sent by RtpApp is put in recv_queue by a handler with
-        converting a str or any type unpickled.
+        The handler puts the data sent by RtpApp in recv_queue, decoded to
+        str or unpickled.
 
         Parameters
         ----------
         timeout : float, optional
-            Wait time until receiving the data. The default is 0.
+            Maximum time (s) to wait for data. The default is 0.
 
         Returns
         -------
-        data : str or any type unpickled from byte data
-            DESCRIPTION.
+        data : str, unpickled object, or None
+            Received data. None if no data has arrived.
 
         """
         if timeout > 0:
@@ -335,8 +390,7 @@ class RTP_SERVE():
 
         if self.server.recv_queue.empty():
             return None
-        else:
-            return self.server.recv_queue.get()
+        return self.server.recv_queue.get()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def flush_recv(self):
@@ -353,17 +407,10 @@ class RTP_SERVE():
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_NF_signal(self):
+        """Clear recv_queue and the received NF signals."""
         self.flush_recv()
-        if self.server.NF_signal_lock.acquire():
+        with self.server.NF_signal_lock:
             self.server.NF_signals = []
-            self.server.NF_signal_lock.release()
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _get_ip_address(self):
-        """Get the IP address of the PC"""
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
@@ -372,27 +419,29 @@ class RTP_SERVE():
 
 
 # %% boot_RTP_SERVE_app =======================================================
-def boot_RTP_SERVE_app(cmd, remote=False, timeout=5):
+def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
     """
-    Boot an external application with RTP_SERVE
+    Boot an external application with RTP_SERVE.
 
     Parameters
     ----------
     cmd : str
         Application boot command line.
     remote : bool, optional
-        Whether the connection is remote or not (local). The default is False
+        Whether the connection is remote or local. The default is False
         (local).
     timeout : float, optional
-        Time out waiting for the application boot and receving the
-        address:port. from an external application with RTP_SERVE.
-        The default is 5.
+        Time (s) to wait for the application to send back its RTP_SERVE
+        address:port. The default is 5.
+    verb : bool, optional
+        Print logs. The default is False.
 
     Returns
     -------
     (host, port), pr : (str, int), subprocess.Popen object
-        host address and port of RTP_SERVE server and the process running
-        the external application by 'cmd'.
+        Host address and port of the RTP_SERVE server and the process running
+        the external application via 'cmd'.
+        On failure, None and an error message are returned.
 
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -400,9 +449,7 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5):
     host, port = sock.getsockname()
 
     if remote:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            host_addr = s.getsockname()[0]
+        host_addr = _get_ip_address()
         cmd += " --allow_remote_access"
     else:
         host_addr = 'localhost'
@@ -414,49 +461,54 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5):
 
     if pr.poll() is not None:
         errmsg = f"Failed: {cmd}"
-        sys.stderr.write(f"{errmsg}\n")
-        return None, errmsg
-    else:
-        sock.settimeout(timeout)
-        try:
-            data = sock.recv(1024)
-            host, port = data.decode('utf-8').split(':')
-            port = int(port)
-            sock.close()
-        except socket.timeout:
-            errmsg = "No response to the request."
+        if verb:
             sys.stderr.write(f"{errmsg}\n")
-            sock.close()
-            return None, errmsg
+        return None, errmsg
 
-        return (host, port), pr
+    sock.settimeout(timeout)
+    try:
+        data = sock.recv(1024)
+        host, port = data.decode('utf-8').split(':')
+        port = int(port)
+    except socket.timeout:
+        errmsg = "No response to the request."
+        if verb:
+            sys.stderr.write(f"{errmsg}\n")
+        return None, errmsg
+    finally:
+        sock.close()
+
+    return (host, port), pr
 
 
 # %% pack_data ================================================================
-def pack_data(data):
+def pack_data(data, compress=False):
     """
-    Pack data to send to the RTP_SERVE server: a header 'PKL_{bytesize}_'
-    followed by the pickled bytes.
+    Pack data to be sent: a header 'PKL_{bytesize}_' followed by the pickled
+    bytes ('ZPKL_{bytesize}_' and zlib-compressed bytes if compress=True).
 
     Parameters
     ----------
     data : any type
         Any picklable data.
+    compress : bool, optional
+        Flag to compress the data with zlib. The default is False.
 
     Returns
     -------
-    pkl_data : byte string
-        Pickled byte string data.
+    pkl_data : bytes or None
+        Packed data. None if the data cannot be pickled.
     """
-
     try:
         pkl_data = pickle.dumps(data)
-        pkl_data = f"PKL_{len(pkl_data)}_".encode('utf-8') + pkl_data
-    except Exception:
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        errmsg = ''.join(
-            traceback.format_exception(exc_type, exc_obj, exc_tb))
-        sys.stderr.write(errmsg)
+        if compress:
+            pkl_data = zlib.compress(pkl_data)
+            pkl_data = f"ZPKL_{len(pkl_data)}_".encode("utf-8") + pkl_data
+        else:
+            pkl_data = f"PKL_{len(pkl_data)}_".encode("utf-8") + pkl_data
+    except Exception as e:
+        errstr = str(e) + "\n" + traceback.format_exc()
+        sys.stderr.write(errstr)
         pkl_data = None
 
     return pkl_data
@@ -467,6 +519,7 @@ if __name__ == '__main__':
 
     # --- Initialize ----------------------------------------------------------
     rtp_srv = RTP_SERVE()
+    rtp_srv.verb = True
     srv_address = rtp_srv.server.server_address
     print("Open server at ", srv_address)
 
@@ -477,7 +530,7 @@ if __name__ == '__main__':
 
     # --- Connection test -----------------------------------------------------
     # 1. rtp_srv should respond to 'IsAlive?;'.
-    #    ';' is the command separator.
+    #    ';' is a separator for the command.
     print("\n1. Send 'IsAlive?;'")
     sock.sendall('IsAlive?;'.encode('utf-8'))
     resp = sock.recv(1024).decode('utf-8', 'backslashreplace')
@@ -521,17 +574,17 @@ if __name__ == '__main__':
         # Check rtp_srv NF_signal
         print(rtp_srv.NF_signal)
 
-    # Wait for NF_signal is filled.
+    # Wait for NF_signal to be filled.
     if len(rtp_srv.NF_signal) < 5:
         while len(rtp_srv.NF_signal) < 5:
             time.sleep(0.001)
         print(rtp_srv.NF_signal)
 
-    # 4. '' does not close the connection.
+    # 4. Sending '' does not close the connection.
     print("\n4. Check '' does not close the connection.")
     sock.sendall(''.encode('utf-8'))
     time.sleep(0.001)
-    assert rtp_srv.connected, 'xxx Connection closed.'
+    assert rtp_srv.connected, 'Connection closed unexpectedly.'
     print("OK.")
 
     # 5. Pickled data can be sent
@@ -546,18 +599,18 @@ if __name__ == '__main__':
         print(f"Server recv_queue '{data}'")
         data = rtp_srv.get_recv_queue(timeout=0.5)
 
-    # 6. Receive message from rtp_srv
+    # 6. Receive a message from rtp_srv
     data = 'data from server'
     print(f"\n6. Send message '{data}' from rtp_srv")
     rtp_srv.send(data.encode('utf-8'))
     resp = sock.recv(1024).decode('utf-8', 'backslashreplace')
     print(f"Client received '{resp}'")
 
-    # 7. Close connection
-    print('\n7. Close connection.')
+    # 7. Close the connection
+    print('\n7. Close the connection.')
     sock.close()
     time.sleep(0.001)
-    assert not rtp_srv.connected, 'xxx Connection not closed.'
+    assert not rtp_srv.connected, 'Connection not closed properly.'
     print('OK.')
 
     del rtp_srv

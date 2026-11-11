@@ -7,7 +7,7 @@ on:
 
 jobs:
   pytest:
-    # librtp.so needs GLIBC >= 2.38 (Ubuntu 24.04)
+    # librtp.so needs GLIBC >= 2.27 (built in Ubuntu 18.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: pip
           cache-dependency-path: pyproject.toml
 

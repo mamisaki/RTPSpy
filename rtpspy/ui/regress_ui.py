@@ -9,10 +9,11 @@ GUI panel of RtpRegress
 from pathlib import Path
 
 import numpy as np
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from ..rtp_regress import RtpRegress, MOT_REG_OPTS, PHYS_REG_OPTS
-from .module_ui import RtpModuleUI, mask_text, ZERO_OUT_MASK_TEXT
+from .module_ui import (RtpModuleUI, value_combo, MASK_ITEMS, mask_text,
+                        ZERO_OUT_MASK_TEXT)
 from .widgets import MatplotlibWindow
 
 
@@ -25,7 +26,7 @@ class RtpRegressUI(RtpModuleUI):
         # Mask source (0: external file)
         "mask_source": ("ui_mask_cmbBx", "setCurrentIndex"),
         "wait_num": ("ui_waitNum_lb", "setText",
-                     lambda n: f"Wait REGRESS until receiving {n} volumes"),
+                     lambda n: f"{n} volumes"),
         # Wait mode (0: number of regressors, 1: set value)
         "wait_num_mode": ("ui_waitNum_cmbBx", "setCurrentIndex"),
         "max_scan_length": ("ui_maxLen_spBx", "setValue"),
@@ -74,7 +75,7 @@ class RtpRegressUI(RtpModuleUI):
         if key == 'wait_num_mode':
             # Text of the wait mode selection
             if hasattr(o, 'ui_waitNum_cmbBx'):
-                return o.ui_waitNum_cmbBx.currentText()
+                return o.ui_waitNum_cmbBx.currentData()
 
         elif key == 'desMtx_btn_unset':
             # The design matrix button is 'Unset' (a matrix is loaded)
@@ -122,13 +123,11 @@ class RtpRegressUI(RtpModuleUI):
 
         # mask_file
         var_lb = QtWidgets.QLabel("Mask :")
-        o.ui_mask_cmbBx = QtWidgets.QComboBox()
-        o.ui_mask_cmbBx.addItems(['external file',
-                                  'initial volume of internal run'])
+        o.ui_mask_cmbBx = value_combo(MASK_ITEMS)
         o.ui_mask_cmbBx.activated.connect(
             lambda idx:
             o.set_param('mask_file',
-                        o.ui_mask_cmbBx.currentText(),
+                        o.ui_mask_cmbBx.currentData(),
                         o.ui_mask_cmbBx.setCurrentIndex))
 
         o.ui_mask_lnEd = QtWidgets.QLineEdit()
@@ -150,19 +149,21 @@ class RtpRegressUI(RtpModuleUI):
         ui_rows.append((var_lb, mask_hLayout))
 
         # wait_num
-        var_lb = QtWidgets.QLabel("Wait REGRESS until (volumes) :")
-        o.ui_waitNum_cmbBx = QtWidgets.QComboBox()
-        o.ui_waitNum_cmbBx.addItems(['number of regressors', 'set value'])
+        var_lb = QtWidgets.QLabel("Start after :")
+        var_lb.setToolTip("REGRESS starts after receiving this number of"
+                          " volumes")
+        o.ui_waitNum_cmbBx = value_combo(
+            [('Regressors + 1', 'number of regressors'),
+             ('Set...', 'set value')])
         o.ui_waitNum_cmbBx.activated.connect(
             lambda idx:
             o.set_param('wait_num',
-                        o.ui_waitNum_cmbBx.currentText(),
+                        o.ui_waitNum_cmbBx.currentData(),
                         o.ui_waitNum_cmbBx.setCurrentIndex))
 
         o.ui_waitNum_lb = QtWidgets.QLabel()
         o.set_wait_num()
-        o.ui_waitNum_lb.setText(
-            f'Wait REGRESS until receiving {o.wait_num} volumes')
+        o.ui_waitNum_lb.setText(f'{o.wait_num} volumes')
         o.ui_objs.extend([var_lb, o.ui_waitNum_cmbBx,
                           o.ui_waitNum_lb])
 
@@ -172,8 +173,9 @@ class RtpRegressUI(RtpModuleUI):
         ui_rows.append((var_lb, wait_num_hLayout))
 
         # max_scan_length
-        var_lb = QtWidgets.QLabel("Maximum scan length :")
+        var_lb = QtWidgets.QLabel("Max scan length :")
         o.ui_maxLen_spBx = QtWidgets.QSpinBox()
+        o.ui_maxLen_spBx.setSuffix(" volumes")
         o.ui_maxLen_spBx.setMinimum(1)
         o.ui_maxLen_spBx.setMaximum(9999)
         o.ui_maxLen_spBx.setValue(o.max_scan_length)
@@ -185,14 +187,13 @@ class RtpRegressUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_maxLen_spBx])
 
         # max_poly_order
-        var_lb = QtWidgets.QLabel("Maximum polynomial order :\n"
-                                  "regressors for slow fluctuation")
-        o.ui_maxPoly_cmbBx = QtWidgets.QComboBox()
-        o.ui_maxPoly_cmbBx.addItems(['auto', 'set'])
+        var_lb = QtWidgets.QLabel("Max polynomial order :")
+        var_lb.setToolTip("Polynomial regressors for slow drifts")
+        o.ui_maxPoly_cmbBx = value_combo([('Auto', 'auto'), ('Set...', 'set')])
         o.ui_maxPoly_cmbBx.activated.connect(
             lambda idx:
             o.set_param('max_poly_order',
-                        o.ui_maxPoly_cmbBx.currentText(),
+                        o.ui_maxPoly_cmbBx.currentData(),
                         o.ui_maxPoly_cmbBx.setCurrentIndex))
 
         o.ui_maxPoly_lb = QtWidgets.QLabel()
@@ -211,38 +212,42 @@ class RtpRegressUI(RtpModuleUI):
         ui_rows.append((var_lb, maxPoly_hLayout))
 
         # mot_reg (the item order follows MOT_REG_OPTS)
-        var_lb = QtWidgets.QLabel("Motion regressor :")
-        o.ui_motReg_cmbBx = QtWidgets.QComboBox()
-        o.ui_motReg_cmbBx.addItems(
-            ['None', '6 motions (yaw, pitch, roll, dS, dL, dP)',
-             '12 motions (6 motions and their temporal derivatives)',
-             '6 motion derivatives'])
+        var_lb = QtWidgets.QLabel("Motion :")
+        o.ui_motReg_cmbBx = value_combo(
+            [('None', 'None'),
+             ('6 parameters', '6 motions (yaw, pitch, roll, dS, dL, dP)'),
+             ('6 parameters + derivatives',
+              '12 motions (6 motions and their temporal derivatives)'),
+             ('6 derivatives', '6 motion derivatives')])
+        o.ui_motReg_cmbBx.setToolTip(
+            "Motion parameters: yaw, pitch, roll, dS, dL, dP")
         o.ui_motReg_cmbBx.setCurrentIndex(
             MOT_REG_OPTS.index(o.mot_reg))
         o.ui_motReg_cmbBx.currentIndexChanged.connect(
             lambda idx:
             o.set_param('mot_reg',
-                        o.ui_motReg_cmbBx.currentText(),
+                        o.ui_motReg_cmbBx.currentData(),
                         o.ui_motReg_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, o.ui_motReg_cmbBx))
         o.ui_objs.extend([var_lb, o.ui_motReg_cmbBx])
 
         # ROI mean signal regressors
-        ui_rows.append(self._roi_reg_row('GS', "Regress global signal :"))
-        ui_rows.append(self._roi_reg_row('WM', "Regress WM signal :"))
-        ui_rows.append(self._roi_reg_row('Vent', "Regress Vent signal :"))
+        ui_rows.append(self._roi_reg_row('GS', "Global signal :"))
+        ui_rows.append(self._roi_reg_row('WM', "WM signal :"))
+        ui_rows.append(self._roi_reg_row('Vent', "Ventricle signal :"))
 
         # phys_reg (the item order follows PHYS_REG_OPTS; RVT is not
         # supported)
-        var_lb = QtWidgets.QLabel("RICOR regressor :")
-        o.ui_physReg_cmbBx = QtWidgets.QComboBox()
-        o.ui_physReg_cmbBx.addItems(['None', '8 RICOR (4 Resp and 4 Card)'])
+        var_lb = QtWidgets.QLabel("Physio (RICOR) :")
+        o.ui_physReg_cmbBx = value_combo(
+            [('None', 'None'),
+             ('4 resp + 4 card', '8 RICOR (4 Resp and 4 Card)')])
         o.ui_physReg_cmbBx.setCurrentIndex(
             PHYS_REG_OPTS.index(o.phys_reg))
         o.ui_physReg_cmbBx.currentIndexChanged.connect(
             lambda idx:
             o.set_param('phys_reg',
-                        o.ui_physReg_cmbBx.currentText(),
+                        o.ui_physReg_cmbBx.currentData(),
                         o.ui_physReg_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, o.ui_physReg_cmbBx))
         o.ui_objs.extend([var_lb, o.ui_physReg_cmbBx])
@@ -265,16 +270,18 @@ class RtpRegressUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_loadDesMtx_btn,
                           o.ui_showDesMtx_btn])
         ui_rows.append((var_lb, desMtx_hBLayout))
-        o.ui_showDesMtx_btn.setText('Show design matrix')
+        o.ui_showDesMtx_btn.setText('Show')
         o.ui_showDesMtx_btn.setEnabled(o.desMtx_read is not None)
 
         # censor_FD
-        var_lb = QtWidgets.QLabel("Censor FD > (mm, 0: off) :")
+        var_lb = QtWidgets.QLabel("Censor FD above :")
         o.ui_censorFD_spBx = QtWidgets.QDoubleSpinBox()
         o.ui_censorFD_spBx.setMinimum(0.0)
         o.ui_censorFD_spBx.setMaximum(10.0)
         o.ui_censorFD_spBx.setDecimals(2)
         o.ui_censorFD_spBx.setSingleStep(0.1)
+        o.ui_censorFD_spBx.setSuffix(" mm")
+        o.ui_censorFD_spBx.setSpecialValueText("Off")
         o.ui_censorFD_spBx.setValue(o.censor_FD)
         o.ui_censorFD_spBx.setToolTip(
             "Exclude volumes with framewise displacement (Power et al., 2012)"
@@ -287,12 +294,13 @@ class RtpRegressUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_censorFD_spBx])
 
         # ridge_c
-        var_lb = QtWidgets.QLabel("Early-fit ridge (0: off) :")
+        var_lb = QtWidgets.QLabel("Early-fit ridge :")
         o.ui_ridgeC_spBx = QtWidgets.QDoubleSpinBox()
         o.ui_ridgeC_spBx.setMinimum(0.0)
         o.ui_ridgeC_spBx.setMaximum(10.0)
         o.ui_ridgeC_spBx.setDecimals(2)
         o.ui_ridgeC_spBx.setSingleStep(0.1)
+        o.ui_ridgeC_spBx.setSpecialValueText("Off")
         o.ui_ridgeC_spBx.setValue(o.ridge_c)
         o.ui_ridgeC_spBx.setToolTip(
             "Ridge penalty of the nuisance regressors, ridge_c * (p/n)^2,"
@@ -307,14 +315,22 @@ class RtpRegressUI(RtpModuleUI):
 
         # --- Checkbox row ----------------------------------------------------
         # Retrospective process
-        o.ui_retroProc_chb = QtWidgets.QCheckBox("Retrospective process")
+        o.ui_retroProc_chb = QtWidgets.QCheckBox(
+            "Process the volumes before the start")
+        o.ui_retroProc_chb.setToolTip(
+            "Process the volumes received before REGRESS started"
+            " retrospectively at the first fit")
         o.ui_retroProc_chb.setChecked(o.reg_retro_proc)
         o.ui_retroProc_chb.stateChanged.connect(
             lambda state: setattr(o, 'reg_retro_proc', state > 0))
         o.ui_objs.append(o.ui_retroProc_chb)
 
+        # In the field column (a long check box in the label column widens
+        # all the labels)
+        ui_rows.append((None, o.ui_retroProc_chb))
+
         # Save
-        ui_rows.append(self.save_proc_row(left=o.ui_retroProc_chb))
+        ui_rows.append(self.save_proc_row())
 
         return ui_rows
 

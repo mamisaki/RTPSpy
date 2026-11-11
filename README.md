@@ -22,61 +22,56 @@ Also, refer to the article below for the evaluation of the system:
 RTPSpy has been developed on a Ubuntu Linux system. It can also be run on macOS and Windows with the Windows Subsystem for Linux (WSL), although GPU computation is not currently supported on macOS and WSL.
 
 ### External Tools
-RTPSpy is designed to run in a conda environment. Install Miniconda by following the instructions at  
-https://docs.conda.io/en/latest/miniconda.html
+`install.sh` sets up everything: the Python environment (with [uv](https://docs.astral.sh/uv/); conda is not needed), the AFNI command-line programs, FastSurfer, and dcm2niix.
+AFNI and FastSurfer are run from container images, which needs [Apptainer](https://apptainer.org/docs/admin/main/installation.html) (recommended on Linux; `sudo apt install apptainer` or the .deb package from the Apptainer releases) or Docker (e.g., Docker Desktop on macOS).
+Without a container runtime, AFNI installed on the host is used, and masks are made without FastSurfer.
 
-Be sure to complete the setup so that you can call the conda command in a terminal.
-The conda initialization script should be added to your ~/.bashrc file. You may need to restart your terminal application to activate the conda environment.
-If you did not answer "yes" to the "Do you wish the installer to initialize ..." question at the end of the installation, you will need to run the following commands to activate the conda command:  
-(If you are using Anaconda, replace miniconda3 in the command below with anaconda3. Replace YOUR_HOME_DIRECTORY with the full path of your home directory.)  
-```
-eval “$(YOUR_HOME_DIRECTORY/miniconda3/bin/conda shell.bash hook)” 
-conda init
-```
-
-A YAML file describing the required Python libraries is provided with the package for easy installation in a conda environment.  
-
-AFNI (https://afni.nimh.nih.gov/) must be installed to run RTPSpy library methods. See https://afni.nimh.nih.gov/pub/dist/doc/htmldoc/background_install/main_toc.html for the installation process for each system.
-
-
-### For Linux and WSL Ubuntu
-Install git command.  
-```
-sudo apt install git
-```
-
-### For macOS  
-Install Homebrew following the instructions at https://brew.sh/  
-Then, install the required tools and libraries by entering the command below:
-```
-brew install git libpng jpeg expat freetype fontconfig openmotif libomp \
-     libxt gsl glib pkg-config gcc@13 autoconf mesa mesa-glu libxpm \
-     netpbm libiconv expat
-```
+The AFNI GUI is not run from the container.
 
 ### GPU
 RTPSpy can take advantage of GPU computation; however, it is not mandatory for real-time image processing, as computational speed is sufficient for real-time fMRI even without a GPU. GPU acceleration is utilized in online fMRI data processing and anatomical image processing with FastSurfer (https://deep-mi.org/research/fastsurfer/).
-To use GPU computation, you need to install an NVIDIA GPU driver. The RTPSpy YAML file installs PyTorch built with CUDA 13.0, which requires driver version 580 or later. For an older driver, replace `cu130` in RTPSpy.yml with `cu126`; for CPU only, replace it with `cpu`.  
+To use GPU computation, install an NVIDIA GPU driver before running `install.sh`. The installer selects the PyTorch build and the FastSurfer image for the driver (`--torch-backend` overrides the PyTorch build, e.g., `cpu`, `cu126`).
 
 ## Installation
 Every command should be entered in the terminal (Terminal application on macOS and Ubuntu console on WSL).
-The instructions below are intended to install the package in the home directory. If you want to install it in another location, replace the path ~/RTPSpy appropriately.  
 
-### Clone the package  
+### Clone the package and run the installer
 ```
 git clone https://github.com/mamisaki/RTPSpy.git ~/RTPSpy
-git clone --branch v2.6.0 https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
-```
-
-> [!NOTE]
-> RTPSpy is tested with FastSurfer v2.6.0. RTPSpy.yml installs the Python packages listed in `rtpspy/FastSurfer/requirements.txt`, so clone FastSurfer before creating the conda environment.
-
-### Install the package in a conda environment
-```
 cd ~/RTPSpy
-conda env create -f RTPSpy.yml
-conda activate RTPSpy
-pip install -e ~/RTPSpy
+./install.sh
+```
+The installer
+1. installs uv if it is not found,
+2. makes a Python 3.13 environment in `~/RTPSpy/.venv` (uv downloads Python) and installs RTPSpy, PyTorch, dcm2niix, and the other Python packages,
+3. pulls the AFNI (`afni/afni_docker_universal`) and FastSurfer (`deepmi/fastsurfer`, v2.6.0) images; with Apptainer they are saved as `.sif` files in `~/RTPSpy/containers` (about 2 GB and 2-6 GB),
+4. writes `containers/containers.json`, and wrapper scripts for the AFNI programs in `containers/afni_bin`,
+5. builds librtp.so in a container if the bundled one does not load on this system (see below).
+
+Re-running `./install.sh` updates the environment and does not download existing images again. Options (`./install.sh --help`):
+
+| Option | |
+|---|---|
+| `--afni auto\|container\|host` | `auto` (default) uses AFNI on the host if found, otherwise the container. `container` always uses the container. |
+| `--runtime apptainer\|docker\|...\|none` | Container runtime (default: detected). |
+| `--no-fastsurfer` | Do not pull the FastSurfer image. |
+| `--torch-backend B` | PyTorch build (`auto`, `cpu`, `cu126`, `cu130`, ...). |
+| `--bind DIRS` | Extra host directories (colon-separated) visible in the containers. |
+| `--container-dir D` | Where to save the `.sif` images. |
+| `--build-librtp auto\|yes\|no` | Build librtp.so in a container: if the bundled one does not load (`auto`, default), always, or never. |
+
+The containers see `$HOME`, `/tmp`, the current directory, `/mnt`, `/media`, `/data`, `/scratch`, and the top-level directory of each absolute path given to the program. Add others with `--bind` or the `RTPSPY_BIND` environment variable.
+
+Activate the environment with
+```
+source ~/RTPSpy/.venv/bin/activate
+```
+The AFNI wrappers are put on PATH by the activation, and by `import rtpspy` in any case.
+
+### (Linux, WSL) Qt library for the GUI
+The GUI uses PyQt6 (Qt 6), which needs `libxcb-cursor0` on X11 (`install.sh` tells you if it is missing):
+```
+sudo apt install libxcb-cursor0
 ```
 
 ### (Linux, WSL) Add user to the dialout group to access the serial port
@@ -91,18 +86,24 @@ You may need to reboot the system.
 
 ### Test the system
 ```
-conda activate RTPSpy
-~/RTPSpy/rtpspy_system_check.py
+~/RTPSpy/.venv/bin/python ~/RTPSpy/rtpspy_system_check.py
 ```
 > [!TIP]
-> On macOS, or if you encounter an error related to librtp.so, compile the librtp library from the source.  
-> Refer to [Compile librtp library](./Compilelibrtp.md) to do it.
+> The bundled librtp.so is built in the AFNI build container (Ubuntu 18.04) and needs GLIBC 2.27 or later. If it does not load, `install.sh` rebuilds it in the container (`afni_module/build_librtp_container.sh`) and saves it as `containers/librtp.so`, which is then used in place of the bundled one (`./install.sh --build-librtp yes` always rebuilds it).  
+> On macOS, compile the librtp library from the source; refer to [Compile librtp library](./Compilelibrtp.md).
+
+### Using a local FastSurfer clone
+Instead of the container, a FastSurfer clone in `rtpspy/FastSurfer` can be used (`RTPSPY_FASTSURFER=local`, or when the container is not set up):
+```
+git clone --branch v2.6.0 https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
+uv pip install --python ~/RTPSpy/.venv/bin/python -r ~/RTPSpy/rtpspy/FastSurfer/requirements.txt
+```
 
 ### Running the tests
 The unit tests in `tests/` use pytest and only the test data in `tests/` or synthetic data.
 ```
 cd ~/RTPSpy
-pip install pytest                                               # in the RTPSpy environment
+source .venv/bin/activate                                        # pytest is installed by install.sh
 QT_QPA_PLATFORM=offscreen python -m pytest tests                 # all tests
 python -m pytest tests -m "not gpu and not afni and not slow"    # quick CPU-only tests (as in CI)
 ```
@@ -112,6 +113,15 @@ Tests are marked `gpu` (needs CUDA), `afni` (compares with AFNI programs on PATH
 Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full) for usage information about the library.
 RTPSpy is not a complete application by itself but is intended to be used as part of a user's custom rtfMRI application.
 Example applications using the RTPSpy library are shown below.
+
+### Processing latency
+RTPSpy records three times for each volume: the acquisition onset from the scanner TTL pulse (recorded by rt_physio), the time the image file was read (RtpWatch), and the time the feedback signal was sent to the external application (or saved to the signal file). From these, two latencies are derived:
+- **TTL → image**: image reconstruction and transfer by the scanner (`acq_to_read`)
+- **image → feedback**: RTPSpy processing (`read_to_fb`)
+
+Check 'Latency' in the 'Use / Show' box to plot them in real time, with the total (**TTL → feedback**, `acq_to_fb`) in the bottom panel. The y range of each panel is fitted to the values. Volumes processed retrospectively (the wait period of RtpRegress) are shown as gray points in the image → feedback and total panels and excluded from their y range and median; the first real-time volume (its processing includes the initial fit) is also excluded from their y range. If no TTL pulse matches a volume (e.g., a manual start without the TTL), its onset is estimated from the scan onset and TR, and it is shown with a hollow marker.
+The values of each volume are saved as `latency_{scan}.csv` in the `log` folder of the working directory at the end of a run (with `vol`, `onset`, `read`, `sent`, `acq_to_read`, `read_to_fb`, `acq_to_fb`, `onset_estimated`, `retrospective`).
+The TTL of a volume is the pulse nearest to its expected onset, so both one pulse per volume and one pulse per slice work. The feedback time is recorded when an application sends an `NF {time},{volume_index},...;` message with `RtpApp.send_extApp`, so applications that override `do_proc` (e.g., example/ROI-NF) need no change.
 
 ### Compare real-time and offline processing
 `rtpspy/rtp_offline_compare.py` quantifies how close the real-time (online, causal) processing is to standard offline processing of the same run, as evaluated in Misaki and Bodurka (2022), using your own data and parameters.
@@ -131,13 +141,7 @@ We also present a sample external application for neurofeedback. This applicatio
 
 The GUI application serves as just an example of library usage. However, users may develop a custom neurofeedback application with minimal modifications to the example script.
 
-To run the example application, users need to install the PsychoPy package in a conda environment named psychopy, as indicated below:
-```
-conda create -n psychopy python=3.10
-conda activate psychopy
-conda install conda-forge::wxpython
-pip install psychopy
-```
+The feedback presentation scripts (`NF_psypy.py`) run with PsychoPy in a separate environment, `~/RTPSpy/.venv-psychopy` (Python 3.12, because PsychoPy supports Python < 3.13). `install.sh` makes it (skip it with `--no-psychopy`). The scripts do not import rtpspy; each example directory has a copy of `rtpspy/rtp_serve.py` for the communication with RTPSpy.
 
 On WSL, you also need to set up an X server application. The instructions for AFNI installation on WSL describe this setup, so I assume you have already completed it.
 

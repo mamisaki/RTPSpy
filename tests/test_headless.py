@@ -1,6 +1,6 @@
-"""The processing library runs without PyQt5 and without a display.
+"""The processing library runs without PyQt6 and without a display.
 
-Each test runs tests/_headless_run.py in a subprocess in which PyQt5 imports
+Each test runs tests/_headless_run.py in a subprocess in which PyQt6 imports
 are blocked (a sys.meta_path finder raising ImportError) and DISPLAY is
 unset.
 """
@@ -30,7 +30,7 @@ def test_import_without_qt():
         "import sys\n"
         "class B:\n"
         "    def find_spec(self, name, path=None, target=None):\n"
-        "        if name.split('.')[0] == 'PyQt5':\n"
+        "        if name.split('.')[0] == 'PyQt6':\n"
         "            raise ImportError(name)\n"
         "sys.meta_path.insert(0, B())\n"
         f"sys.path.insert(0, {str(HELPER.parents[1])!r})\n"
@@ -39,12 +39,12 @@ def test_import_without_qt():
     # rtpspy.rtp_gui (the GUI) needs Qt; the processing modules do not.
     pr = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=300)
-    assert "ImportError" in pr.stderr and "PyQt5" in pr.stderr
+    assert "ImportError" in pr.stderr and "PyQt6" in pr.stderr
 
     code = code.replace(", rtpspy.rtp_gui as g", "").replace(
         "raise SystemExit(1)",
         "from rtpspy import *\n"
-        "assert not [m for m in sys.modules if m.startswith('PyQt5')]\n"
+        "assert not [m for m in sys.modules if m.startswith('PyQt6')]\n"
         "try:\n"
         "    rtpspy.RtpGUI\n"
         "except ImportError:\n"

@@ -8,15 +8,15 @@ Qt implementation of the notifier (see rtpspy.notifier)
 # %% import ===================================================================
 import sys
 
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from ..notifier import Notifier
 
 _ICONS = {
-    "question": QtWidgets.QMessageBox.Question,
-    "warning": QtWidgets.QMessageBox.Warning,
-    "critical": QtWidgets.QMessageBox.Critical,
-    "information": QtWidgets.QMessageBox.Information,
+    "question": QtWidgets.QMessageBox.Icon.Question,
+    "warning": QtWidgets.QMessageBox.Icon.Warning,
+    "critical": QtWidgets.QMessageBox.Icon.Critical,
+    "information": QtWidgets.QMessageBox.Icon.Information,
 }
 
 
@@ -29,14 +29,15 @@ class QtNotifier(Notifier):
         # No parent by default, since this can be called from another
         # thread.
         msgBox = QtWidgets.QMessageBox(parent)
-        msgBox.setIcon(QtWidgets.QMessageBox.Critical)
+        msgBox.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msgBox.setText(str(msg))
         msgBox.setWindowTitle(title or "")
         msgBox.exec()
 
     def info(self, msg, title=None, parent=None):
         QtWidgets.QMessageBox.information(
-            parent, title or "", str(msg), QtWidgets.QMessageBox.Ok)
+            parent, title or "", str(msg),
+            QtWidgets.QMessageBox.StandardButton.Ok)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def question(self, text, title="", informative="", buttons=("Yes", "No"),
@@ -48,12 +49,13 @@ class QtNotifier(Notifier):
             msgBox.setInformativeText(informative)
         msgBox.setWindowTitle(title)
         std_btns = {b: getattr(QtWidgets.QMessageBox, b) for b in buttons}
-        btns = QtWidgets.QMessageBox.NoButton
+        btns = QtWidgets.QMessageBox.StandardButton.NoButton
         for b in std_btns.values():
             btns |= b
         msgBox.setStandardButtons(btns)
         msgBox.setDefaultButton(std_btns[default])
-        ret = msgBox.exec()
+        # exec() returns an int in PyQt6; compare it as a StandardButton
+        ret = QtWidgets.QMessageBox.StandardButton(msgBox.exec())
         for b, val in std_btns.items():
             if ret == val:
                 return b
@@ -64,8 +66,8 @@ class QtNotifier(Notifier):
             return QtWidgets.QFileDialog.getOpenFileName(
                 parent, caption, str(directory), filt)
 
-        options = QtWidgets.QFileDialog.Options()
-        options |= QtWidgets.QFileDialog.DontUseNativeDialog
+        options = QtWidgets.QFileDialog.Option(0)
+        options |= QtWidgets.QFileDialog.Option.DontUseNativeDialog
         return QtWidgets.QFileDialog.getOpenFileName(
             parent, caption, str(directory), filt, options=options)
 
@@ -82,11 +84,11 @@ class QtNotifier(Notifier):
 
     def get_text(self, label, text="", parent=None):
         dlg = QtWidgets.QInputDialog(parent)
-        dlg.setInputMode(QtWidgets.QInputDialog.TextInput)
+        dlg.setInputMode(QtWidgets.QInputDialog.InputMode.TextInput)
         dlg.setLabelText(label)
         dlg.setTextValue(text)
         dlg.resize(640, 100)
-        okflag = dlg.exec_()
+        okflag = dlg.exec()
         return dlg.textValue(), okflag
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

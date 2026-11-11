@@ -20,6 +20,11 @@ import numpy as np
 import torch
 import ants
 
+try:
+    from .containers import tool_config, container_cmd
+except ImportError:
+    from rtpspy.containers import tool_config, container_cmd
+
 # Device for FastSurfer inference
 if torch.cuda.is_available():
     DEVICE = 'cuda'
@@ -143,14 +148,25 @@ class FastSeg:
         Parameters
         ----------
         fastsurfer_dir : str or Path, optional
-            FastSurfer directory. The default is the FastSurfer directory
-            next to this file.
+            FastSurfer directory of a local clone. If None, the FastSurfer
+            container set up by install.sh is used when it exists (see
+            rtpspy.containers), otherwise the FastSurfer directory next to
+            this file. Setting RTPSPY_FASTSURFER=local uses the local clone
+            even if the container exists.
         """
+        self.container = None
         if fastsurfer_dir is None:
+            if os.environ.get('RTPSPY_FASTSURFER', '') != 'local':
+                self.container = tool_config('fastsurfer')
             fastsurfer_dir = Path(__file__).absolute().parent / 'FastSurfer'
 
         self.fastsurfer_dir = Path(fastsurfer_dir).absolute()
-        self.run_cmd = self.fastsurfer_dir / 'run_fastsurfer.sh'
+        if self.container is not None:
+            # run_fastsurfer.sh in the container image
+            self.run_cmd = Path(self.container.get(
+                'run_cmd', '/fastsurfer/run_fastsurfer.sh'))
+        else:
+            self.run_cmd = self.fastsurfer_dir / 'run_fastsurfer.sh'
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run(self, in_f, bias_correction=False, prefix=None, batch_size=1,
@@ -305,21 +321,32 @@ class FastSeg:
         in_f = Path(in_f).absolute()
         prefix = Path(prefix).absolute()
         work_dir = prefix.parent
+        # MPS (macOS) is not available in a container
+        device = DEVICE
+        if self.container is not None and device == 'mps':
+            device = 'cpu'
         cmd = [str(self.run_cmd),
                '--t1', str(in_f), '--sd', str(work_dir),
                '--sid', prefix.name, '--seg_only', '--no_biasfield',
                '--no_hypothal', '--no_cc',
-               '--batch', str(batch_size), '--device', DEVICE,
-               # Run FastSurfer with the same Python as RTPSpy
-               '--py', sys.executable]
+               '--batch', str(batch_size), '--device', device]
         if not seg_cereb:
             cmd.append('--no_cereb')
-        env = os.environ.copy()
-        env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
-        env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
-        if not self._run_cmd(cmd, self.fastsurfer_dir, show_proc_progress,
-                             ETA, env=env):
+        if self.container is not None:
+            cmd = container_cmd('fastsurfer', cmd, gpu=(device == 'cuda'),
+                                cwd=work_dir)
+            env = None
+            cwd = work_dir
+        else:
+            # Run FastSurfer with the same Python as RTPSpy
+            cmd += ['--py', sys.executable]
+            env = os.environ.copy()
+            env['FASTSURFER_HOME'] = str(self.fastsurfer_dir)
+            env['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+            cwd = self.fastsurfer_dir
+
+        if not self._run_cmd(cmd, cwd, show_proc_progress, ETA, env=env):
             return None
 
         fsSeg_mgz = prefix / 'mri' / 'aparc.DKTatlas+aseg.deep.mgz'

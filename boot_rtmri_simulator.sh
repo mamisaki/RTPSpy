@@ -1,5 +1,4 @@
 #!/bin/bash
-
-. ${HOME}/*conda3/etc/profile.d/conda.sh
-cd ${HOME}/RTPSpy
-conda run --live-stream --name RTPSpy python  ./rtmri_simulator.py
+# Start the RT-MRI simulator with the RTPSpy environment (install.sh)
+cd "$(dirname "$(readlink -f "$0")")"
+exec ./.venv/bin/python ./rtmri_simulator.py "$@"

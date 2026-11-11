@@ -6,9 +6,10 @@ GUI panel of RtpSmooth
 """
 
 # %% import ===================================================================
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
-from .module_ui import RtpModuleUI, mask_text, ZERO_OUT_MASK_TEXT
+from .module_ui import (RtpModuleUI, value_combo, MASK_ITEMS, mask_text,
+                        ZERO_OUT_MASK_TEXT)
 
 
 # %% RtpSmoothUI ==============================================================
@@ -44,13 +45,11 @@ class RtpSmoothUI(RtpModuleUI):
 
         # mask_file
         var_lb = QtWidgets.QLabel("Mask :")
-        o.ui_mask_cmbBx = QtWidgets.QComboBox()
-        o.ui_mask_cmbBx.addItems(['external file',
-                                  'initial volume of internal run'])
+        o.ui_mask_cmbBx = value_combo(MASK_ITEMS)
         o.ui_mask_cmbBx.activated.connect(
                 lambda idx:
                 o.set_param('mask_file',
-                            o.ui_mask_cmbBx.currentText(),
+                            o.ui_mask_cmbBx.currentData(),
                             o.ui_mask_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, o.ui_mask_cmbBx))
 

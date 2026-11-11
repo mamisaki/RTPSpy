@@ -62,8 +62,8 @@ def find_alarm_player():
 # %% AlarmSound ===============================================================
 class AlarmSound:
     """Play the alarm sound without blocking. A new sound is not started
-    while the previous one is playing. Without a sound player, the Tk bell
-    of tk_widget is used."""
+    while the previous one is playing. Without a sound player, the bell
+    (Qt or Tk) is used."""
 
     def __init__(self):
         self._logger = logging.getLogger("AlarmSound")
@@ -81,9 +81,10 @@ class AlarmSound:
         """Command to play the alarm sound, or None."""
         return self._cmd
 
-    def play(self, tk_widget=None):
-        """Play the alarm sound, or ring the bell of tk_widget if there is
-        no sound player or the player fails."""
+    def play(self, tk_widget=None, bell=None):
+        """Play the alarm sound, or ring the bell (the bell function, e.g.,
+        QApplication.beep, or the bell of tk_widget) if there is no sound
+        player or the player fails."""
         if self._cmd is not None:
             if self._proc is not None and self._proc.poll() is None:
                 return
@@ -95,7 +96,12 @@ class AlarmSound:
                 return
             except Exception as e:
                 self._logger.error(f"Failed to play the alarm sound: {e}")
-        if tk_widget is not None:
+        if bell is not None:
+            try:
+                bell()
+            except Exception:
+                pass
+        elif tk_widget is not None:
             try:
                 tk_widget.bell()
             except Exception:

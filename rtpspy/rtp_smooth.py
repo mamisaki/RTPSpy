@@ -12,25 +12,19 @@ from pathlib import Path
 import re
 import time
 import ctypes
-import sys
 
 import numpy as np
 import nibabel as nib
 
 try:
     from .rtp_common import RTP
+    from .containers import librtp_file
 except Exception:
     from rtpspy.rtp_common import RTP
+    from rtpspy.containers import librtp_file
 
-if sys.platform == 'linux':
-    lib_name = 'librtp.so'
-elif sys.platform == 'darwin':
-    lib_name = 'librtp.dylib'
-
-try:
-    librtp_path = str(Path(__file__).absolute().parent / lib_name)
-except Exception:
-    librtp_path = f'./{lib_name}'
+# librtp library (see rtpspy.containers.librtp_file)
+librtp_path = librtp_file()
 
 
 # %% RtpSmooth class =========================================================

@@ -95,7 +95,7 @@ def get_notifier():
         return _notifier
 
     # Check for a running Qt application without importing Qt
-    qtw = sys.modules.get("PyQt5.QtWidgets")
+    qtw = sys.modules.get("PyQt6.QtWidgets")
     if qtw is not None and qtw.QApplication.instance() is not None:
         from .ui.qt_notifier import QtNotifier
         return QtNotifier()

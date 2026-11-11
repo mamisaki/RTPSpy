@@ -62,13 +62,13 @@ import pandas as pd
 import nibabel as nib
 
 try:
-    from .rtp_volreg import RtpVolreg
+    from .rtp_volreg import RtpVolreg, framewise_displacement
     from .rtp_tshift import RtpTshift
     from .rtp_smooth import RtpSmooth
     from .rtp_regress import RtpRegress, NORM_REGS, MOT_NAMES, DMOT_NAMES
     from .rtp_retrots import RtpRetroTS, SavedPhysio
 except ImportError:
-    from rtpspy.rtp_volreg import RtpVolreg
+    from rtpspy.rtp_volreg import RtpVolreg, framewise_displacement
     from rtpspy.rtp_tshift import RtpTshift
     from rtpspy.rtp_smooth import RtpSmooth
     from rtpspy.rtp_regress import RtpRegress, NORM_REGS, MOT_NAMES, \
@@ -627,11 +627,12 @@ def compare_runs(online, offline, roi_in_mask=None):
             add('VOLREG', f"motion_{nm}_maxabsdiff",
                 float(np.max(np.abs(mon[:, ii] - moff[:, ii]))))
 
-        def fd(m):
-            d = np.abs(np.diff(m, axis=0))
-            return d[:, 3:].sum(1) + 50 * np.deg2rad(d[:, :3]).sum(1)
-        add('VOLREG', 'meanFD_online_mm', float(fd(mon).mean()))
-        add('VOLREG', 'meanFD_offline_mm', float(fd(moff).mean()))
+        # Mean FD over the volume-to-volume differences (the first volume,
+        # FD 0, is excluded)
+        add('VOLREG', 'meanFD_online_mm',
+            float(framewise_displacement(mon)[1:].mean()))
+        add('VOLREG', 'meanFD_offline_mm',
+            float(framewise_displacement(moff)[1:].mean()))
 
     # Voxelwise and ROI comparisons per stage
     vox_r = {}

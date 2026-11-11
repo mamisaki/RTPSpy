@@ -31,7 +31,6 @@ import torch
 try:
     from .rtp_common import (
         RTP,
-        boot_afni,
         excepthook,
         load_parameters,
         save_parameters,
@@ -44,12 +43,12 @@ try:
     from .rtp_imgproc import RtpImgProc
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
     from .rtp_ttl_physio import RtpTTLPhysio
+    from .rtp_latency import VolumeLatency
 
 except ImportError:
     # Run as a script (no parent package)
     from rtpspy.rtp_common import (
         RTP,
-        boot_afni,
         excepthook,
         load_parameters,
         save_parameters,
@@ -62,6 +61,7 @@ except ImportError:
     from rtpspy.rtp_imgproc import RtpImgProc
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
     from rtpspy.rtp_ttl_physio import RtpTTLPhysio
+    from rtpspy.rtp_latency import VolumeLatency
 
 
 # %% Constants and helper functions ===========================================
@@ -289,6 +289,10 @@ class RtpApp(RTP):
 
         self._roi_sig = [[] for _ in range(self.num_ROIs)]
 
+        # Latency of each volume: TTL onset -> image read -> feedback sent
+        # (see rtp_latency.py and _record_feedback)
+        self.latency = VolumeLatency()
+
         # Online QC of the latest volume passed from REGRESS (see do_proc)
         self.qc_last = None
         # endregion
@@ -371,6 +375,7 @@ class RtpApp(RTP):
         self._plt_xi[:] = []
         for ii in range(self.num_ROIs):
             self._roi_sig[ii][:] = []
+        self.latency.reset()
 
         self._ui_call("reset_ROISig_plot")
 
@@ -432,6 +437,7 @@ class RtpApp(RTP):
             # Save data to a file in real-time
             with open(self.sig_save_file, "a") as save_fd:
                 print(val_str, file=save_fd)
+            self._record_feedback(vol_idx)
             self._logger.info(f"Saved ROI data '{val_str}'")
 
         # Update signal plot
@@ -1448,6 +1454,12 @@ class RtpApp(RTP):
                     )
                     save_fnames["ROI signals"] = roi_save_f
 
+                # Save the latency of each volume
+                lat_f = self.latency.save_csv(
+                    save_dir / f"latency_{scan_name}.csv")
+                if lat_f is not None:
+                    save_fnames["Latency"] = lat_f
+
                 # Reset the process chain from its first module
                 root_proc = next(
                     obj for rtp, obj in self.rtp_objs.items()
@@ -1475,17 +1487,21 @@ class RtpApp(RTP):
         return save_fnames
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def check_onAFNI(self, base=None, ovl=None):
-        """Display images in AFNI to check them.
+    def show_images(self, base=None, ovl=None):
+        """Show images in the image viewer of the GUI (rtpspy.ui.image_viewer)
+        to check them.
 
         Parameters
         ----------
         base : str, optional
-            Underlay image: 'anat' (aligned anatomy) or 'func' (reference
+            Base image: 'anat' (aligned anatomy) or 'func' (reference
             function image).
         ovl : str, optional
             Overlay image: 'func', 'wm', 'vent', 'roi', 'RTPmask', or
             'GSRmask'.
+        With neither ('Image viewer' button), the reference function image
+        is shown (or, if it is not set, the viewer asks for an image file).
+        The Base and Overlay menus of the viewer choose other images.
         """
         # With distortion correction, the masks in func_orig space are
         # '*_invsdc' files. The anatomy is aligned to the corrected function,
@@ -1521,104 +1537,65 @@ class RtpApp(RTP):
                     Path(ovl_img).name.replace("_invsdc", "")
                 )
 
-        if base is None and ovl is None:
-            # 'Open AFNI' button: only boot AFNI in work_dir
-            ses_dir = Path(self.work_dir)
-        else:
-            if base_img is None or not Path(base_img).is_file():
-                errmsg = f"Base image ({base}) is not set or found: {base_img}"
-                self.err_popup(errmsg)
-                return
-            ses_dir = Path(base_img).parent
-
-            if ovl_img is None or not Path(ovl_img).is_file():
-                errmsg = (
-                    f"Overlay image ({ovl}) is not set or found: {ovl_img}"
-                )
-                self.err_popup(errmsg)
-                return
-
-        # Boot AFNI if it is not running. plugout_drive needs an AFNI started
-        # with -yesplugouts (boot_afni adds it).
-        if len(_find_processes("afni", ["-yesplugouts"])) == 0:
-            boot_afni(
-                main_win=self.main_win,
-                boot_dir=ses_dir,
-                TRUSTHOST=self.AFNIRT_TRUSTHOST,
-            )
+        if getattr(self, "_ui", None) is None:
+            self._logger.warning(f"No GUI to show the images ({base}, {ovl}).")
+            return
+        choices = self._viewer_choices()
+        start_dir = Path(self.work_dir)
 
         if base is None and ovl is None:
+            # 'Image viewer' button: the reference function image, or
+            # choose a file in work_dir
+            if self.func_orig and Path(self.func_orig).is_file():
+                self._ui_call("show_images", self.func_orig, None, None,
+                              choices, start_dir)
+            else:
+                self._ui_call("open_image_dialog", start_dir)
             return
 
-        # Image window sizes adjusted to the volume shape
-        baseWinSize = 480  # height of the axial image window
-        bimg = nib.load(base_img)
-        vsize = np.diag(bimg.affine)[:3]
-        if np.any(vsize == 0):
-            # Oblique or rotated affine
-            vsize = np.abs(
-                [r[np.argmax(np.abs(r))] for r in bimg.affine[:3, :3]]
-            )
-        vshape = bimg.shape[:3] * vsize
-        wh_ax = np.abs(
-            [int(baseWinSize * vshape[0] // vshape[1]), baseWinSize]
-        )
-        wh_sg = np.abs(
-            [baseWinSize, int(baseWinSize * vshape[2] // vshape[1])]
-        )
-        wh_cr = np.abs(
-            [
-                int(baseWinSize * vshape[0] // vshape[1]),
-                int(baseWinSize * vshape[2] // vshape[1]),
-            ]
-        )
+        if base_img is None or not Path(base_img).is_file():
+            errmsg = f"Base image ({base}) is not set or found: {base_img}"
+            self.err_popup(errmsg)
+            return
+        if ovl_img is None or not Path(ovl_img).is_file():
+            errmsg = f"Overlay image ({ovl}) is not set or found: {ovl_img}"
+            self.err_popup(errmsg)
+            return
 
-        # Put the cursor at the center of the mask
-        xyz = None
-        if ovl in ovl_mask_attrs:
-            ovl_v = nib.load(ovl_img).get_fdata()
-            if ovl_v.ndim > 3:
-                ovl_v = ovl_v[:, :, :, 0]
-            if np.any(ovl_v != 0):
-                ijk = np.mean(np.argwhere(ovl_v != 0), axis=0)
-                ijk = np.concatenate([ijk, [1]])
-                xyz = np.dot(nib.load(ovl_img).affine, ijk)[:3]
+        self._ui_call("show_images", base_img, ovl_img, None, choices,
+                      start_dir)
 
-        # Drive AFNI with plugout_drive
-        le = 800  # left end
-        tp = 500  # top
-        cmd = "plugout_drive"
-        cmd += f" -com 'SWITCH_SESSION {Path(ses_dir).name}'"
-        cmd += " -com 'RESCAN_THIS'"
-        cmd += f" -com 'SWITCH_UNDERLAY {Path(base_img).name}'"
-        cmd += f" -com 'SWITCH_OVERLAY {Path(ovl_img).name}'"
-        cmd += " -com 'SEE_OVERLAY +'"
-        cmd += " -com 'OPEN_WINDOW A.axialimage"
-        cmd += f" geom={wh_ax[0]}x{wh_ax[1]}+{le}+{tp} opacity=6'"
-        cmd += " -com 'OPEN_WINDOW A.sagittalimage"
-        if le + wh_ax[0] + wh_sg[0] + wh_cr[0] - 100 > 1920:
-            # Too wide for the screen. Put the coronal window below the
-            # sagittal one.
-            cmd += (
-                f" geom={wh_sg[0]}x{wh_sg[1]}+"
-                f"{le + wh_ax[0] - 50}+{tp - 100}"
-            )
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}+{le + wh_ax[0] - 50}"
-            cmd += f"+{wh_sg[1] + tp - 100} opacity=6'"
-        else:
-            cmd += f" geom={wh_sg[0]}x{wh_sg[1]}+{le + wh_ax[0] - 50}+{tp}"
-            cmd += " opacity=6'"
-            cmd += " -com 'OPEN_WINDOW A.coronalimage"
-            cmd += f" geom={wh_cr[0]}x{wh_cr[1]}"
-            cmd += f"+{le + wh_ax[0] + wh_sg[0] - 100}"
-            cmd += f"+{tp} opacity=6'"
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _viewer_choices(self):
+        """{name: file} of the images in the Base and Overlay menus of the
+        image viewer (the images that are set)."""
+        sdc_applied = bool(self.sdc_invwarp) and \
+            Path(self.sdc_invwarp).is_file()
+        items = [
+            ("Base function image", self.func_orig),
+            ("Function image (distortion corrected)",
+             self.func_orig_sdc if sdc_applied else ""),
+            ("Anatomy image (aligned)", self.alAnat),
+            ("ROI mask", self.ROI_orig),
+            ("WM mask", self.WM_orig),
+            ("Vent mask", self.Vent_orig),
+            ("RTP mask", self.RTP_mask),
+            ("GSR mask", self.GSR_mask),
+        ]
+        choices = {}
+        for name, fname in items:
+            if fname and Path(fname).is_file():
+                choices[name] = str(fname)
+            # The masks in the corrected function space (on the anatomy)
+            if sdc_applied and fname and "_invsdc" in Path(fname).name:
+                f2 = Path(fname).parent / \
+                    Path(fname).name.replace("_invsdc", "")
+                if f2.is_file():
+                    choices[f"{name} (distortion corrected)"] = str(f2)
+        return choices
 
-        if xyz is not None:
-            cmd += f" -com 'SET_SPM_XYZ {xyz[0]} {xyz[1]} {xyz[2]}'"
-        cmd += " -quit"
-        subprocess.run(cmd, shell=True)
+    # Former name (the images were shown in AFNI)
+    check_onAFNI = show_images
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def delete_file(self, attr, keepfile=False):
@@ -2002,6 +1979,54 @@ class RtpApp(RTP):
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _record_feedback(self, vol_idx, t_sent=None):
+        """
+        Record the latency of volume vol_idx, whose feedback signal was sent
+        (or saved) at t_sent (default: now). Called by send_extApp for an
+        "NF ..." message, so applications that override do_proc or _process
+        (e.g., example/ROI-NF) need nothing more. See rtp_latency.py.
+        """
+        try:
+            if t_sent is None:
+                t_sent = time.time()
+
+            # Time the image of the volume was read (RtpWatch)
+            t_read = None
+            watch = self.rtp_objs.get("WATCH")
+            if watch is not None and 0 <= vol_idx < len(watch._proc_time):
+                t_read = watch._proc_time[vol_idx]
+
+            # Output in the retrospective batch of RtpRegress
+            regress = self.rtp_objs.get("REGRESS")
+            retro = bool(getattr(regress, "in_retro_proc", False))
+
+            # Acquisition onset from the scanner TTL
+            onset, est = None, True
+            if self.scan_onset > 0:
+                TR = getattr(self.rtp_objs.get("TSHIFT"), "TR", None)
+                if not TR and watch is not None and \
+                        len(watch._proc_time) > 2:
+                    TR = float(np.median(np.diff(watch._proc_time)))
+                ttl_obj = self.rtp_objs.get("TTLPHYSIO")
+                ttl = (ttl_obj.get_ttl_onsets() if ttl_obj is not None
+                       else np.array([]))
+                onset, est = self.latency.match_onset(
+                    vol_idx, ttl, self.scan_onset, TR or 2.0)
+
+            self.latency.record(vol_idx, onset, est, t_read, t_sent, retro)
+            d = self.latency.data
+            self._logger.debug(
+                f"#{vol_idx + 1};Latency;acq_to_read="
+                f"{d['acq_to_read'][-1]:.3f}s"
+                f"{'(est.)' if est else ''};read_to_fb="
+                f"{d['read_to_fb'][-1]:.3f}s{';retro' if retro else ''}")
+
+        except Exception as e:
+            self._logger.error(
+                f"Failed to record the latency: {e}\n"
+                + traceback.format_exc())
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_extApp(self, data, pkl=False, no_err_pop=False):
         """
         Send data to the external RTP_SERVE application.
@@ -2027,6 +2052,14 @@ class RtpApp(RTP):
 
         try:
             self.extApp_sock.sendall(data)
+            if not pkl and data[:3] == b"NF ":
+                # Feedback signal "NF {time},{volume_index},...;"
+                try:
+                    vol_idx = int(data[3:].split(b",")[1])
+                except (IndexError, ValueError):
+                    vol_idx = None
+                if vol_idx is not None:
+                    self._record_feedback(vol_idx)
             return True
 
         except BrokenPipeError:
@@ -2283,6 +2316,7 @@ class RtpApp(RTP):
             "extApp_isAlive",
             "ROI_resample_opts",
             "qc_last",
+            "latency",
         )
 
         for k in excld_opts:
@@ -2311,7 +2345,7 @@ class RtpApp(RTP):
 
 # %% __main__ =================================================================
 if __name__ == "__main__":
-    from PyQt5 import QtWidgets
+    from PyQt6 import QtWidgets
     from rtpspy import RtpGUI
 
     DEBUG = False
@@ -2358,7 +2392,7 @@ if __name__ == "__main__":
     try:
         rtp_ui.show()
         rtp_ui.show_physio_chk(2)
-        exit_code = app.exec_()
+        exit_code = app.exec()
 
     except Exception as e:
         with open("rtpspy.error", "w") as fd:

@@ -15,9 +15,10 @@ import traceback
 
 import numpy as np
 import nibabel as nib
-from PyQt5 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore
 
 from rtpspy.rtp_app import RtpApp
+from rtpspy import gui_theme
 
 
 # %% LANF class ===============================================================
@@ -65,7 +66,7 @@ class LANF(RtpApp):
 
         if hasattr(self, 'ui_showROISig_cbx'):
             # Disable ROI signal plot
-            self.ui_showROISig_cbx.setCheckState(0)
+            self.ui_showROISig_cbx.setChecked(False)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def setup_extApp(self, session=None, no_RTP=None):
@@ -298,8 +299,8 @@ class LANF(RtpApp):
             self.ui_shamFb_chb.setVisible(False)
         else:
             modifiers = QtWidgets.QApplication.keyboardModifiers()
-            if modifiers == (QtCore.Qt.ControlModifier |
-                             QtCore.Qt.ShiftModifier):
+            if modifiers == (QtCore.Qt.KeyboardModifier.ControlModifier |
+                             QtCore.Qt.KeyboardModifier.ShiftModifier):
                 self.ui_shamFb_chb.setVisible(True)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -378,7 +379,7 @@ class LANF(RtpApp):
                 lambda:
                 self.ui_top_tabs.setCurrentWidget(self.ui_preprocessingTab))
         self.ui_makeROI_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         ROIdef_gLayout.addWidget(self.ui_makeROI_btn, row_i, 0)
 
         # ROI file
@@ -398,7 +399,7 @@ class LANF(RtpApp):
         self.ui_gotoTask_btn.clicked.connect(
                 lambda: self.ui_top_tabs.setCurrentWidget(self.ui_taskTab))
         self.ui_gotoTask_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_preprocessing_fLayout.addRow(self.ui_gotoTask_btn)
         self.ui_objs.append(self.ui_gotoTask_btn)
 
@@ -411,23 +412,28 @@ class LANF(RtpApp):
 
         # --- Label row ---
         var_lb = QtWidgets.QLabel("Burn-in")
-        var_lb.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignBottom)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter |
+                            QtCore.Qt.AlignmentFlag.AlignBottom)
         taskTiming_gLayout.addWidget(var_lb, row_i, 0)
 
         var_lb = QtWidgets.QLabel("+ ( NF block")
-        var_lb.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignBottom)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter |
+                            QtCore.Qt.AlignmentFlag.AlignBottom)
         taskTiming_gLayout.addWidget(var_lb, row_i, 1)
 
         var_lb = QtWidgets.QLabel("+ Count block")
-        var_lb.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignBottom)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter |
+                            QtCore.Qt.AlignmentFlag.AlignBottom)
         taskTiming_gLayout.addWidget(var_lb, row_i, 2)
 
         var_lb = QtWidgets.QLabel("+ Rest block )")
-        var_lb.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignBottom)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter |
+                            QtCore.Qt.AlignmentFlag.AlignBottom)
         taskTiming_gLayout.addWidget(var_lb, row_i, 3)
 
         var_lb = QtWidgets.QLabel("x Repeat blocks")
-        var_lb.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignBottom)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter |
+                            QtCore.Qt.AlignmentFlag.AlignBottom)
         taskTiming_gLayout.addWidget(var_lb, row_i, 4)
 
         row_i += 1
@@ -499,13 +505,15 @@ class LANF(RtpApp):
 
         # --- Total duration ---
         var_lb = QtWidgets.QLabel(" Total task duration :")
-        var_lb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight |
+                            QtCore.Qt.AlignmentFlag.AlignVCenter)
         taskTiming_gLayout.addWidget(var_lb, row_i, 0)
 
         durStr = f"{str(timedelta(seconds=self.totalTaskDur))}"
         self.ui_total_task_dur = QtWidgets.QLabel(durStr)
-        self.ui_total_task_dur.setAlignment(QtCore.Qt.AlignLeft |
-                                            QtCore.Qt.AlignVCenter)
+        self.ui_total_task_dur.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignLeft |
+            QtCore.Qt.AlignmentFlag.AlignVCenter)
         taskTiming_gLayout.addWidget(self.ui_total_task_dur, row_i, 1)
 
         row_i += 1
@@ -521,14 +529,15 @@ class LANF(RtpApp):
         taskRun_vLayout.addLayout(rest_row_hLayout)
         self.ui_RestRun_btn = QtWidgets.QPushButton('Rest')
         self.ui_RestRun_btn.setStyleSheet(
-            "background-color: rgb(151,217,235); min-width: 90px;")
+            gui_theme.qt_button_style("accent", "min-width: 90px;"))
         self.ui_RestRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Rest', no_RTP=True))
         rest_row_hLayout.addWidget(self.ui_RestRun_btn)
 
         # Rest duration
         var_lb = QtWidgets.QLabel("Rest duration :")
-        var_lb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        var_lb.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight |
+                            QtCore.Qt.AlignmentFlag.AlignVCenter)
         rest_row_hLayout.addWidget(var_lb)
 
         self.ui_restDur_spBx = QtWidgets.QSpinBox()
@@ -549,7 +558,7 @@ class LANF(RtpApp):
         # Baseline
         self.ui_BaselineRun_btn = QtWidgets.QPushButton('Baseline')
         self.ui_BaselineRun_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_BaselineRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Baseline', no_RTP=True))
         task_row_hLayout.addWidget(self.ui_BaselineRun_btn)
@@ -557,7 +566,7 @@ class LANF(RtpApp):
         # Practice
         self.ui_PracticeRun_btn = QtWidgets.QPushButton('Practice')
         self.ui_PracticeRun_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_PracticeRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Practice', no_RTP=False))
         task_row_hLayout.addWidget(self.ui_PracticeRun_btn)
@@ -565,7 +574,7 @@ class LANF(RtpApp):
         # NF1
         self.ui_NF1Run_btn = QtWidgets.QPushButton('NF1')
         self.ui_NF1Run_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_NF1Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF1', no_RTP=False))
         task_row_hLayout.addWidget(self.ui_NF1Run_btn)
@@ -573,7 +582,7 @@ class LANF(RtpApp):
         # NF2
         self.ui_NF2Run_btn = QtWidgets.QPushButton('NF2')
         self.ui_NF2Run_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_NF2Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF2', no_RTP=False))
         task_row_hLayout.addWidget(self.ui_NF2Run_btn)
@@ -581,7 +590,7 @@ class LANF(RtpApp):
         # NF3
         self.ui_NF3Run_btn = QtWidgets.QPushButton('NF3')
         self.ui_NF3Run_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_NF3Run_btn.clicked.connect(
             lambda: self.setup_extApp(session='NF3', no_RTP=False))
         task_row_hLayout.addWidget(self.ui_NF3Run_btn)
@@ -589,7 +598,7 @@ class LANF(RtpApp):
         # Transfer
         self.ui_TransferRun_btn = QtWidgets.QPushButton('Transfer')
         self.ui_TransferRun_btn.setStyleSheet(
-            "background-color: rgb(151,217,235);")
+            gui_theme.qt_button_style("accent"))
         self.ui_TransferRun_btn.clicked.connect(
             lambda: self.setup_extApp(session='Transfer', no_RTP=True))
         task_row_hLayout.addWidget(self.ui_TransferRun_btn)

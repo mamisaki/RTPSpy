@@ -35,3 +35,6 @@ RTMRI_simulation
 trace*
 jitter*
 dump/*
+.venv/
+containers/
+.venv-psychopy/

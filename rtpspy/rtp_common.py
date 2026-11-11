@@ -13,7 +13,6 @@ import sys
 import re
 import subprocess
 import shlex
-from multiprocessing import Value, Array, Lock
 import pickle
 import time
 import traceback
@@ -30,9 +29,15 @@ import serial
 try:
     from .rtp_volume import RtpVolume
     from .notifier import get_notifier, default_notifier
+    from .mp_context import mp_ctx
 except Exception:
     from rtpspy.rtp_volume import RtpVolume
     from rtpspy.notifier import get_notifier, default_notifier
+    from rtpspy.mp_context import mp_ctx
+
+# Shared memory objects of RingBuffer, for the processes started with the
+# 'fork' start method (see mp_context.py)
+Value, Array, Lock = mp_ctx.Value, mp_ctx.Array, mp_ctx.Lock
 
 
 # %% RTP base class ===========================================================
@@ -709,7 +714,7 @@ def _is_unsaved_type(val):
         return True
 
     # A QThread (only if Qt is used; Qt is not imported here)
-    qtc = sys.modules.get('PyQt5.QtCore')
+    qtc = sys.modules.get('PyQt6.QtCore')
     return qtc is not None and isinstance(val, qtc.QThread)
 
 

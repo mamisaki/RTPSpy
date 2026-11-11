@@ -6,7 +6,7 @@ respiration).
 @author: mmisaki@libr.net
 
 Model classes: NumatoGPIORecording, GEPhysioRecording, DummyRecording
-View class: PlotTTLPhysio
+View class: PlotTTLPhysio (PyQt6, in its own process)
 Controller class: RtPhysio
 """
 
@@ -15,15 +15,12 @@ from pathlib import Path
 import os
 import time
 import traceback
-from multiprocessing import Process, Lock, Queue, Pipe
 from queue import Full, Empty
 import re
 import logging
 import argparse
 import warnings
 from datetime import datetime, timedelta
-import tkinter as tk
-from tkinter import ttk, messagebox
 from tempfile import NamedTemporaryFile
 from collections import deque
 import json
@@ -44,22 +41,28 @@ except ImportError:  # Not POSIX
 from serial.tools.list_ports import comports
 from scipy.interpolate import interp1d
 from scipy.signal import lfilter, firwin, butter, sosfiltfilt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib as mpl
 
 try:
     from rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+    from mp_context import mp_ctx
     from window_layout import default_geometry, screen_area
     from alarm_sound import AlarmSound
     import gui_theme
     from gui_theme import COLORS
 except ImportError:
     from .rpc_socket_server import RPCSocketServer, RPCSocketCom, pack_data
+    from .mp_context import mp_ctx
     from .window_layout import default_geometry, screen_area
     from .alarm_sound import AlarmSound
     from . import gui_theme
     from .gui_theme import COLORS
+
+# Processes and the objects shared with them use the 'fork' start method on
+# Linux (see mp_context.py; Python 3.14 changed the default to forkserver).
+Process, Lock, Queue = mp_ctx.Process, mp_ctx.Lock, mp_ctx.Queue
+Pipe = mp_ctx.Pipe
 
 mpl.rcParams["font.size"] = 8
 
@@ -1851,11 +1854,44 @@ class DummyRecording:
         self._config = config
 
 
+# %% Geometry strings =========================================================
+def parse_geometry(geometry):
+    """Parse a geometry string 'WxH+X+Y' ('WxH' or '+X+Y' alone is also
+    accepted). Returns (w, h, x, y); missing values are None. +X+Y is the
+    position of the window frame (with the title bar) and WxH the client
+    size, as in Tk."""
+    m = re.fullmatch(
+        r"\s*(?:(\d+)x(\d+))?\s*(?:\+(-?\d+)\+(-?\d+))?\s*", str(geometry))
+    if m is None:
+        raise ValueError(f"Invalid geometry: {geometry!r}")
+    return tuple(None if v is None else int(v) for v in m.groups())
+
+
+def _make_plot_window(plot):
+    """Top-level Qt widget of the plot whose close button calls
+    plot.on_closing (Qt is imported only in the plot process)."""
+    from PyQt6 import QtWidgets
+
+    class _PlotWindow(QtWidgets.QWidget):
+        def closeEvent(self, event):
+            if plot.on_closing():
+                event.accept()
+            else:
+                event.ignore()
+
+    return _PlotWindow()
+
+
 # %% PlotTTLPhysio ============================================================
 class PlotTTLPhysio:
-    """View class: plot window of the TTL and physio signals. It runs in its
-    own process (run) and reads the signals from the shared ring buffers.
+    """View class: plot window of the TTL and physio signals (PyQt6). It runs
+    in its own process (run) and reads the signals from the shared ring
+    buffers. The Qt application and the widgets are made in run(), in the
+    plot process; the controller process does not use Qt.
     """
+
+    # Alarm sound interval while the TTL alarm dialog is open
+    TTL_ALARM_INTERVAL_MS = 3000
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __init__(
@@ -1883,69 +1919,105 @@ class PlotTTLPhysio:
         self._timer_interval_ms = int(1000 / 6)
         self._rbuf_lock = None
         self._rbuf = None
-
-        # --- Plot window ---
-        self._plt_root = tk.Tk()
-        gui_theme.apply_tk(self._plt_root)
-        gui_theme.apply_mpl()
         self._disable_close = disable_close
+        self._geometry = geometry
+        self._running = False
 
-        self._plt_root.title(
-            physio_window_title(self.controller._recorder_type))
-        if geometry is None:
-            geometry = default_geometry("physio")
-        self.set_position(geometry)
-
-        # Set the margins in inches
+        # Margins of the plot in inches
         self._left_margin_inch = 0.42
         self._right_margin_inch = 0.4
         self._top_margin_inch = 0.1
         self._bottom_margin_inch = 0.38
 
-        # Initialize the plot (packed after the button below)
-        plot_widget = self.init_plot()
+        # Widgets (made in run)
+        self._app = None
+        self._win = None
+        self.config_win = None
+        self._dump_win = None
+        self._ttl_alarm_win = None
+        self._physio_alarm_win = None
+        self._alarm = None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_window(self):
+        """Make the Qt application and the plot window."""
+        from PyQt6 import QtWidgets, QtCore
+
+        self._app = QtWidgets.QApplication.instance() or \
+            QtWidgets.QApplication([sys.argv[0]])
+        gui_theme.apply_qt(self._app)  # Also sets the matplotlib colors
+
+        self._win = _make_plot_window(self)
+        self._win.setWindowTitle(
+            physio_window_title(self.controller._recorder_type))
+
+        vbox = QtWidgets.QVBoxLayout(self._win)
+        vbox.setContentsMargins(0, 0, 4, 4)
+        vbox.setSpacing(2)
+        vbox.addWidget(self.init_plot(), 1)
+
+        # Dump button at the bottom right
+        dump_dur = str(timedelta(seconds=self._buf_len_sec)).split(".")[0]
+        dump_button = QtWidgets.QPushButton(f"dump ({dump_dur})")
+        dump_button.clicked.connect(self.dump_data)
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addStretch(1)
+        hbox.addWidget(dump_button)
+        vbox.addLayout(hbox)
+
         self.reset_plot()
 
-        self.config_win = None
+        geometry = self._geometry
+        if geometry is None:
+            geometry = default_geometry("physio")
+        self.set_position(geometry)
 
-        # Dump button
-        dump_dur = str(timedelta(seconds=self._buf_len_sec)).split(".")[0]
-        dump_button = tk.Button(
-            self._plt_root,
-            text=f"dump ({dump_dur})",
-            command=self.dump_data,
-            font=("Helvetica", 10),
-        )
-        # Pack the button before the plot, so that it keeps its space and
-        # the plot takes the rest.
-        dump_button.pack(side=tk.BOTTOM, anchor=tk.SE)
-        plot_widget.pack(side=tk.TOP, fill="both", expand=True)
-
-        self._resize_debounce_id = None
-        self._plt_root.bind("<Configure>", self.update_plot_size)
-        self.update_plot_size(None)
-
-        # Connect WM_DELETE_WINDOW event to self.on_closing
-        self._plt_root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self._update_timer = QtCore.QTimer(self._win)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._update)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_position(self, geometry):
-        self._plt_root.geometry(geometry)
+        """Set the window geometry 'WxH+X+Y' (see parse_geometry)."""
+        try:
+            w, h, x, y = parse_geometry(geometry)
+        except ValueError as e:
+            self._logger.error(str(e))
+            return
+        if w is not None:
+            self._win.resize(w, h)
+        if x is not None:
+            self._win.move(x, y)  # Position of the frame
+
+    def get_geometry(self):
+        """Window geometry 'WxH+X+Y' (client size, frame position)."""
+        w = self._win
+        return f"{w.width()}x{w.height()}+{w.x()}+{w.y()}"
+
+    def window_state(self):
+        """Window state with the Tk names: 'normal', 'iconic' (minimized),
+        or 'withdrawn' (hidden)."""
+        if not self._win.isVisible():
+            return "withdrawn"
+        if self._win.isMinimized():
+            return "iconic"
+        return "normal"
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def init_plot(self):
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
         self._plot_fig = Figure(figsize=(6, 4.2))
-        self._canvas = FigureCanvasTkAgg(self._plot_fig, master=self._plt_root)
-        gui_theme.fix_mpl_canvas(self._canvas)
+        self._canvas = FigureCanvasQTAgg(self._plot_fig)
         self._ax_ttl, self._ax_card, self._ax_card_filtered, self._ax_resp = (
             self._plot_fig.subplots(4, 1)
         )
-
         self._plot_fig.subplots_adjust(
             left=0.15, bottom=0.1, right=0.98, top=0.95, hspace=0.35
         )
-
-        return self._canvas.get_tk_widget()
+        # Keep the margins in inches when the window is resized
+        self._canvas.mpl_connect("resize_event", self._handle_resize)
+        return self._canvas
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def reset_plot(self):
@@ -1999,46 +2071,52 @@ class PlotTTLPhysio:
     def run(self, cmd_pipe, rbuf_lock, rbuf, dump_pipe=None,
             reply_pipe=None):
         """Run the plot window (the target of the plot process)."""
-        self._plt_root.deiconify()
         self._cmd_pipe = cmd_pipe
         # Replies to GET_GEOMETRY/GET_WINDOW_STATE. A separate pipe, so that
         # the recorder's mainloop, which reads cmd_pipe, never takes them.
         self._reply_pipe = reply_pipe if reply_pipe is not None else cmd_pipe
         # Dump requests and results (see dump_data)
         self._dump_pipe = dump_pipe
-        self._dump_win = None
         self._rbuf_lock = rbuf_lock
         self._rbuf = rbuf
-        self._running = True
 
         # Attach to the ring buffers in this process
         pid = os.getpid()
         for lab, rb in self._rbuf.items():
             self._rbuf[lab] = rb.validate(pid, read_only=True)
 
-        # Start the update timer. The QUIT command ends the mainloop.
-        self._plt_root.after(self._timer_interval_ms, self._update)
-
         try:
-            self._plt_root.mainloop()
+            self._init_window()
+            self._win.show()
+            # The window manager may place a window elsewhere when it is
+            # shown; set the position again.
+            if self._geometry is not None:
+                self.set_position(self._geometry)
+
+            # Start the update timer. The QUIT command ends the event loop.
+            self._running = True
+            self._update_timer.start(self._timer_interval_ms)
+            self._app.exec()
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(f"Error in mainloop: {errstr}")
+            self._logger.error(f"Error in the plot event loop: {errstr}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def stop_updates(self):
         """Stop the plot updates."""
         self._running = False
-        # Cancel any pending after callbacks
-        if hasattr(self, "_update_after_id") and self._update_after_id:
-            self._plt_root.after_cancel(self._update_after_id)
-            self._update_after_id = None
+        if self._win is not None:
+            self._update_timer.stop()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def start_updates(self):
         """Restart the plot updates."""
         self._running = True
         self._update()
+
+    def _next_update(self, delay_ms):
+        if self._running:
+            self._update_timer.start(int(delay_ms))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_plot_signals(self, plot_len_sec):
@@ -2128,83 +2206,100 @@ class PlotTTLPhysio:
         return data
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _handle_command(self, msg):
+        """Handle a command from the controller. Returns False if the
+        update loop must not continue."""
+        if msg == "QUIT":
+            self._running = False
+            self._app.quit()  # Exit the event loop
+            return False
+        elif msg == "STOP_UPDATES":
+            self.stop_updates()
+            return False
+        elif msg == "START_UPDATES":
+            self.start_updates()
+            return False
+        elif msg == "SHOW":
+            self.show()
+        elif msg == "HIDE":
+            self.hide()
+        elif isinstance(msg, tuple) and msg[0] == "SET_TITLE":
+            self._win.setWindowTitle(physio_window_title(msg[1]))
+        elif isinstance(msg, tuple) and msg[0] == "RESIZE":
+            self.set_position(msg[1])
+        elif isinstance(msg, tuple) and msg[0] == "TTL_ALARM":
+            self.show_ttl_alarm(msg[1])
+        elif isinstance(msg, tuple) and msg[0] == "PHYSIO_ALARM":
+            self.show_physio_alarm(msg[1])
+        elif msg == "SCAN_ON":
+            self._is_scanning = True
+        elif msg == "SCAN_OFF":
+            self._is_scanning = False
+        elif msg == "GET_GEOMETRY":
+            self._reply_pipe.send(self.get_geometry())
+        elif msg == "GET_WINDOW_STATE":
+            self._reply_pipe.send(self.window_state())
+        elif isinstance(msg, tuple) and msg[0] == "RESET":
+            config = msg[1]
+            for key, value in config.items():
+                if hasattr(self, key):
+                    if key == "signal_freq":
+                        value = float(value)
+                    setattr(self, key, value)
+                    self._logger.debug(f"Reset {key} to {value}")
+            self.reset_plot()
+        return True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _update(self):
         """Timer callback: handle a command from the controller and redraw
         the plot."""
-        smin, smax = self.signal_range  # y range limits of the signals
         if not self._running:
             return
 
         st = time.time()
 
         # Check command on pipe
-        if self._cmd_pipe and self._cmd_pipe.poll():
-            msg = self._cmd_pipe.recv()
-            if msg == "QUIT":
-                self._running = False
-                self._plt_root.quit()  # Exit the mainloop
-                return
-            elif msg == "STOP_UPDATES":
-                self.stop_updates()
-                return
-            elif msg == "START_UPDATES":
-                self.start_updates()
-                return
-            elif msg == "SHOW":
-                self.show()
-            elif msg == "HIDE":
-                self.hide()
-            elif isinstance(msg, tuple) and msg[0] == "SET_TITLE":
-                self._plt_root.title(physio_window_title(msg[1]))
-            elif isinstance(msg, tuple) and msg[0] == "RESIZE":
-                self.set_position(msg[1])
-            elif isinstance(msg, tuple) and msg[0] == "TTL_ALARM":
-                self.show_ttl_alarm(msg[1])
-            elif isinstance(msg, tuple) and msg[0] == "PHYSIO_ALARM":
-                self.show_physio_alarm(msg[1])
-            elif msg == "SCAN_ON":
-                self._is_scanning = True
-            elif msg == "SCAN_OFF":
-                self._is_scanning = False
-            elif msg == "GET_GEOMETRY":
-                geometry = self._plt_root.geometry()
-                self._reply_pipe.send(geometry)
-            elif msg == "GET_WINDOW_STATE":
-                self._reply_pipe.send(self._plt_root.wm_state())
-            elif isinstance(msg, tuple) and msg[0] == "RESET":
-                config = msg[1]
-                for key, value in config.items():
-                    if hasattr(self, key):
-                        if key == "signal_freq":
-                            value = float(value)
-                        setattr(self, key, value)
-                        self._logger.debug(f"Reset {key} to {value}")
-                self.reset_plot()
+        try:
+            if self._cmd_pipe and self._cmd_pipe.poll():
+                if not self._handle_command(self._cmd_pipe.recv()):
+                    return
+        except (OSError, EOFError) as e:
+            # The controller is gone
+            self._logger.error(f"Command pipe closed: {e}")
+            self._running = False
+            self._app.quit()
+            return
 
         try:
             # No update while the window is hidden
-            if self._plt_root.wm_state() in ("iconic", "withdrawn"):
-                # Set next timer event
-                if self._running:
-                    self._update_after_id = self._plt_root.after(
-                        int(self._timer_interval_ms), self._update
-                    )
+            if self.window_state() != "normal":
+                self._next_update(self._timer_interval_ms)
                 return
-        except Exception:
-            if self._running:
-                self._update_after_id = self._plt_root.after(
-                    int(self._timer_interval_ms), self._update
-                )
+            drawn = self._draw()
+        except Exception as e:
+            errstr = str(e) + "\n" + traceback.format_exc()
+            self._logger.error(errstr)
+            drawn = False
+
+        if not drawn:
+            self._next_update(self._timer_interval_ms)
             return
+
+        # Set next timer event. Keep at least 30 ms idle, so that clicks
+        # are handled when drawing takes longer than the interval.
+        et = (time.time() - st) * 1000
+        self._next_update(max(30, self._timer_interval_ms - et))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _draw(self):
+        """Draw the latest signals. Returns False if there are no data."""
+        smin, smax = self.signal_range  # y range limits of the signals
 
         # --- Get data --------------------------------------------------------
         plt_data = self.get_plot_signals(self._plot_len_sec + 1)
         if plt_data is None:
-            if self._running:
-                self._update_after_id = self._plt_root.after(
-                    int(self._timer_interval_ms), self._update
-                )
-            return
+            return False
 
         ttl_init_state = plt_data["ttl_init_state"]
         ttl_onsets = plt_data["ttl_onsets"]
@@ -2235,19 +2330,14 @@ class PlotTTLPhysio:
         xt_ex_mask = slice(len(l_xt_extend), len(l_xt_extend) + len(plt_xt))
 
         # --- Resample in regular interval ------------------------------------
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                f = interp1d(tstamp, card, bounds_error=False)
-                card_ex = f(xt_interval_ex)
-                card = card_ex[xt_ex_mask]
-                f = interp1d(tstamp, resp, bounds_error=False)
-                resp_ex = f(xt_interval_ex)
-                resp = resp_ex[xt_ex_mask]
-
-        except Exception as e:
-            errstr = str(e) + "\n" + traceback.format_exc()
-            self._logger.error(errstr)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            f = interp1d(tstamp, card, bounds_error=False)
+            card_ex = f(xt_interval_ex)
+            card = card_ex[xt_ex_mask]
+            f = interp1d(tstamp, resp, bounds_error=False)
+            resp_ex = f(xt_interval_ex)
+            resp = resp_ex[xt_ex_mask]
 
         # --- Plot ------------------------------------------------------------
         # region: TTL
@@ -2328,12 +2418,7 @@ class PlotTTLPhysio:
                     ymax = ymin + 50
                 else:
                     ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
+        if np.isfinite(ymin) and np.isfinite(ymax):
             self._ax_card.set_ylim((ymin, ymax))
         # endregion
 
@@ -2363,12 +2448,7 @@ class PlotTTLPhysio:
                     ymax = ymin + 50
                 else:
                     ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
+        if np.isfinite(ymin) and np.isfinite(ymax):
             self._ax_card_filtered.set_ylim((ymin, ymax))
         # endregion
 
@@ -2383,12 +2463,7 @@ class PlotTTLPhysio:
                     ymax = ymin + 50
                 else:
                     ymin = ymax - 50
-        if (
-            not np.isnan(ymin)
-            and not np.isinf(ymin)
-            and not np.isnan(ymax)
-            and not np.isinf(ymax)
-        ):
+        if np.isfinite(ymin) and np.isfinite(ymax):
             self._ax_resp.set_ylim((ymin, ymax))
 
         if self._is_scanning:
@@ -2397,109 +2472,90 @@ class PlotTTLPhysio:
         else:
             self._ln_card[0].set_color(COLORS["cyan"])
             self._ln_resp[0].set_color(COLORS["cyan"])
-
-        self._canvas.draw()
-        self._plt_root.update_idletasks()
         # endregion
 
-        # Set next timer event
-        et = (time.time() - st) * 1000
-        # A negative delay makes Tk call _update at once, which redraws
-        # continuously (100% CPU) when drawing takes longer than the interval.
-        # Keep at least 30 ms idle, so that clicks are handled.
-        after_ms = int(max(30, self._timer_interval_ms - et))
-        if self._running:
-            self._update_after_id = self._plt_root.after(
-                after_ms, self._update)
+        self._canvas.draw()
+        return True
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _place_below(self, dlg):
+        """Put a dialog just below the plot window."""
+        g = self._win.frameGeometry()
+        dlg.move(g.x(), g.y() + g.height())
+
+    def _place_over(self, dlg):
+        """Put a dialog over the plot window."""
+        g = self._win.frameGeometry()
+        dlg.move(g.x() + 20, g.y() + 40)
+
+    @staticmethod
+    def _place_center(dlg):
+        """Put a dialog at the center of the primary screen."""
+        dlg.adjustSize()
+        x0, y0, sw, sh = screen_area()
+        w, h = dlg.width(), dlg.height()
+        dlg.move(x0 + (sw - w) // 2, y0 + (sh - h) // 3)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def config(self):
+        """Dialog of the recording configurations."""
+        from PyQt6 import QtWidgets, QtCore
+
         if self._cmd_pipe is None:
+            return
+
+        if self.config_win is not None and self.config_win.isVisible():
+            self.config_win.raise_()
             return
 
         self._cmd_pipe.send("GET_CONFIG")
         conf = self._cmd_pipe.recv()
+        if not conf:
+            conf = {}
         conf["Plot length (sec)"] = self._plot_len_sec
 
-        # Open a config dialog
-        if self.config_win is not None:
-            if self.config_win.winfo_exists():
-                return
-            else:
-                self.config_win.destroy()
-
-        self.config_win = tk.Toplevel(self._plt_root)
-        self.config_win.title("Recording configurations")
-
-        # Create widgets
-        labs = {}
+        dlg = QtWidgets.QDialog(self._win)
+        dlg.setWindowTitle("Recording configurations")
+        form = QtWidgets.QFormLayout(dlg)
         widgets = {}
         for lab, val in conf.items():
-            if "port list" not in lab:
-                labs[lab] = tk.Label(
-                    self.config_win, text=lab, font=("Helvetica", 11)
-                )
-                if "port" not in lab:
-                    widgets[lab] = tk.Entry(
-                        self.config_win,
-                        width=10,
-                        justify=tk.RIGHT,
-                        font=("Helvetica", 11),
-                    )
-                    widgets[lab].insert(0, val)
-                else:
-                    port_dict = conf[lab + " list"]
-                    if len(port_dict) == 0:
-                        continue
-                    combo_list = [f"{k}:{v}" for k, v in port_dict.items()]
-                    widgets[lab] = ttk.Combobox(
-                        self.config_win,
-                        values=combo_list,
-                        font=("Helvetica", 11),
-                        width=30,
-                    )
-                    widgets[lab].set(val)
-
-        cancelButton = tk.Button(
-            self.config_win,
-            text="Cancel",
-            font=("Helvetica", 11),
-            command=self.cancel_config,
-        )
-        setButton = tk.Button(
-            self.config_win,
-            text="Set",
-            font=("Helvetica", 11),
-            command=lambda: self.set_config(widgets),
-        )
-
-        # Place widgets
-        for ii, (lab, lab_wdgt) in enumerate(labs.items()):
-            lab_wdgt.grid(row=ii, column=0, sticky=tk.W + tk.E)
-            if lab not in widgets:
+            if "port list" in lab:
                 continue
-            widgets[lab].grid(
-                row=ii, column=1, columnspan=2, sticky=tk.W + tk.E
-            )
+            if "port" not in lab:
+                wdgt = QtWidgets.QLineEdit(str(val))
+                wdgt.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight
+                                  | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                wdgt.setFixedWidth(120)
+            else:
+                port_dict = conf.get(lab + " list", {})
+                if len(port_dict) == 0:
+                    continue
+                wdgt = QtWidgets.QComboBox()
+                wdgt.setEditable(True)
+                wdgt.addItems([f"{k}:{v}" for k, v in port_dict.items()])
+                wdgt.setCurrentText(str(val))
+            widgets[lab] = wdgt
+            form.addRow(lab, wdgt)
 
-        cancelButton.grid(row=ii + 1, column=1, sticky=tk.W + tk.E)
-        setButton.grid(row=ii + 1, column=2, sticky=tk.W + tk.E)
+        buttons = QtWidgets.QDialogButtonBox()
+        buttons.addButton("Cancel",
+                          QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.addButton("Set",
+                          QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.accepted.connect(lambda: self.set_config(widgets))
+        buttons.rejected.connect(self.cancel_config)
+        form.addRow(buttons)
 
-        # Adjust layout
-        col_count, row_count = self.config_win.grid_size()
-        for row in range(row_count):
-            self.config_win.grid_rowconfigure(row, minsize=32)
-
-        # Move window under the plt_win
-        cfg_win_x = self._plt_root.winfo_x()
-        cfg_win_y = self._plt_root.winfo_y() + self._plt_root.winfo_height()
-        self.config_win.geometry(f"+{cfg_win_x}+{cfg_win_y}")
+        self.config_win = dlg
+        dlg.show()
+        self._place_below(dlg)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def set_config(self, widgets):
         conf = {}
         for lab, wdgt in widgets.items():
-            conf[lab] = wdgt.get()
+            conf[lab] = wdgt.currentText() if hasattr(wdgt, "currentText") \
+                else wdgt.text()
 
         if "Plot length (sec)" in conf:
             self._plot_len_sec = float(conf["Plot length (sec)"])
@@ -2509,13 +2565,11 @@ class PlotTTLPhysio:
             self._cmd_pipe.send(conf)
 
         self.reset_plot()
-        self.update_plot_size(None)
-
-        self.config_win.destroy()
+        self.config_win.close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def cancel_config(self):
-        self.config_win.destroy()
+        self.config_win.close()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _buffer_times(self):
@@ -2544,20 +2598,21 @@ class PlotTTLPhysio:
         """Dump button: choose the start time and confirm, then the
         recorder process saves the data (progress bar while saving), and
         the saved period is shown."""
+        from PyQt6 import QtWidgets, QtCore
+
         if self._dump_pipe is None:
             return
         if not hasattr(self, "_dump_req_id"):
             self._dump_req_id = 0
-        if self._dump_win is not None and self._dump_win.winfo_exists():
-            self._dump_win.lift()
+        if self._dump_win is not None and self._dump_win.isVisible():
+            self._dump_win.raise_()
+            self._dump_win.activateWindow()
             return
 
         oldest, is_full, scans = self._buffer_times()
         if oldest is None:
-            messagebox.showinfo(
-                "Dump", "No physio data in the buffer.",
-                parent=self._plt_root,
-            )
+            QtWidgets.QMessageBox.information(
+                self._win, "Dump", "No physio data in the buffer.")
             return
 
         def tstr(t):
@@ -2584,37 +2639,68 @@ class PlotTTLPhysio:
                 ons,
             ))
 
-        win = tk.Toplevel(self._plt_root)
-        self._dump_win = win
-        win.title("Dump physio data")
-        win.transient(self._plt_root)
-        win.resizable(False, False)
-        font = ("Helvetica", 11)
-        frm = tk.Frame(win, padx=12, pady=10)
-        frm.pack(fill="both", expand=True)
+        dlg = _DumpDialog(self._win)
+        self._dump_win = dlg
+        dlg.setWindowTitle("Dump physio data")
+        dlg.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        vbox = QtWidgets.QVBoxLayout(dlg)
+        vbox.setContentsMargins(14, 12, 14, 12)
+        page = QtWidgets.QStackedWidget()
+        vbox.addWidget(page)
 
-        tk.Label(
-            frm, text="Save the buffered physio data from:", font=font
-        ).pack(anchor="w")
-        choice_var = tk.StringVar(value=choices[0][0])
-        combo = ttk.Combobox(
-            frm, textvariable=choice_var, state="readonly", font=font,
-            values=[c[0] for c in choices], width=42,
-        )
-        combo.pack(anchor="w", pady=(4, 4))
-        tk.Label(
-            frm, text="to the latest data, in the folder\n"
-            f"{self.controller.dump_dir}", font=font, justify="left",
-        ).pack(anchor="w")
+        # Page 0: choose the start
+        p0 = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(p0)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(QtWidgets.QLabel("Save the buffered physio data from:"))
+        combo = QtWidgets.QComboBox()
+        combo.addItems([c[0] for c in choices])
+        lay.addWidget(combo)
+        lay.addWidget(QtWidgets.QLabel(
+            "to the latest data, in the folder\n"
+            f"{self.controller.dump_dir}"))
+        btns = QtWidgets.QHBoxLayout()
+        btns.addStretch(1)
+        save_btn = QtWidgets.QPushButton("Save")
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        btns.addWidget(save_btn)
+        btns.addWidget(cancel_btn)
+        lay.addLayout(btns)
+        page.addWidget(p0)
 
-        btn_frm = tk.Frame(frm)
-        btn_frm.pack(fill="x", pady=(10, 0))
+        # Page 1: progress
+        p1 = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(p1)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(QtWidgets.QLabel("Saving the physio data ..."))
+        pbar = QtWidgets.QProgressBar()
+        pbar.setRange(0, 0)  # Busy indicator
+        pbar.setTextVisible(False)
+        pbar.setMinimumWidth(320)
+        lay.addWidget(pbar)
+        lay.addStretch(1)
+        page.addWidget(p1)
 
-        def cancel():
-            win.destroy()
+        # Page 2: result
+        p2 = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(p2)
+        lay.setContentsMargins(0, 0, 0, 0)
+        result_lbl = QtWidgets.QLabel()
+        result_lbl.setWordWrap(True)
+        result_lbl.setMinimumWidth(420)
+        result_lbl.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(result_lbl)
+        ok_btn = QtWidgets.QPushButton("OK")
+        ok_btn.clicked.connect(dlg.close)
+        hb = QtWidgets.QHBoxLayout()
+        hb.addStretch(1)
+        hb.addWidget(ok_btn)
+        lay.addLayout(hb)
+        page.addWidget(p2)
 
         def save():
-            onset = dict(choices)[choice_var.get()]
+            onset = choices[combo.currentIndex()][1]
             self._logger.info(
                 "Dump physio data from "
                 + ("the oldest available data" if onset is None
@@ -2626,37 +2712,25 @@ class PlotTTLPhysio:
             req_id = self._dump_req_id
             self._dump_pipe.send(("DUMP", onset, req_id))
 
-            # Progress view
-            for w in frm.winfo_children():
-                w.destroy()
-            tk.Label(
-                frm, text="Saving the physio data ...", font=font
-            ).pack(anchor="w")
-            pbar = ttk.Progressbar(frm, mode="indeterminate", length=320)
-            pbar.pack(fill="x", pady=8)
-            pbar.start(15)
-            win.protocol("WM_DELETE_WINDOW", lambda: None)
-            self._wait_dump_result(win, frm, pbar, time.time(), req_id)
+            page.setCurrentIndex(1)
+            dlg.closable = False  # Not closed while saving
+            self._wait_dump_result(dlg, page, result_lbl, time.time(),
+                                   req_id)
 
-        tk.Button(btn_frm, text="Cancel", command=cancel, font=font,
-                  width=8).pack(side=tk.RIGHT, padx=(6, 0))
-        tk.Button(btn_frm, text="Save", command=save, font=font,
-                  width=8).pack(side=tk.RIGHT)
+        save_btn.clicked.connect(save)
+        cancel_btn.clicked.connect(dlg.close)
+        save_btn.setDefault(True)
 
-        # Put the dialog over the plot window
-        win.update_idletasks()
-        x = self._plt_root.winfo_rootx() + 20
-        y = self._plt_root.winfo_rooty() + 40
-        win.geometry(f"+{x}+{y}")
-        win.grab_set()
+        dlg.show()
+        self._place_over(dlg)
 
-    def _wait_dump_result(self, win, frm, pbar, start_t, req_id,
+    def _wait_dump_result(self, dlg, page, result_lbl, start_t, req_id,
                           timeout=600):
         """Poll the result of dump request req_id from the recorder
         process. Results of earlier requests (arriving after their timeout)
         are logged and skipped."""
-        if not win.winfo_exists():
-            return
+        from PyQt6 import QtCore
+
         result = None
         while result is None and self._dump_pipe.poll():
             msg = self._dump_pipe.recv()
@@ -2668,14 +2742,11 @@ class PlotTTLPhysio:
         if result is None and time.time() - start_t > timeout:
             result = ("DUMP_FAILED", "No response from the recorder.")
         if result is None:
-            win.after(200, self._wait_dump_result, win, frm, pbar, start_t,
-                      req_id)
+            QtCore.QTimer.singleShot(
+                200, lambda: self._wait_dump_result(
+                    dlg, page, result_lbl, start_t, req_id, timeout))
             return
 
-        pbar.stop()
-        for w in frm.winfo_children():
-            w.destroy()
-        font = ("Helvetica", 11)
         if result[0] == "DUMP_DONE":
             info = result[1]
             t0 = datetime.fromtimestamp(info["onset"])
@@ -2687,175 +2758,184 @@ class PlotTTLPhysio:
                 f" to {t1.strftime('%H:%M:%S')}.\n\n"
                 f"File: {info['path']}"
             )
-            fg = COLORS["fg"]
+            color = COLORS["fg"]
         else:
             msg = f"Failed to save the physio data.\n{result[1]}"
-            fg = COLORS["red"]
-        tk.Label(frm, text=msg, font=font, justify="left", fg=fg,
-                 wraplength=520).pack(anchor="w")
-        tk.Button(frm, text="OK", command=win.destroy, font=font,
-                  width=8).pack(anchor="e", pady=(10, 0))
-        win.protocol("WM_DELETE_WINDOW", win.destroy)
+            color = COLORS["red"]
+        result_lbl.setText(msg)
+        result_lbl.setStyleSheet(f"color: {color};")
+        page.setCurrentIndex(2)
+        dlg.closable = True
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # Alarm sound interval while the dialog is open
-    TTL_ALARM_INTERVAL_MS = 3000
+    def _alarm_dialog(self, title, heading, message):
+        """Make an alarm dialog (on top, red frame) centered on the primary
+        screen."""
+        from PyQt6 import QtWidgets, QtCore
+
+        c = gui_theme.COLORS
+        dlg = QtWidgets.QDialog(self._win)
+        dlg.setWindowTitle(title)
+        dlg.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
+        dlg.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.setObjectName("alarm")
+        dlg.setStyleSheet(
+            f"QDialog#alarm {{ border: 3px solid {c['red']}; }}")
+        vbox = QtWidgets.QVBoxLayout(dlg)
+        vbox.setContentsMargins(22, 18, 22, 16)
+        head = QtWidgets.QLabel(f"⚠  {heading}")
+        head.setStyleSheet(
+            f"color: {c['red']}; font-size: 16pt; font-weight: bold;")
+        vbox.addWidget(head)
+        msg = QtWidgets.QLabel(message)
+        msg.setWordWrap(True)
+        msg.setMinimumWidth(480)
+        msg.setStyleSheet("font-size: 12pt;")
+        vbox.addWidget(msg)
+        vbox.addSpacing(8)
+        ok = QtWidgets.QPushButton("OK")
+        ok.setMinimumWidth(100)
+        ok.clicked.connect(dlg.close)
+        hb = QtWidgets.QHBoxLayout()
+        hb.addStretch(1)
+        hb.addWidget(ok)
+        vbox.addLayout(hb)
+        dlg.show()
+        self._place_center(dlg)
+        dlg.raise_()
+        return dlg
+
+    @staticmethod
+    def _is_open(dlg):
+        try:
+            return dlg is not None and dlg.isVisible()
+        except RuntimeError:  # Deleted (WA_DeleteOnClose)
+            return False
+
+    def _play_alarm(self):
+        from PyQt6 import QtWidgets
+
+        if self._alarm is None:
+            self._alarm = AlarmSound()
+        self._alarm.play(bell=QtWidgets.QApplication.beep)
 
     def show_ttl_alarm(self, message):
         """Open the missing TTL warning dialog. The alarm sounds every
         TTL_ALARM_INTERVAL_MS until the dialog is closed."""
-        win = getattr(self, "_ttl_alarm_win", None)
-        if win is not None and win.winfo_exists():
-            win.lift()
+        from PyQt6 import QtCore
+
+        if self._is_open(self._ttl_alarm_win):
+            self._ttl_alarm_win.raise_()
             return
-        if getattr(self, "_alarm", None) is None:
-            self._alarm = AlarmSound()
+        dlg = self._alarm_dialog("TTL missing", "NO TTL FROM THE SCANNER",
+                                 message)
+        self._ttl_alarm_win = dlg
 
-        c = gui_theme.COLORS
-        win = tk.Toplevel(self._plt_root)
-        self._ttl_alarm_win = win
-        win.title("TTL missing")
-        win.attributes("-topmost", True)
-        win.configure(highlightthickness=3, highlightbackground=c["red"],
-                      highlightcolor=c["red"])
-        frm = tk.Frame(win, padx=20, pady=16)
-        frm.pack(fill="both", expand=True)
-        tk.Label(frm, text="⚠  NO TTL FROM THE SCANNER", fg=c["red"],
-                 font=("Helvetica", 16, "bold")).pack(anchor="w")
-        tk.Label(frm, text=message, font=("Helvetica", 12), justify="left",
-                 wraplength=520).pack(anchor="w", pady=(10, 14))
-        tk.Button(frm, text="OK", font=("Helvetica", 12), width=10,
-                  command=win.destroy).pack(anchor="e")
-        win.protocol("WM_DELETE_WINDOW", win.destroy)
-
-        # Center on the primary screen
-        win.update_idletasks()
-        x0, y0, sw, sh = screen_area()
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        win.geometry(f"+{x0 + (sw - w) // 2}+{y0 + (sh - h) // 3}")
-
-        def beep():
-            if win.winfo_exists():
-                self._alarm.play(tk_widget=win)
-                win.after(self.TTL_ALARM_INTERVAL_MS, beep)
-
-        beep()
+        timer = QtCore.QTimer(dlg)  # Deleted with the dialog
+        timer.timeout.connect(self._play_alarm)
+        timer.start(self.TTL_ALARM_INTERVAL_MS)
+        self._play_alarm()
 
     def show_physio_alarm(self, message):
-        """Open the physio signal warning dialog (one alarm
-        sound)."""
-        win = getattr(self, "_physio_alarm_win", None)
-        if win is not None and win.winfo_exists():
-            win.destroy()
-        if getattr(self, "_alarm", None) is None:
-            self._alarm = AlarmSound()
-
-        c = gui_theme.COLORS
-        win = tk.Toplevel(self._plt_root)
-        self._physio_alarm_win = win
-        win.title("Physio signal problem")
-        win.attributes("-topmost", True)
-        win.configure(highlightthickness=3, highlightbackground=c["red"],
-                      highlightcolor=c["red"])
-        frm = tk.Frame(win, padx=20, pady=16)
-        frm.pack(fill="both", expand=True)
-        tk.Label(frm, text="⚠  PHYSIO SIGNAL PROBLEM", fg=c["red"],
-                 font=("Helvetica", 16, "bold")).pack(anchor="w")
-        tk.Label(frm, text=message, font=("Helvetica", 12), justify="left",
-                 wraplength=520).pack(anchor="w", pady=(10, 14))
-        tk.Button(frm, text="OK", font=("Helvetica", 12), width=10,
-                  command=win.destroy).pack(anchor="e")
-        win.protocol("WM_DELETE_WINDOW", win.destroy)
-
-        win.update_idletasks()
-        x0, y0, sw, sh = screen_area()
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        win.geometry(f"+{x0 + (sw - w) // 2}+{y0 + (sh - h) // 3}")
-        self._alarm.play(tk_widget=win)
+        """Open the physio signal warning dialog (one alarm sound)."""
+        if self._is_open(self._physio_alarm_win):
+            self._physio_alarm_win.close()
+        self._physio_alarm_win = self._alarm_dialog(
+            "Physio signal problem", "PHYSIO SIGNAL PROBLEM", message)
+        self._play_alarm()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show(self):
-        # Show window
-        while self._plt_root.wm_state() in ("iconic", "withdrawn"):
-            self._plt_root.deiconify()
+        """Show the window (also when it is minimized)."""
+        if self._win.isMinimized():
+            self._win.showNormal()
+        self._win.show()
+        self._win.raise_()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def hide(self):
-        # Hide window
-        while self._plt_root.wm_state() not in ("iconic", "withdrawn"):
-            self._plt_root.withdraw()
+        self._win.hide()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def update_plot_size(self, event):
-        if self._resize_debounce_id:
-            self._plt_root.after_cancel(self._resize_debounce_id)
-        self._resize_debounce_id = self._plt_root.after(
-            1, self._handle_resize, event
-        )
-
-    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def _handle_resize(self, event):
+    def _handle_resize(self, event=None):
+        """Keep the plot margins in inches (matplotlib resize_event)."""
         try:
-            # Get the new height of the window
-            if event is None:
-                new_height = self._plt_root.winfo_height()
-            else:
-                new_height = event.height
-
-            # Update the size of the Matplotlib canvas
-            plot_height = new_height - 1
-            self._canvas.get_tk_widget().config(height=plot_height)
-
-            # Get the figure size in inches
             fig_width_inch, fig_height_inch = self._plot_fig.get_size_inches()
-
-            # Calculate the normalized margin values
+            if fig_width_inch <= 0 or fig_height_inch <= 0:
+                return
             left = self._left_margin_inch / fig_width_inch
             right = 1 - (self._right_margin_inch / fig_width_inch)
             top = 1 - (self._top_margin_inch / fig_height_inch)
             bottom = self._bottom_margin_inch / fig_height_inch
-
-            # Adjust the subplots
-            self._plot_fig.subplots_adjust(
-                left=left, right=right, top=top, bottom=bottom
-            )
-
-            # When the Tk scaling is not 96 dpi, matplotlib draws the figure
-            # slightly smaller than the canvas, and the strip outside it
-            # keeps the image drawn at the earlier size. Clear the image;
-            # the timer update draws the figure again.
-            try:
-                self._canvas._tkphoto.blank()
-            except Exception:
-                pass
-
+            if left < right and bottom < top:
+                self._plot_fig.subplots_adjust(
+                    left=left, right=right, top=top, bottom=bottom
+                )
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error(errstr)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def on_closing(self):
+        """Close button of the window. Returns True if the window may
+        close."""
         if self._disable_close:
-            if self.controller.rt_mri_main_com.rpc_ping():
-                self.controller.rt_mri_main_com.call_rt_proc("HIDE_PHYSIO")
-            else:
-                self.hide()
+            # Hide the window (the recording goes on) and tell the RT-MRI
+            # main process, if it runs, to update its check box. RTPSpy
+            # reads the window state (GET_WINDOW_STATE).
+            self.hide()
+            try:
+                if self.controller.rt_mri_main_com.rpc_ping():
+                    self.controller.rt_mri_main_com.call_rt_proc(
+                        "HIDE_PHYSIO")
+            except Exception as e:
+                self._logger.debug(f"HIDE_PHYSIO not sent: {e}")
+            return False
 
-            return
-
-        self._plt_root.destroy()
+        self._running = False
         if self._cmd_pipe:
-            self._cmd_pipe.send("QUIT")
+            try:
+                self._cmd_pipe.send("QUIT")
+            except (OSError, EOFError):
+                pass
+        if self._app is not None:
+            self._app.quit()
+        return True
+
+
+class _DumpDialog:
+    """Factory of the dump dialog: a QDialog that cannot be closed while
+    the data are being saved (attribute closable)."""
+
+    def __new__(cls, parent):
+        from PyQt6 import QtWidgets
+
+        class _Dialog(QtWidgets.QDialog):
+            closable = True
+
+            def closeEvent(self, event):
+                if self.closable:
+                    event.accept()
+                else:
+                    event.ignore()
+
+            def reject(self):  # Escape key
+                if self.closable:
+                    super().reject()
+
+        return _Dialog(parent)
 
 
 # %% _display_available =======================================================
 def _display_available(timeout=5.0):
-    """Check that a Tk window can be opened, in a subprocess with a timeout:
-    tk.Tk() blocks indefinitely when the X display (e.g., a stalled X11
-    forwarding) does not respond."""
+    """Check that a Qt window can be opened, in a subprocess with a timeout:
+    opening the display blocks indefinitely when the X display (e.g., a
+    stalled X11 forwarding) does not respond, and Qt aborts the process when
+    there is no display."""
     try:
         ret = subprocess.run(
-            [sys.executable, "-c", "import tkinter; tkinter.Tk().destroy()"],
+            [sys.executable, "-c",
+             "from PyQt6 import QtWidgets; QtWidgets.QApplication([])"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=timeout)
         return ret.returncode == 0
@@ -4286,7 +4366,7 @@ class RtPhysio:
         if _display_available():
             try:
                 self.open_plot()
-            except tk.TclError as e:
+            except Exception as e:
                 self._logger.warning(f"Run without the plot window: {e}")
                 self._plot = None
                 self._plot_proc_pipe = None
@@ -4531,7 +4611,7 @@ class RtPhysio:
         ring buffer files."""
         self.stop_recording()
         # The plot window runs in its own process. Stop it via the pipe;
-        # touching its Tk root from this process breaks the X connection.
+        # its window is not in this process.
         self.stop_plot()
         self.socket_srv.shutdown()
         if hasattr(self, "_rbuf") and self._rbuf is not None:

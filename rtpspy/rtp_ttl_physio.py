@@ -29,6 +29,7 @@ try:
     from .rpc_socket_server import RPCSocketCom
     from .rtp_retrots import RtpRetroTS
     from .rt_physio import SharedMemoryRingBuffer
+    from .window_layout import rtpspy_tk_geometry
 
 except Exception:
     # When this file is not loaded as a part of the package (debugging)
@@ -36,6 +37,7 @@ except Exception:
     from rtpspy.rpc_socket_server import RPCSocketCom
     from rtpspy.rtp_retrots import RtpRetroTS
     from rtpspy.rt_physio import SharedMemoryRingBuffer
+    from rtpspy.window_layout import rtpspy_tk_geometry
 
 
 # %% RtpTTLPhysio =============================================================
@@ -105,7 +107,16 @@ class RtpTTLPhysio(RTP):
                 "--log_file", str(Path(self.physio_log_file).resolve()),
                 "--rpc_socket_name", self.rt_physio_address_name[2],
                 "--config_path", str(self.config_path),
+                # The close button hides the window; the recording goes on
+                # (RtpGUI keeps its 'Physio' check box in sync)
+                "--disable_close",
             ]
+            # Open the physio window at its place in the RTPSpy layout
+            # (window_layout.py), so that it need not be moved later.
+            try:
+                cmd += ["--geometry", rtpspy_tk_geometry("physio")]
+            except Exception:
+                pass
 
             # rt_physio writes its log to physio_log_file. The output is
             # discarded; an unread PIPE would block the process when full.
@@ -301,6 +312,34 @@ class RtpTTLPhysio(RTP):
             self.TTLPhysioCom.call_rt_proc("HIDE")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_geometry(self):
+        """Return the geometry ('WxH+X+Y') of the physio plot window, or
+        None if the window is not open (yet) or rt_physio is not
+        available."""
+        if not self.available:
+            return None
+        geo = self.TTLPhysioCom.call_rt_proc(
+            "GET_GEOMETRY", get_return=True, quiet=True)
+        if isinstance(geo, bytes):
+            geo = geo.decode()
+        return geo if isinstance(geo, str) and "x" in geo else None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_window_state(self):
+        """Return the state of the physio plot window: 'normal' (shown),
+        'iconic' (minimized), 'withdrawn' (hidden), or None if the window
+        is not open (yet) or rt_physio is not available."""
+        if not self.available:
+            return None
+        state = self.TTLPhysioCom.call_rt_proc(
+            "GET_WINDOW_STATE", get_return=True, quiet=True)
+        if isinstance(state, bytes):
+            state = state.decode()
+        if state in ("normal", "iconic", "withdrawn"):
+            return state
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def move(self, geometry):
         """Set the geometry ('WxH+X+Y') of the physio plot window."""
         if self.available:
@@ -346,6 +385,20 @@ class RtpTTLPhysio(RTP):
         if self.available:
             args = ("SAVE_PHYSIO_DATA", onset, series_duration, fname_fmt)
             self.TTLPhysioCom.call_rt_proc(args, pkl=True)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_ttl_onsets(self, n=2000):
+        """Return the last n TTL onset times (sorted, without NaN), read
+        from the shared ring buffer (no RPC call, so it can be used for
+        every volume). An empty array if rt_physio is not connected."""
+        rbuf = self._rbuf.get("ttl_onsets") if self._rbuf else None
+        if rbuf is None:
+            return np.array([])
+        try:
+            ttl = np.asarray(rbuf.get_tail(n), dtype=float)
+        except Exception:
+            return np.array([])
+        return np.sort(ttl[~np.isnan(ttl)])
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def dump(self):

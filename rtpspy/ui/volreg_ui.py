@@ -7,16 +7,16 @@ GUI panel of RtpVolreg, with the motion plot window
 
 # %% import ===================================================================
 import sys
-import time
 import traceback
 import logging
 
 import numpy as np
-from PyQt5 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore
 
-from ..rtp_volreg import RtpVolreg
-from .module_ui import RtpModuleUI
+from ..rtp_volreg import RtpVolreg, framewise_displacement
+from .module_ui import RtpModuleUI, value_combo
 from .widgets import MatplotlibWindow
+from . import window_place
 
 
 # %% RtpVolregUI ==============================================================
@@ -52,13 +52,13 @@ class RtpVolregUI(RtpModuleUI):
 
         # ref_vol
         var_lb = QtWidgets.QLabel("Base volume :")
-        o.ui_baseVol_cmbBx = QtWidgets.QComboBox()
-        o.ui_baseVol_cmbBx.addItems(['external file',
-                                     'index of internal run'])
+        o.ui_baseVol_cmbBx = value_combo(
+            [('File...', 'external file'),
+             ('Volume of this run...', 'index of internal run')])
         o.ui_baseVol_cmbBx.activated.connect(
                 lambda idx:
                 o.set_param('ref_vol',
-                            o.ui_baseVol_cmbBx.currentText(),
+                            o.ui_baseVol_cmbBx.currentData(),
                             o.ui_baseVol_cmbBx.setCurrentIndex))
         ui_rows.append((var_lb, o.ui_baseVol_cmbBx))
 
@@ -76,11 +76,11 @@ class RtpVolregUI(RtpModuleUI):
             o.ui_baseVol_lnEd.setText(str(o.ref_fname))
         elif not isinstance(o.ref_vol, int):
             o.ui_baseVol_cmbBx.setCurrentIndex(1)
-            o.ui_baseVol_lnEd.setText("Set from the internal run")
+            o.ui_baseVol_lnEd.setText("Set from this run")
         else:
             o.ui_baseVol_cmbBx.setCurrentIndex(1)
             o.ui_baseVol_lnEd.setText(
-                    f"Internal run volume index {o.ref_vol}")
+                    f"Volume {o.ref_vol} of this run")
 
         # regmode
         var_lb = QtWidgets.QLabel("Resampling :")
@@ -97,8 +97,9 @@ class RtpVolregUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_regmode_cmbBx])
 
         # max_scan_length
-        var_lb = QtWidgets.QLabel("Maximum scan length :")
+        var_lb = QtWidgets.QLabel("Max scan length :")
         o.ui_maxLen_spBx = QtWidgets.QSpinBox()
+        o.ui_maxLen_spBx.setSuffix(" volumes")
         o.ui_maxLen_spBx.setMinimum(1)
         o.ui_maxLen_spBx.setMaximum(9999)
         o.ui_maxLen_spBx.setValue(o.max_scan_length)
@@ -117,33 +118,27 @@ class RtpVolregUI(RtpModuleUI):
     # --- Motion plot ---------------------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def open_motion_plot(self):
-        if hasattr(self, 'thPltMotion') and self.thPltMotion.isRunning():
+        if hasattr(self, 'pltMotion') and self.pltMotion.isRunning():
             return
 
-        self.thPltMotion = QtCore.QThread()
         self.pltMotion = PlotMotion(self.obj, main_win=self.obj.main_win)
-        self.pltMotion.moveToThread(self.thPltMotion)
-        self.thPltMotion.started.connect(self.pltMotion.run)
-        self.pltMotion.finished.connect(self.thPltMotion.quit)
-        self.thPltMotion.start()
+        self.pltMotion.run()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def close_motion_plot(self):
-        if hasattr(self, 'thPltMotion') and self.thPltMotion.isRunning():
-            self.pltMotion.abort = True
-            if not self.thPltMotion.wait(1):
-                self.pltMotion.finished.emit()
-                self.thPltMotion.wait()
-
-            del self.thPltMotion
-
         if hasattr(self, 'pltMotion'):
+            pltMotion = self.pltMotion
             del self.pltMotion
+            pltMotion.end_thread()
 
         main_win = self.obj.main_win
         if main_win is not None:
-            if main_win.chbShowMotion.checkState() != 0:
-                main_win.chbShowMotion.setCheckState(0)
+            if main_win.chbShowMotion.isChecked():
+                main_win.chbShowMotion.setChecked(False)
+
+
+# FD (mm) at and above which a volume is marked red in the motion plot
+FD_WARN_MM = 0.5
 
 
 # %% PlotMotion ===============================================================
@@ -163,21 +158,17 @@ class PlotMotion(QtCore.QObject):
         self.plt_win = MatplotlibWindow()
         self.plt_win.setWindowTitle('Motion')
 
-        # Set the position
-        if main_win is not None:
-            main_geom = main_win.geometry()
-            x = main_geom.x() + main_geom.width() + 10
-            y = main_geom.y() + 400
-        else:
-            x, y = (0, 0)
-        self.plt_win.setGeometry(x, y, 500, 500)
+        # Next to the main window (window_place.py)
+        window_place.set_geometry(self.plt_win, main_win, "motion")
 
         # Set the axes
         self.mot_labels = ['roll (deg.)', 'pitch (deg.)', 'yaw (deg.)',
-                           'dS (mm)', 'dL (mm)', 'dP (mm)', 'FD']
+                           'dS (mm)', 'dL (mm)', 'dP (mm)', 'FD (mm)']
         self._axes = self.plt_win.canvas.figure.subplots(7, 1)
-        self.plt_win.canvas.figure.subplots_adjust(
-                left=0.15, bottom=0.08, right=0.95, top=0.97, hspace=0.35)
+        # Margins fitted to the tick and axis labels (they are not cut in a
+        # narrow window)
+        self.plt_win.canvas.figure.set_layout_engine(
+            "constrained", w_pad=0.04, h_pad=0.03)
         self._ln = []
         for ii, ax in enumerate(self._axes):
             ax.set_ylabel(self.mot_labels[ii])
@@ -186,109 +177,124 @@ class PlotMotion(QtCore.QObject):
             if ii < 6:
                 ax.set_ylim(-0.1, 0.1)
             else:
-                # FD alarm thresholds
-                ax.axhline(0.2, c='k', ls=':', lw=0.5)
-                ax.axhline(0.3, c='r', ls='--', lw=0.5)
-                ax.set_ylim(0, 0.5)
+                # FD warning threshold
+                ax.axhline(FD_WARN_MM, c='r', ls='--', lw=0.5)
+                ax.set_ylim(0, FD_WARN_MM + 0.1)
         ax.set_xlabel('TR')
 
         self.plt_win.show()
         self.plt_win.canvas.draw()
 
+        # Qt widgets must be updated in the GUI thread. A timer in the
+        # GUI thread polls the motion parameters and updates the plot.
+        self._fd_alarm_bands = []
+        self._plt_xi = []
+        self._running = False
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._update_plot)
+
     # ---------------------------------------------------------------------
     def run(self):
-        self._fd_alarm_bands = []
-        plt_xi = self.root._plt_xi.copy()
-        while self.plt_win.isVisible() and not self.abort:
-            if self.main_win is not None and not self.main_win.isVisible():
-                break
+        """Start updating the plot."""
+        self._plt_xi = self.root._plt_xi.copy()
+        self._running = True
+        self._timer.start()
 
-            if len(self.root._plt_xi) == len(plt_xi):
-                # No new volume
-                time.sleep(0.1)
-                continue
+    # ---------------------------------------------------------------------
+    def isRunning(self):
+        return self._running
 
-            try:
-                plt_xi = np.array(self.root._plt_xi.copy())
-                plt_motion = self.root._plt_motion
-                # Framewise displacement: sum of the absolute
-                # differences of the six parameters
-                plt_FD = np.zeros_like(plt_motion[0])
-                if len(plt_motion[0]) > 1:
-                    plt_FD[1:] = np.sum(
-                        np.abs(np.diff(np.array(plt_motion), axis=1)),
-                        axis=0)
+    # ---------------------------------------------------------------------
+    def _update_plot(self):
+        main_closed = (
+            self.main_win is not None and not self.main_win.isVisible()
+        )
+        if not self.plt_win.isVisible() or self.abort or main_closed:
+            self.end_thread()
+            return
 
-                for ii, ax in enumerate(self._axes):
-                    yl = ax.get_ylim()
-                    if ii < len(plt_motion):
-                        ll = min(len(plt_xi), len(plt_motion[ii]))
-                        if ll == 0:
-                            continue
-                        self._ln[ii][0].set_data(plt_xi[:ll],
-                                                 plt_motion[ii][:ll])
-                        ymin = np.nanmin(plt_motion[ii]) - \
-                            np.diff(yl) * 0.1
-                        ymax = np.nanmax(plt_motion[ii]) + \
-                            np.diff(yl) * 0.1
-                    else:
-                        ll = min(len(plt_xi), len(plt_FD))
-                        if ll == 0:
-                            continue
-                        self._ln[ii][0].set_data(plt_xi[:ll],
-                                                 plt_FD[:ll])
-                        ymin = np.nanmin(plt_FD) - np.diff(yl) * 0.1
-                        ymax = np.nanmax(plt_FD) + np.diff(yl) * 0.1
+        if len(self.root._plt_xi) == len(self._plt_xi):
+            # No new volume
+            return
 
-                    # Expand ylim in steps of 0.05
-                    if ymin < yl[0] or ymax > yl[1]:
-                        ymin = min(ymin, yl[0])
-                        ymin = np.floor(ymin/0.05)*0.05
-                        ymax = max(ymax, yl[1])
-                        ymax = np.ceil(ymax/0.05)*0.05
-                        ax.set_ylim([ymin, ymax])
+        try:
+            plt_xi = np.array(self.root._plt_xi.copy())
+            self._plt_xi = list(plt_xi)
+            plt_motion = self.root._plt_motion
+            # Framewise displacement (Power et al., 2012; the same as the FD
+            # of REGRESS): rotations converted to mm on a 50 mm sphere
+            n_mot = min(len(m) for m in plt_motion)
+            plt_FD = framewise_displacement(
+                np.array([m[:n_mot] for m in plt_motion]).T)
 
-                    ax.relim()
-                    ax.autoscale_view()
+            for ii, ax in enumerate(self._axes):
+                yl = ax.get_ylim()
+                if ii < len(plt_motion):
+                    ll = min(len(plt_xi), len(plt_motion[ii]))
+                    if ll == 0:
+                        continue
+                    self._ln[ii][0].set_data(plt_xi[:ll],
+                                             plt_motion[ii][:ll])
+                    ymin = np.nanmin(plt_motion[ii]) - \
+                        (yl[1] - yl[0]) * 0.1
+                    ymax = np.nanmax(plt_motion[ii]) + \
+                        (yl[1] - yl[0]) * 0.1
+                else:
+                    ll = min(len(plt_xi), len(plt_FD))
+                    if ll == 0:
+                        continue
+                    self._ln[ii][0].set_data(plt_xi[:ll],
+                                             plt_FD[:ll])
+                    ymin = np.nanmin(plt_FD) - (yl[1] - yl[0]) * 0.1
+                    ymax = np.nanmax(plt_FD) + (yl[1] - yl[0]) * 0.1
 
-                    xl = ax.get_xlim()
-                    if (plt_xi[-1]//10 + 1)*10 > xl[1]:
-                        ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
+                # Expand ylim in steps of 0.05
+                if ymin < yl[0] or ymax > yl[1]:
+                    ymin = min(ymin, yl[0])
+                    ymin = np.floor(ymin/0.05)*0.05
+                    ymax = max(ymax, yl[1])
+                    ymax = np.ceil(ymax/0.05)*0.05
+                    ax.set_ylim([ymin, ymax])
 
-                # Mark volumes with a large FD
-                for band in self._fd_alarm_bands:
-                    band.remove()
+                ax.relim()
+                ax.autoscale_view()
 
-                self._fd_alarm_bands = []
-                fd_mark_02_idx = np.argwhere(
-                    (plt_FD >= 0.2) & (plt_FD < 0.3)).ravel()
-                fd_mark_03_idx = np.argwhere(plt_FD >= 0.3).ravel()
+                xl = ax.get_xlim()
+                if (plt_xi[-1]//10 + 1)*10 > xl[1]:
+                    ax.set_xlim([0, (plt_xi[-1]//10 + 1)*10])
 
-                ax_FD = self._axes[-1]
-                for x in plt_xi[fd_mark_02_idx]:
-                    band = ax_FD.axvspan(x-1, x, ec='k', fc='yellow',
-                                         alpha=0.3, linewidth=0.1)
-                    self._fd_alarm_bands.append(band)
+            # Mark volumes with a large FD
+            for band in self._fd_alarm_bands:
+                band.remove()
 
-                for x in plt_xi[fd_mark_03_idx]:
-                    band = ax_FD.axvspan(x-1, x, ec='k', fc='red',
-                                         alpha=0.3, linewidth=0.1)
-                    self._fd_alarm_bands.append(band)
+            self._fd_alarm_bands = []
+            fd_mark_idx = np.argwhere(
+                plt_FD[:len(plt_xi)] >= FD_WARN_MM).ravel()
 
-                self.plt_win.canvas.draw()
+            ax_FD = self._axes[-1]
+            for x in plt_xi[fd_mark_idx]:
+                band = ax_FD.axvspan(x-1, x, ec='k', fc='red',
+                                     alpha=0.3, linewidth=0.1)
+                self._fd_alarm_bands.append(band)
 
-            except Exception as e:
-                exc_type, exc_obj, exc_tb = sys.exc_info()
-                errmsg = ''.join(
-                    traceback.format_exception(exc_type, exc_obj, exc_tb))
-                self._logger.error(str(e) + '\n' + errmsg)
-                sys.stderr.write(errmsg)
-                continue
+            self.plt_win.canvas.draw()
 
-        self.end_thread()
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            errmsg = ''.join(
+                traceback.format_exception(exc_type, exc_obj, exc_tb))
+            self._logger.error(str(e) + '\n' + errmsg)
+            sys.stderr.write(errmsg)
 
     # ---------------------------------------------------------------------
     def end_thread(self):
+        """Stop updating and close the plot (called in the GUI thread)."""
+        if not self._running:
+            return
+        self._running = False
+        self._timer.stop()
+
         if self.plt_win.isVisible():
             self.plt_win.close()
 
@@ -296,4 +302,4 @@ class PlotMotion(QtCore.QObject):
 
         if self.main_win is not None:
             if hasattr(self.main_win, 'chbShowMotion'):
-                self.main_win.chbShowMotion.setCheckState(0)
+                self.main_win.chbShowMotion.setChecked(False)

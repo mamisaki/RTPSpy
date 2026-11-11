@@ -28,53 +28,53 @@ For the reference functional images, both a positional reference (e.g., sbref) a
 
 ### Convert DICOM files received in real time  
 Let's convert the DICOM files of the anatomical and reference functional images.   
-- Press the 'dcm2niix' button on the 'Preprocessing' tab in the 'App' panel.  
+- Press the 'DICOM to NIfTI (dcm2niix)' button on the 'Preprocessing' tab in the 'App' panel.  
 - Selct folder where the DICOM files for the current session stored.  
 
 The 'dcm2niix' command will run for the selected folder, and the converted NIfTI files will be saved in the 'working' directory.
 
 ## 4. Set the template and reference files
 ### Set 'Anatomy image' and 'Base function image'  
-Once the NIfTI images are ready, use the 'Set' buttons to assign the 'Anatomy Image' and 'Base Function Image.  
+Once the NIfTI images are ready, use the 'Set' buttons to assign the 'Anatomy' and 'Base function' images.  
 <img src="/example/ROI-NF/doc/MaskCreation.png" height=400>  
 
 ### Set the template files
-Press the 'Template' tab and set the 'Template brain' and 'ROI on template' files. These files hsould be prepared before the scanning session.
+Press the 'Template' tab and set the 'Template' and 'ROI' files. These files hsould be prepared before the scanning session.
 
 > White matter and ventricle segmentation are performed in the native image space by FastSeg during the mask creation process. Therefore, 'White Matter on Template' and 'Ventricle on Template' do not need to be set. However, if FastSeg is unavailable, these images will be used to generate the masks.
 <img src="/example/ROI-NF/doc/SetTemplate.png" height=400>  
 
 ## 5. Create masks
-Go to the 'Preprocessing' tab and click the 'Create Masks' button.  
+Go to the 'Preprocessing' tab and click the 'Create masks' button.  
 > [!NOTE]  
-> If a GPU is not available, 'No FastSeg' will be selected. In this case, 3dSkullStrip and template white matter and ventricle masks will be used instead of FastSeg.  
+> If a GPU is not available, 'Skip FastSeg' will be selected. In this case, 3dSkullStrip and template white matter and ventricle masks will be used instead of FastSeg.  
 
 The 'Mask Image Creation' dialog will then open.
 <img src="/example/ROI-NF/doc/MaskCreationDlg.png" height=200>  
 
-### Display the masks in AFNI  
-Press the buttons in the 'Display the Masks in AFNI' box to verify image alignment.
-The AFNI GUI will open, showing the created mask image overlaid on the reference image.
+### Check the images  
+Press the buttons in the 'Check the images' box to verify image alignment.
+An image viewer opens, showing the created mask overlaid on the reference image in three orthogonal views (sagittal, coronal, axial). Click on a view to move the cursor, use the mouse wheel to change the slice, and set the overlay opacity with the slider. 'Image viewer' shows the base function image; the Base and Overlay menus of the viewer choose the images to show.
 
 ## 6. Set an external application  
 > [!NOTE]  
 > This step can be skipped if the setup was completed in a previous session and loaded via the 'Load Previous Settings?' prompt at startup.  
 
-The external application that receives the ROI signals in real time can be configured in the 'Ext App' tab.  
+The external application that receives the ROI signals in real time can be configured in the 'External app' tab.  
 <img src="/example/ROI-NF/doc/ExtApp.png" height=400>  
 
-The 'App Command:' field displays the command line used to launch the external application.  
+The 'Command' field displays the command line used to launch the external application.  
 > Edit the options --screen, --size, and --pos to adjust the PsychoPy window's shape and position.
 
 The example application, a PsychoPy script named NF_psypy.py, demonstrates how to receive ROI signals from RTPSpy in real time. It simply displays the received values on the screen.  
 
-Press the 'Run App' button to open the application window.  
+Press the 'Start the app' button to open the application window.  
 > - It may take a minute to load, depending on the PsychoPy installation environment.  
 > - The initial window displays the address and port of the application server (RTP_SERV) for communication with RTPSpy.  
 > - You can quit this sample application by pressing 'ESC' when the window has a focus.
 
 ### 5. RTP setup
-1. Set the 'fMRI Parameter Reference' image on the 'Preprocessing' tab. The parameter reference must use the same scanning parameters as the real-time fMRI scan (e.g., image space, TR, and multiband settings).  
+1. Set the 'fMRI parameters' image on the 'Preprocessing' tab. The parameter reference must use the same scanning parameters as the real-time fMRI scan (e.g., image space, TR, and multiband settings).  
 
 2. Press the 'RTP Setup' button to configure the real-time processing parameters. If the application window is not already open, it will launch automatically.  
 
@@ -99,7 +99,7 @@ You are now ready to start the scan.
 - If the TTL signal trigger is set (refer to [Cardiogram, Respiration, and Scan Timing TTL Signal Recording](./PhysioRecording.md)), the RTP and PsychoPy application will start automatically with the trigger input.  
 - Alternatively, you can start the process manually by pressing the 'Manual Start' button.
 
-> Regression begins after receiving a certain number of images, as specified in the 'RTP' -> 'REGRESS' -> 'Wait REGRESS Until' field.
+> Regression begins after receiving a certain number of images, as specified in the 'RTP' -> 'REGRESS' -> 'Start after' field.
 
 This boilerplate PsychoPy application simply displays the received values. To create a functional feedback application, edit the script at '[example/ROI-NF/NF_psypy.py](/example/ROI-NF/NF_psypy.py)'  
 

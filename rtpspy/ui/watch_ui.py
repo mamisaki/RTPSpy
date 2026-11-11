@@ -8,7 +8,7 @@ GUI panel of RtpWatch
 # %% import ===================================================================
 from pathlib import Path
 
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 from .module_ui import RtpModuleUI
 
@@ -44,7 +44,7 @@ class RtpWatchUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_wdir_lnEd])
 
         # file_type
-        var_lb = QtWidgets.QLabel("Watch file type :")
+        var_lb = QtWidgets.QLabel("File type :")
         o.ui_watchFType_cmbBx = QtWidgets.QComboBox()
         o.ui_watchFType_cmbBx.addItems(o._supported_file_types)
         o.ui_watchFType_cmbBx.setCurrentText(o.file_type)
@@ -59,7 +59,7 @@ class RtpWatchUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_watchFType_cmbBx])
 
         # watch_file_pattern
-        var_lb = QtWidgets.QLabel("Watch pattern :")
+        var_lb = QtWidgets.QLabel("File name pattern :")
         o.ui_watchPat_lnEd = QtWidgets.QLineEdit()
         o.ui_watchPat_lnEd.setText(str(o.watch_file_pattern))
         o.ui_watchPat_lnEd.editingFinished.connect(
@@ -73,7 +73,7 @@ class RtpWatchUI(RtpModuleUI):
         o.ui_objs.extend([var_lb, o.ui_watchPat_lnEd])
 
         # read_timeout
-        var_lb = QtWidgets.QLabel("File reading timeout :")
+        var_lb = QtWidgets.QLabel("Read timeout :")
         o.ui_dcmreadTimeout_dSpBx = QtWidgets.QDoubleSpinBox()
         o.ui_dcmreadTimeout_dSpBx.setMinimum(0.0)
         o.ui_dcmreadTimeout_dSpBx.setSingleStep(0.1)
@@ -90,7 +90,11 @@ class RtpWatchUI(RtpModuleUI):
 
         # polling_observer check
         o.ui_pollingObserver_chb = QtWidgets.QCheckBox(
-            "Use PollingObserver")
+            "Poll the directory (for network drives)")
+        o.ui_pollingObserver_chb.setToolTip(
+            "Check the directory at intervals (watchdog PollingObserver)"
+            " instead of file system events, which network drives may"
+            " not send")
         o.ui_pollingObserver_chb.setChecked(o.polling_observer)
         o.ui_pollingObserver_chb.stateChanged.connect(
             lambda: o.set_param(
@@ -103,7 +107,7 @@ class RtpWatchUI(RtpModuleUI):
         o.ui_objs.extend([o.ui_pollingObserver_chb])
 
         # polling_timeout
-        var_lb = QtWidgets.QLabel("Polling timeout :")
+        var_lb = QtWidgets.QLabel("Polling interval :")
         o.ui_pollingTimeout_dSpBx = QtWidgets.QDoubleSpinBox()
         o.ui_pollingTimeout_dSpBx.setMinimum(0.0)
         o.ui_pollingTimeout_dSpBx.setSingleStep(0.1)

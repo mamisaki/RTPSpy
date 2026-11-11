@@ -108,10 +108,12 @@ class ROINF(RtpApp):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def ready_to_run(self):
-        super().ready_to_run()
+        proc_chain = super().ready_to_run()
 
         # Send a READY message to the external application
         if self.send_extApp('READY;'.encode()):
             recv = self.recv_extApp(timeout=3)
             if recv is not None:
                 self._logger.debug(f"Recv {recv.decode()}")
+
+        return proc_chain

@@ -17,7 +17,7 @@ import logging
 import shutil
 
 import numpy as np
-from PyQt5 import QtWidgets
+from PyQt6 import QtWidgets
 
 # RTP application and utility functions and classes
 from rtpspy.rtp_common import excepthook, save_parameters, load_parameters
@@ -91,8 +91,9 @@ if __name__ == '__main__':
     # Ask whether to load the previous settings
     load = QtWidgets.QMessageBox.question(
         None, 'Load parameters', 'Load previous settings?',
-        QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
-    if load == QtWidgets.QMessageBox.Yes:
+        QtWidgets.QMessageBox.StandardButton.Yes,
+        QtWidgets.QMessageBox.StandardButton.No)
+    if load == QtWidgets.QMessageBox.StandardButton.Yes:
         # The saved parameters override rtp_params
         load_parameters(all_rtp_objs, fname='RTPSpy_ROINF_params.pkl')
 
@@ -101,7 +102,7 @@ if __name__ == '__main__':
     try:
         rtp_ui.show()
         rtp_ui.show_physio_chk(2)
-        exit_code = app.exec_()
+        exit_code = app.exec()
 
     except Exception as e:
         with open('rtpspy.error', 'w') as fd:

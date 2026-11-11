@@ -11,9 +11,9 @@ import subprocess
 import time
 
 import numpy as np
-from PyQt5 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore, QtGui
 import matplotlib as mpl
-from matplotlib.backends.backend_qt5agg import FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.figure import Figure
 
 # Font size of the plot windows
@@ -55,7 +55,8 @@ class DlgProgressBar(QtWidgets.QDialog):
         # console output
         self.desc_pTxtEd = QtWidgets.QPlainTextEdit(self)
         self.desc_pTxtEd.setReadOnly(True)
-        self.desc_pTxtEd.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.desc_pTxtEd.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
         vBoxLayout.addWidget(self.desc_pTxtEd)
 
         # Cancel button
@@ -107,7 +108,7 @@ class DlgProgressBar(QtWidgets.QDialog):
         QtWidgets.QApplication.instance().processEvents()
 
     def add_desc(self, txt):
-        self.desc_pTxtEd.moveCursor(QtGui.QTextCursor.End)
+        self.desc_pTxtEd.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         self.desc_pTxtEd.insertPlainText(txt)
 
         sb = self.desc_pTxtEd.verticalScrollBar()

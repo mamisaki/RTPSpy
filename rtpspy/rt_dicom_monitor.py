@@ -17,7 +17,6 @@ import re
 from threading import Lock
 import time
 import os
-from multiprocessing import Process
 
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -28,10 +27,16 @@ try:
     from .dicom_reader import DicomReader
     from .dicom_converter import DicomConverter
     from .rpc_socket_server import RPCSocketServer, RPCSocketCom
+    from .mp_context import mp_ctx
 except Exception:
     from dicom_reader import DicomReader
     from dicom_converter import DicomConverter
     from rpc_socket_server import RPCSocketServer, RPCSocketCom
+    from mp_context import mp_ctx
+
+# The DICOM conversion process runs a bound method with the 'fork' start
+# method on Linux (see mp_context.py)
+Process = mp_ctx.Process
 
 
 # %% class RtDcmMonitor =======================================================
