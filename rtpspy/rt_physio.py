@@ -558,6 +558,24 @@ def check_physio_signals(card, resp, fs, device=None):
     }
 
 
+# %% physio file names ========================================================
+def _tsv_split(path):
+    """(stem, extension) of a .tsv or .tsv.gz path; the extension of other
+    names is replaced with .tsv."""
+    path = Path(path)
+    name = path.name
+    for ext in (".tsv.gz", ".tsv"):
+        if name.endswith(ext):
+            return path.parent / name[:-len(ext)], ext
+    return path.with_suffix(""), ".tsv"
+
+
+def _tsv_sidecar(path):
+    """JSON sidecar of a .tsv or .tsv.gz file."""
+    stem, _ = _tsv_split(path)
+    return stem.parent / (stem.name + ".json")
+
+
 # %% load_bids_physio =========================================================
 def load_bids_physio(tsv_file):
     """Read a BIDS physiological recording.
@@ -3637,7 +3655,7 @@ class RtPhysio:
         if key in self._physio_warned:
             return
         self._physio_warned.add(key)
-        run = re.sub(r"_physio\.tsv$", "", name)
+        run = re.sub(r"_physio\.tsv(\.gz)?$", "", name)
         text = {
             ("respiratory", "none"): "RESPIRATION: not detected. Check the "
             "respiration belt.",
@@ -3864,7 +3882,7 @@ class RtPhysio:
                         ttl_onsets - scan_onset
                     )
 
-                ttl_onset_stem = Path(fname_fmt).stem.replace(
+                ttl_onset_stem = _tsv_split(fname_fmt)[0].name.replace(
                     "physio", "PulseOnset"
                 )
                 ttl_onset_fname = self._output_path(
@@ -3898,7 +3916,7 @@ class RtPhysio:
                         ttl_offsets - scan_onset
                     )
 
-                ttl_offset_stem = Path(fname_fmt).stem.replace(
+                ttl_offset_stem = _tsv_split(fname_fmt)[0].name.replace(
                     "physio", "PulseOffset"
                 )
                 ttl_offset_fname = self._output_path(
@@ -4009,9 +4027,12 @@ class RtPhysio:
         physio_df["trigger"] = trigger
 
         tsv_path = self._output_path(
-            Path(fname_fmt).with_suffix(".tsv"), "physio", replace
+            Path(str(_tsv_split(fname_fmt)[0]) + _tsv_split(fname_fmt)[1]),
+            "physio", replace
         )
-        json_fname = tsv_path.with_suffix(".json")
+        # A .tsv.gz name (BIDS) is written gzip-compressed (pandas infers
+        # the compression from the extension)
+        json_fname = _tsv_sidecar(tsv_path)
 
         physio_df.to_csv(tsv_path, sep="\t", index=False, header=False)
         metadata = {
@@ -4051,7 +4072,7 @@ class RtPhysio:
                     continue
                 stale = [path]
                 if kind == "physio":
-                    stale.append(path.with_suffix(".json"))
+                    stale.append(_tsv_sidecar(path))
                 for f in stale:
                     if f.is_file():
                         f.unlink()
@@ -4075,10 +4096,12 @@ class RtPhysio:
         if kind in replace:
             return Path(replace[kind])
         path = Path(path)
-        stem, ii = path.stem, 0
+        stem, ext = _tsv_split(path) if ".tsv" in path.name else \
+            (path.with_suffix(""), path.suffix)
+        ii = 0
         while path.is_file():
             ii += 1
-            path = path.with_name(f"{stem}_{ii}{path.suffix}")
+            path = path.parent / f"{stem.name}_{ii}{ext}"
         return path
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

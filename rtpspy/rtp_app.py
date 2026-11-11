@@ -44,6 +44,7 @@ try:
     from .rtp_serve import boot_RTP_SERVE_app, pack_data
     from .rtp_ttl_physio import RtpTTLPhysio
     from .rtp_latency import VolumeLatency
+    from . import bids_name as bn
 
 except ImportError:
     # Run as a script (no parent package)
@@ -62,6 +63,7 @@ except ImportError:
     from rtpspy.rtp_serve import boot_RTP_SERVE_app, pack_data
     from rtpspy.rtp_ttl_physio import RtpTTLPhysio
     from rtpspy.rtp_latency import VolumeLatency
+    from rtpspy import bids_name as bn
 
 
 # %% Constants and helper functions ===========================================
@@ -295,6 +297,9 @@ class RtpApp(RTP):
 
         # Online QC of the latest volume passed from REGRESS (see do_proc)
         self.qc_last = None
+        # BIDS entities of the output files of the scan (fixed by
+        # _init_scan_entities when the first volume arrives)
+        self._scan_ent = None
         # endregion
 
         # region: RTP module instances ----------------------------------------
@@ -403,8 +408,76 @@ class RtpApp(RTP):
         if "qc" in kwargs:
             self.qc_last = kwargs["qc"]
 
+        if self._scan_ent is None:
+            try:
+                self._init_scan_entities(fmri_img)
+            except Exception:
+                self._logger.error(traceback.format_exc())
+
         super().do_proc(fmri_img, vol_idx=vol_idx,
                         pre_proc_time=pre_proc_time, **kwargs)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _out_dirs(self):
+        """Output directories of a scan: work_dir/RTP and work_dir/log."""
+        work_dir = Path(self.work_dir)
+        rtp_dir = work_dir if work_dir.name == "RTP" else work_dir / "RTP"
+        return rtp_dir, work_dir / "log"
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _init_scan_entities(self, fmri_img=None):
+        """
+        Fix the BIDS entities (sub, ses, task, run) of the output files of
+        the scan, and set them to the modules of the processing chain.
+
+        The entities are those of WATCH (from the DICOM header, or the name
+        of the received file), or else read from the name of fmri_img. A
+        missing run gets the next free number, and a repeat of a scan whose
+        files exist gets 'rep<k>' in desc (see
+        bids_name.resolve_scan_entities). The physio data of the scan are
+        saved by rt_physio as log/<entities>_physio.tsv.gz.
+        """
+        ent = None
+        watch = self.rtp_objs.get("WATCH")
+        if watch is not None and watch.enabled and \
+                getattr(watch, "bids_entities", None):
+            ent = dict(watch.bids_entities)
+        if ent is None and fmri_img is not None:
+            fname = fmri_img.get_filename()
+            if fname:
+                ent = bn.entities_from_filename(fname)
+        if ent is None:
+            ent = {"sub": "unknown", "task": "rtp"}
+
+        rtp_dir, log_dir = self._out_dirs()
+        ent = bn.resolve_scan_entities(ent, [rtp_dir, log_dir])
+
+        meta = {}
+        for mod in ("TSHIFT", "REGRESS"):
+            obj = self.rtp_objs.get(mod)
+            TR = getattr(obj, "TR", None) if obj is not None else None
+            if TR:
+                meta["RepetitionTime"] = float(TR)
+                break
+
+        # The modules of the processing chain (and self, at its end)
+        root_proc = next(
+            (obj for rtp, obj in self.rtp_objs.items()
+             if rtp != "TTLPHYSIO" and obj is not None and obj.enabled),
+            self)
+        root_proc.set_out_entities(ent, meta)
+        self.set_out_entities(ent, meta)
+        self._scan_ent = ent
+        self._logger.info(
+            f"Output files of this scan: {bn.bids_name(ent, '*')}")
+
+        # File name of the physio data saved by rt_physio at the scan end
+        ttl = self.rtp_objs.get("TTLPHYSIO")
+        if ttl is not None and getattr(ttl, "available", False):
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ttl.set_physio_fname(
+                str(log_dir.absolute() / bn.bids_name(ent, "physio",
+                                                      ".tsv.gz")))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _process(self, fmri_img, vol_idx, pre_proc_time):
@@ -623,13 +696,13 @@ class RtpApp(RTP):
             total_ETA -= self.proc_times["ANTs"]
 
         # Output directory: work_dir/RTP
-        work_dir = self.work_dir
-        if work_dir.name != 'RTP':
-            out_dir = work_dir / 'RTP'
-            if not out_dir.is_dir():
-                out_dir.mkdir(parents=True)
-        else:
-            out_dir = work_dir
+        out_dir = self._out_dirs()[0]
+        if not out_dir.is_dir():
+            out_dir.mkdir(parents=True)
+
+        # BIDS names of the output files
+        names = bn.MaskNames(out_dir, self.anat_orig, func_orig,
+                             template_f=self.template)
 
         st0 = time.time()
         OK = True
@@ -637,7 +710,7 @@ class RtpApp(RTP):
 
         try:
             # region: Get the image space and deoblique the anatomy -----------
-            # The space label (e.g., ORIG) is copied to vr_base_*.
+            # The space label (e.g., ORIG) is copied to the boldref.
             func_space = None
             try:
                 func_space = (
@@ -650,19 +723,15 @@ class RtpApp(RTP):
             except Exception:
                 pass
 
-            anat_orig = out_dir / Path(self.anat_orig).name
+            anat_orig = names.anat
             improc.copy_deoblique(
                 self.anat_orig, anat_orig, progress_bar=progress_bar,
                 overwrite=overwrite
             )
             # endregion
 
-            # region: 0. Copy func_orig to out_dir as vr_base_* ---------------
-            if (
-                Path(func_orig).parent != out_dir
-                or not Path(func_orig).stem.startswith("vr_base_")
-                or overwrite
-            ):
+            # region: 0. Copy func_orig to out_dir as <entities>_boldref ------
+            if Path(func_orig) != names.boldref or overwrite:
                 # AFNI sub-brick selector (e.g., func.nii.gz'[0]' or
                 # func.nii.gz[0]). The last volume is used if not specified.
                 sel_pat = r"[\'\"]*\[(\d+)\][\'\"]*$"
@@ -680,12 +749,7 @@ class RtpApp(RTP):
                     src_f.name
                 )
 
-                if not src_f_stem.startswith("vr_base_"):
-                    src_save_fname = "vr_base_" + src_f_stem
-                else:
-                    src_save_fname = src_f_stem
-
-                dst_f = out_dir / f"{src_save_fname}.nii.gz"
+                dst_f = names.boldref
                 if (
                     dst_f != Path(func_orig) and
                     (not dst_f.is_file() or overwrite)
@@ -705,7 +769,7 @@ class RtpApp(RTP):
                         print(ostr.decode())
 
                 # json sidecar file (the name RtpTshift looks for)
-                dst_json_f = out_dir / f"{src_save_fname}.json"
+                dst_json_f = names.boldref_json
                 if not dst_json_f.is_file() or overwrite:
                     # Copy the json file of the source image if it exists.
                     # Look also for the name without 'vr_base_' and in the
@@ -764,12 +828,21 @@ class RtpApp(RTP):
             if not no_FastSeg:
                 # FastSeg makes the brain, WM, Vent, and aseg segmentations.
                 improc.fastSeg_batch_size = self.fastSeg_batch_size
+                anat_src = Path(self.anat_orig).name
                 seg_files = improc.run_fast_seg(
                     out_dir,
                     anat_orig,
                     total_ETA,
                     progress_bar=progress_bar,
                     overwrite=overwrite,
+                    out_files={
+                        "Brain": names.brain,
+                        "WM": names.anat_mask("WM"),
+                        "Vent": names.anat_mask("Vent"),
+                        "aseg": names.anat_mask("aseg")},
+                    bias_correction=("N4BCOR.nii" not in anat_src and
+                                     "desc-biascorr" not in anat_src),
+                    bc_f=names.anat_biascorr,
                 )
                 assert seg_files is not None
                 self.set_param("brain_anat_orig", seg_files[0])
@@ -786,6 +859,7 @@ class RtpApp(RTP):
                     progress_bar=progress_bar,
                     ask_cmd=ask_cmd,
                     overwrite=overwrite,
+                    out_f=names.brain,
                 )
                 # skullStrip returns -1 when the command edit is canceled
                 assert brain_anat_orig not in (None, -1), \
@@ -806,6 +880,7 @@ class RtpApp(RTP):
                     total_ETA,
                     progress_bar=progress_bar,
                     overwrite=overwrite,
+                    out_files=(names.boldref_sdc, names.sdc_invwarp),
                 )
                 assert sdc_invwarp is not None, (
                     "Distortion correction failed.\n"
@@ -823,17 +898,22 @@ class RtpApp(RTP):
             do_invsdc = bool(self.sdc_invwarp) and \
                 Path(self.sdc_invwarp).is_file()
 
+            # Images made in the corrected space are named with space-sdc
+            sdc_space = "sdc" if do_invsdc else None
+
             def apply_invsdc(img_f, interpolator):
-                """Warp img_f into the uncorrected func_orig space."""
+                """Warp img_f into the uncorrected func_orig space. The
+                output name is img_f without 'space-sdc'."""
                 return improc.ants_warp_resample(
                     out_dir,
                     img_f,
                     self.func_orig,
                     [self.sdc_invwarp],
-                    suffix="_invsdc",
                     interpolator=interpolator,
                     progress_bar=progress_bar,
                     overwrite=overwrite,
+                    out_f=Path(img_f).parent / Path(img_f).name.replace(
+                        "_space-sdc", ""),
                 )
             # endregion
 
@@ -846,12 +926,14 @@ class RtpApp(RTP):
                 progress_bar=progress_bar,
                 ask_cmd=ask_cmd,
                 overwrite=overwrite,
+                out_f=names.alanat,
+                xfm_f=names.alanat_xfm,
             )
             assert alAnat is not None, "align_anat2epi failed.\n"
+            names.spatial_reference(alAnat)
             self.set_param("alAnat", alAnat)
 
-            alAnat_f_stem = self.alAnat.stem.replace(".nii", "")
-            aff1D_f = out_dir / (alAnat_f_stem + "_mat.aff12.1D")
+            aff1D_f = names.alanat_xfm
             assert aff1D_f.is_file()
             # endregion
 
@@ -865,6 +947,8 @@ class RtpApp(RTP):
                 progress_bar=progress_bar,
                 ask_cmd=ask_cmd,
                 overwrite=overwrite,
+                out_files=(names.func_mask("RTP", space=sdc_space),
+                           names.func_mask("GSR", space=sdc_space)),
             )
             assert mask_files is not None
 
@@ -894,6 +978,9 @@ class RtpApp(RTP):
                     progress_bar=progress_bar,
                     ask_cmd=ask_cmd,
                     overwrite=overwrite,
+                    out_files=(names.template_xfm("affine"),
+                               names.template_xfm("warp"),
+                               names.template_xfm("invwarp")),
                 )
                 # warp_template returns None or -1 on failure or cancel
                 assert warp_params not in (None, -1), \
@@ -911,6 +998,7 @@ class RtpApp(RTP):
                     interpolator=self.ROI_resample,
                     progress_bar=progress_bar,
                     overwrite=overwrite,
+                    out_f=names.roi(self.ROI_template, space=sdc_space),
                 )
                 assert ROI_orig is not None
                 self.set_param("ROI_orig", ROI_orig)
@@ -951,8 +1039,10 @@ class RtpApp(RTP):
                             interpolator=interpolator,
                             progress_bar=progress_bar,
                             overwrite=overwrite,
+                            out_f=names.template_on_anat(segname),
                         )
                         assert seg_anat_f is not None
+                        names.spatial_reference(seg_anat_f)
                         seg_aff1D_f = None
                     else:
                         seg_anat_f = fastseg_files[segname]
@@ -970,6 +1060,7 @@ class RtpApp(RTP):
                         progress_bar=progress_bar,
                         ask_cmd=ask_cmd,
                         overwrite=overwrite,
+                        out_f=names.func_mask(segname, space=sdc_space),
                     )
                     assert seg_al_f is not None
 
@@ -1219,6 +1310,7 @@ class RtpApp(RTP):
         The first module of the process chain (None if RTP is disabled).
         """
         self._logger.debug("ready_to_run")
+        self._scan_ent = None
 
         # Disable the UI to block parameter changes
         if self.enable_RTP > 0 and self.main_win is not None:
@@ -1414,14 +1506,11 @@ class RtpApp(RTP):
                         self._logger.info(f"Recv {recv.decode()}")
 
             if self.enable_RTP > 0:
-                if scan_name is None or scan_name is False:
-                    if (
-                        self.rtp_objs["WATCH"].enabled
-                        and self.rtp_objs["WATCH"].scan_name is not None
-                    ):
-                        scan_name = self.rtp_objs["WATCH"].scan_name
-                    else:
-                        scan_name = f"scan_{time.strftime('%Y%m%d%H%M')}"
+                # BIDS entities of the output files of this scan
+                # (scan_name is not used)
+                if self._scan_ent is None:
+                    self._init_scan_entities()
+                ent = self._scan_ent
 
                 # Save the parameters
                 all_params = {}
@@ -1431,21 +1520,21 @@ class RtpApp(RTP):
 
                 all_params[self.__class__.__name__] = self.get_params()
 
-                save_dir = self.work_dir / "log"
+                save_dir = self._out_dirs()[1]
                 if not save_dir.is_dir():
-                    save_dir.mkdir()
+                    save_dir.mkdir(parents=True)
 
-                save_f = save_dir / f"rtp_params_{scan_name}.txt"
-                with open(save_f, "w") as fd:
-                    for rtp, opt_dict in all_params.items():
-                        fd.write(f"# {rtp}\n")
-                        for k in sorted(opt_dict.keys()):
-                            fd.write(f"{k}: {opt_dict[k]}\n")
+                save_f = save_dir / bn.bids_name(ent, "params", ".json",
+                                                 desc="rtpspy")
+                bn.write_json(save_f, {
+                    rtp: {k: opt_dict[k] for k in sorted(opt_dict.keys())}
+                    for rtp, opt_dict in all_params.items()})
                 save_fnames["RTP parameters"] = save_f
 
                 # Save ROI signals
                 if len(self._roi_sig) > 0:
-                    roi_save_f = save_dir / f"ROI_sig_{scan_name}.csv"
+                    roi_save_f = save_dir / bn.bids_name(
+                        ent, "timeseries", ".tsv", desc="roi")
                     self.save_ROI_sig(
                         roi_save_f,
                         self._plt_xi,
@@ -1455,8 +1544,8 @@ class RtpApp(RTP):
                     save_fnames["ROI signals"] = roi_save_f
 
                 # Save the latency of each volume
-                lat_f = self.latency.save_csv(
-                    save_dir / f"latency_{scan_name}.csv")
+                lat_f = self.latency.save_tsv(save_dir / bn.bids_name(
+                    ent, "timeseries", ".tsv", desc="latency"))
                 if lat_f is not None:
                     save_fnames["Latency"] = lat_f
 
@@ -1654,70 +1743,45 @@ class RtpApp(RTP):
                 ):
                     delFiles[rmattr] = Path(getattr(self, rmattr))
 
-            # Intermediate files in the make_masks output directory
-            # (work_dir/RTP). Nothing is searched if work_dir is not set.
-            work_dir = Path(self.work_dir)
-            if str(self.work_dir) == "":
-                out_dir = None
-            elif work_dir.name != "RTP":
-                out_dir = work_dir / "RTP"
-            else:
-                out_dir = work_dir
-
-            brain_anat_orig = Path(getattr(self, "brain_anat_orig", ""))
-            if (
-                not brain_anat_orig.is_file()
-                and self.anat_orig
-                and out_dir is not None
-            ):
-                # Brain image name made by make_masks from anat_orig
-                anat_orig = Path(self.anat_orig)
-                anat_prefix = anat_orig.name.replace(
-                    "".join(anat_orig.suffixes[-2:]), ""
-                )
-                anat_prefix = anat_prefix.replace("+orig", "").replace(
-                    "+tlrc", ""
-                )
-                brain_anat_orig = out_dir / (anat_prefix + "_Brain.nii.gz")
-                if brain_anat_orig.is_file():
-                    self.brain_anat_orig = brain_anat_orig
-                    delFiles["brain_anat_orig"] = brain_anat_orig
-
-            if brain_anat_orig.is_file():
-                WM_anat = (
-                    brain_anat_orig.parent
-                    / brain_anat_orig.name.replace("Brain", "WM")
-                )
-                if WM_anat.is_file():
-                    delFiles["WM_anat"] = WM_anat
-
-                Vent_anat = (
-                    brain_anat_orig.parent
-                    / brain_anat_orig.name.replace("Brain", "Vent")
-                )
-                if Vent_anat.is_file():
-                    delFiles["Vent_anat"] = Vent_anat
-
-                # e.g., anat_Brain_alFunc_mat.aff12.1D
-                alfunc_pat = brain_anat_orig.name.replace(
-                    ".nii.gz", ""
-                ).replace(".nii", "") + "_alFunc"
-                for rmf in brain_anat_orig.parent.glob(f"*{alfunc_pat}*"):
-                    attr = rmf.stem.replace(alfunc_pat, "alFunc")
-                    delFiles[attr] = rmf
-
-            if out_dir is not None:
-                for rmf in out_dir.glob("template2orig_*"):
-                    attr = rmf.stem.replace("template2orig_", "")
-                    delFiles[attr] = rmf
-
-            if hasattr(self, "func_orig") and Path(self.func_orig).is_file():
-                fbase = re.sub(r"\+.*", "", Path(self.func_orig).name)
-                func_mask = (
-                    Path(self.func_orig).parent / f"automask_{fbase}.nii.gz"
-                )
-                if func_mask.is_file():
-                    delFiles["func_mask"] = func_mask
+            # Other files made by make_masks in work_dir/RTP (BIDS names
+            # from anat_orig and func_orig). Nothing is searched if
+            # work_dir, anat_orig, or func_orig is not set.
+            if str(self.work_dir) and self.anat_orig and self.func_orig:
+                names = bn.MaskNames(self._out_dirs()[0], self.anat_orig,
+                                     self.func_orig,
+                                     template_f=self.template)
+                cands = {
+                    "anat_copy": names.anat,
+                    "anat_biascorr": names.anat_biascorr,
+                    "brain_anat": names.brain,
+                    "WM_anat": names.anat_mask("WM"),
+                    "Vent_anat": names.anat_mask("Vent"),
+                    "aseg_anat": names.anat_mask("aseg"),
+                    "alAnat_json": names.alanat.parent /
+                    (bn.name_stem(names.alanat) + ".json"),
+                    "alAnat_xfm": names.alanat_xfm,
+                    "alAnat_xfm_e2a": names.alanat_xfm.parent /
+                    names.alanat_xfm.name.replace(
+                        "_mode-image_xfm", "_mode-image_desc-e2aonly_xfm"),
+                    "template_affine": names.template_xfm("affine"),
+                    "template_warp": names.template_xfm("warp"),
+                    "template_invwarp": names.template_xfm("invwarp"),
+                    "boldref_sdc": names.boldref_sdc,
+                    "sdc_invwarp": names.sdc_invwarp,
+                }
+                for seg in ("WM", "Vent"):
+                    f = names.template_on_anat(seg)
+                    cands[f"{seg}_template_anat"] = f
+                    cands[f"{seg}_template_anat_json"] = f.parent / (
+                        bn.name_stem(f) + ".json")
+                for seg in ("RTP", "GSR", "WM", "Vent", "aseg"):
+                    cands[f"{seg}_sdc"] = names.func_mask(seg, space="sdc")
+                if self.ROI_template:
+                    cands["ROI_sdc"] = names.roi(self.ROI_template,
+                                                 space="sdc")
+                for attr, ff in cands.items():
+                    if ff.is_file() and attr not in delFiles:
+                        delFiles[attr] = ff
 
         for attr, ff in delFiles.items():
             if not keepfile:
@@ -1752,12 +1816,13 @@ class RtpApp(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_ROI_sig(self, save_f, ti, roi_sig, roi_label=[]):
         """
-        Save the ROI signals extracted in RTP.
+        Save the ROI signals extracted in RTP as a BIDS TSV file ('n/a' for
+        missing values) with a JSON sidecar.
 
         Parameters
         ----------
         save_f : Path or str
-            Output file path.
+            Output file path (.tsv).
         ti : list of int
             Time (TR) indices.
         roi_sig : array-like
@@ -1781,7 +1846,11 @@ class RtpApp(RTP):
             }
         )
 
-        savedf.to_csv(save_f, index=False)
+        bn.write_tsv(savedf, save_f, columns_info={
+            "TR": {"Description": "1-based number of the volume from the "
+                   "scan start"}} | {
+            lab: {"Description": f"Mean signal in the ROI '{lab}' of the "
+                  "processed image"} for lab in roi_label[:len(roi_sig)]})
 
     # --- Session control in the GUI ------------------------------------------
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1856,7 +1925,18 @@ class RtpApp(RTP):
             progress_bar.add_desc(f"Run {cmd} ...")
             time.sleep(0.1)  # Give the UI time to update the dialog
 
-        extApp_addr, extApp_proc = boot_RTP_SERVE_app(cmd, timeout=timeout)
+        # Output of the application: <work_dir>/log/extApp_<program>_<time>.log
+        log_dir = Path(self.work_dir) / "log" if str(self.work_dir) else \
+            Path("log")
+        # Named after the script (e.g., 'boot_psychopy.sh NF_psypy.py ...'
+        # -> NF_psypy) or the program
+        prog = next((a for a in cmd.split() if a.endswith(".py")),
+                    cmd.split()[0])
+        out_file = log_dir / (
+            f"extApp_{Path(prog).stem}_"
+            f"{time.strftime('%Y%m%d_%H%M%S')}.log")
+        extApp_addr, extApp_proc = boot_RTP_SERVE_app(
+            cmd, timeout=timeout, out_file=out_file)
 
         if extApp_addr is None:
             # extApp_proc holds the error message
@@ -1870,6 +1950,8 @@ class RtpApp(RTP):
         if progress_bar is not None:
             progress_bar.add_desc(" done.")
 
+        self._logger.info(
+            f"External application output: {extApp_proc.out_file}")
         self.set_param("extApp_addr", extApp_addr)
         # Keep the process and its group ID to kill it later
         self.extApp_proc = extApp_proc

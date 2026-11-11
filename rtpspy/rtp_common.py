@@ -30,10 +30,12 @@ try:
     from .rtp_volume import RtpVolume
     from .notifier import get_notifier, default_notifier
     from .mp_context import mp_ctx
+    from . import bids_name as bn
 except Exception:
     from rtpspy.rtp_volume import RtpVolume
     from rtpspy.notifier import get_notifier, default_notifier
     from rtpspy.mp_context import mp_ctx
+    from rtpspy import bids_name as bn
 
 # Shared memory objects of RingBuffer, for the processes started with the
 # 'fork' start method (see mp_context.py)
@@ -79,6 +81,12 @@ class RTP(object):
         self.saved_files = []
         self._temp_saved_files = []  # files written by save_temp
         self.saved_filename = None  # File of the concatenated saved data
+        # BIDS entities of the output files of the scan (set by
+        # set_out_entities; see bids_name.resolve_scan_entities) and the
+        # metadata for the image sidecar (e.g., RepetitionTime)
+        self._out_entities = None
+        self._out_meta = {}
+        self._last_out_entities = None
         self.saved_data = None
         self._saved_last_idx = -1  # 0-based index of the last saved volume
         self.enabled = True
@@ -151,6 +159,9 @@ class RTP(object):
     _proc_label = "Process"
     # Prefix added to the filename of the processed image (e.g., 'vr.')
     _out_prefix = ""
+    # desc entity of the saved processed image (desc-<_bids_desc>_bold).
+    # None: the class name without 'Rtp', in lowercase.
+    _bids_desc = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def do_proc(self, fmri_img, vol_idx=None, pre_proc_time=None, **kwargs):
@@ -447,6 +458,11 @@ class RTP(object):
             self._temp_saved_files = []
             self.saved_data = None
             self._saved_last_idx = -1
+            # Kept for the outputs saved after this (e.g., the QC table of
+            # RtpRegress)
+            self._last_out_entities = self._out_entities
+            self._out_entities = None
+            self._out_meta = {}
 
         # Reset the following process
         if self.next_proc:
@@ -597,15 +613,67 @@ class RTP(object):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_proc_delay(self):
+        """Save the processing time of each volume as
+        work_dir/RTP/<entities>_desc-<module>proctime_timeseries.tsv."""
         save_dir = Path(self.work_dir) / 'RTP'
         if not save_dir.is_dir():
-            save_dir.mkdir()
+            save_dir.mkdir(parents=True)
 
-        save_fname = os.path.join(
-            save_dir, f"{self.__class__.__name__}_proc_delay_"
-            f"{time.strftime('%Y%m%d_%H%M%S')}.txt")
-        np.savetxt(save_fname, self.proc_delay, delimiter='\n')
+        save_fname = save_dir / bn.bids_name(
+            self.out_entities(), "timeseries", ".tsv",
+            desc=f"{self.bids_desc}proctime")
+        bn.write_tsv(
+            pd.DataFrame({"proc_delay": np.asarray(self.proc_delay,
+                                                   dtype=float)}),
+            save_fname,
+            columns_info={"proc_delay": {
+                "Description": f"Processing time of {self._proc_label} "
+                "for each processed volume (from the end of the previous "
+                "module)", "Units": "s"}})
         return save_fname
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @property
+    def bids_desc(self):
+        """desc entity of the outputs of this module (e.g., 'volreg')."""
+        if self._bids_desc is not None:
+            return self._bids_desc
+        return bn.bids_label(
+            re.sub(r"^Rtp", "", self.__class__.__name__).lower()) or "rtp"
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_out_entities(self, entities, meta=None):
+        """
+        Set the BIDS entities (and the image sidecar metadata, e.g.,
+        {'RepetitionTime': 2.0}) of the output files of the scan, for this
+        module and the following ones. RtpApp sets them when the scan
+        starts to output (see bids_name.resolve_scan_entities); None
+        resets them.
+        """
+        rtp = self
+        while rtp is not None:
+            rtp._out_entities = None if entities is None else dict(entities)
+            rtp._out_meta = dict(meta or {})
+            rtp = getattr(rtp, 'next_proc', None)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def out_entities(self):
+        """
+        BIDS entities of the output files of the scan: the ones set by
+        set_out_entities, or else the entities read from the name of the
+        first kept volume (resolved in work_dir/RTP, and kept for the other
+        outputs of the scan).
+        """
+        if self._out_entities is None:
+            src = self.saved_files[0] if len(self.saved_files) else ''
+            ent = bn.entities_from_filename(src) if src else \
+                {'sub': 'unknown', 'task': 'rtp'}
+            ent = bn.resolve_scan_entities(
+                ent, [Path(self.work_dir) / 'RTP',
+                      Path(self.work_dir) / 'log'])
+            # The same entities for the following modules of the scan
+            self.set_out_entities(ent, self._out_meta)
+        return self._out_entities
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
@@ -639,8 +707,9 @@ class RTP(object):
                             save_prefix=''):
         """
         Save the kept volumes (from the first processed volume to the last
-        kept one) as a 4D NIfTI file. The filename is made from the common
-        part of saved_files, or from save_prefix if saved_files is empty.
+        kept one) as a 4D NIfTI file in work_dir/RTP, named
+        <entities>_desc-<module>_bold.nii.gz (see out_entities), with a
+        JSON sidecar. save_prefix (deprecated) replaces the desc label.
         """
 
         # --- Start message ---
@@ -652,35 +721,36 @@ class RTP(object):
             self._logger.info("Saving the processed data. Please wait ...")
 
         # --- Set filename ---
-        if len(saved_files):
-            # Characters common to all the saved filenames (compared at the
-            # same position), without the volume and channel numbers
-            common_str = re.sub(r'\.nii.*', '', saved_files[0])
-            for ff in saved_files[1:]:
-                common_str = ''.join(
-                    [c for ii, c in enumerate(str(ff)[:len(common_str)])
-                     if c == common_str[ii]])
-
-            savefname0 = re.sub(r'_nr_\d*', '', common_str)
-            savefname0 = re.sub(r'_ch\d*', '', savefname0)
-        else:
-            savefname0 = str(Path(self.work_dir) / 'RTP' / save_prefix)
-
-        # Add a number suffix not to overwrite an existing file
-        savefname = savefname0
-        fn = 1
-        while os.path.isfile(savefname + '.nii.gz'):
-            savefname = f"{savefname0}_{fn}"
-            fn += 1
-        savefname = Path(savefname + '.nii.gz')
-
-        if not savefname.parent.is_dir():
-            os.makedirs(savefname.parent)
+        if len(saved_files) and self._out_entities is None:
+            self.saved_files = list(saved_files)
+        desc = bn.bids_label(save_prefix) or self.bids_desc
+        save_dir = Path(self.work_dir) / 'RTP'
+        savefname = save_dir / bn.bids_name(
+            self.out_entities(), "bold", ".nii.gz", desc=desc)
+        if not save_dir.is_dir():
+            os.makedirs(save_dir)
 
         # --- Save ---
         start_idx = max(self._proc_start_idx, 0)
         img_data = saved_data[:, :, :, start_idx:self._saved_last_idx + 1]
-        nib.Nifti1Image(img_data, affine).to_filename(savefname)
+        out_img = nib.Nifti1Image(img_data, affine)
+        TR = self._out_meta.get('RepetitionTime')
+        if TR:
+            out_img.header.set_xyzt_units('mm', 'sec')
+            zooms = out_img.header.get_zooms()
+            out_img.header.set_zooms(tuple(zooms[:3]) + (float(TR),))
+        out_img.to_filename(savefname)
+
+        # JSON sidecar
+        meta = {
+            "Description": f"Real-time processed by RTPSpy "
+            f"({self.__class__.__name__}).",
+            "NumberOfVolumesDiscardedByUser": int(start_idx),
+        }
+        meta.update(self._out_meta)
+        meta["RTPSpyModule"] = self.__class__.__name__
+        bn.write_json(savefname.parent / (bn.name_stem(savefname) + ".json"),
+                      meta)
 
         # --- Delete the single-volume files saved with save_temp ---
         for ff in self._temp_saved_files:

@@ -67,7 +67,7 @@ def test_compare_online_offline(test_dir, tmp_path):
     for key in ("metrics", "figure", "report", "roi_series"):
         assert files[key].is_file()
     assert (out_dir / "offline" / "afni_commands.log").is_file()
-    assert any((out_dir / "online" / "RTP").glob("regRes.*.nii.gz"))
+    assert any((out_dir / "online" / "RTP").glob("*_desc-regress_bold.nii.gz"))
 
     metrics = pd.read_csv(files["metrics"])
     assert set(metrics.stage) >= {"VOLREG", "TSHIFT", "SMOOTH", "REGRESS",

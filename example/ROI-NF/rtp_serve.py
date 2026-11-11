@@ -21,6 +21,8 @@ import time
 import traceback
 import shlex
 import zlib
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 
@@ -387,6 +389,7 @@ class RTP_SERVE():
             while time.time() - st < timeout:
                 if not self.server.recv_queue.empty():
                     break
+                time.sleep(0.001)  # Do not busy-wait
 
         if self.server.recv_queue.empty():
             return None
@@ -419,9 +422,26 @@ class RTP_SERVE():
 
 
 # %% boot_RTP_SERVE_app =======================================================
-def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
+def _tail(fname, nbytes=2000):
+    """Last nbytes of a text file ('' if it cannot be read)."""
+    try:
+        with open(fname, 'rb') as fd:
+            fd.seek(0, 2)
+            fd.seek(max(fd.tell() - nbytes, 0))
+            return fd.read().decode('utf-8', 'replace')
+    except Exception:
+        return ''
+
+
+def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False,
+                       out_file=None):
     """
     Boot an external application with RTP_SERVE.
+
+    The standard output and error of the application are appended to
+    out_file. They are not connected to pipes: a pipe that nobody reads
+    fills up (64 KiB on Linux) and then blocks the application at its next
+    print or warning.
 
     Parameters
     ----------
@@ -430,20 +450,35 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
     remote : bool, optional
         Whether the connection is remote or local. The default is False
         (local).
-    timeout : float, optional
-        Time (s) to wait for the application to send back its RTP_SERVE
-        address:port. The default is 5.
+    timeout : float or None, optional
+        Time (s) to wait, in addition to 3 s for the start-up, for the
+        application to send back its RTP_SERVE address:port. None waits
+        until it is sent or the application ends. An application that does
+        not answer in time is terminated. The default is 5.
     verb : bool, optional
         Print logs. The default is False.
+    out_file : str or Path, optional
+        File to which the standard output and error of the application are
+        appended. Its directory is made if needed. The default is
+        rtp_serve_app_<program>_<date>_<time>.log in the system temporary
+        directory.
 
     Returns
     -------
     (host, port), pr : (str, int), subprocess.Popen object
         Host address and port of the RTP_SERVE server and the process running
-        the external application via 'cmd'.
-        On failure, None and an error message are returned.
+        the external application via 'cmd'. pr.out_file is the output file.
+        On failure, None and an error message (with the end of the
+        application output) are returned.
 
     """
+    if out_file is None:
+        prog = Path(shlex.split(cmd)[0]).stem if len(cmd.split()) else 'app'
+        out_file = Path(tempfile.gettempdir()) / (
+            f"rtp_serve_app_{prog}_{time.strftime('%Y%m%d_%H%M%S')}.log")
+    out_file = Path(out_file)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', 0))
     host, port = sock.getsockname()
@@ -455,28 +490,57 @@ def boot_RTP_SERVE_app(cmd, remote=False, timeout=5, verb=False):
         host_addr = 'localhost'
 
     cmd += f" --request_host {host_addr}:{port}"
-    pr = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE)
-    time.sleep(3)  # Wait for the process to start
 
-    if pr.poll() is not None:
-        errmsg = f"Failed: {cmd}"
+    def failed(errmsg):
+        out = _tail(out_file).strip()
+        errmsg += f"\nOutput of the application ({out_file}):"
+        errmsg += f"\n{out}" if out else " (none)"
         if verb:
             sys.stderr.write(f"{errmsg}\n")
         return None, errmsg
 
-    sock.settimeout(timeout)
+    # The child process gets its own handle of the file; the one here is
+    # closed after starting it.
+    with open(out_file, 'ab') as out_fd:
+        out_fd.write(f"=== {datetime.now().isoformat()} {cmd}\n".encode())
+        out_fd.flush()
+        try:
+            pr = subprocess.Popen(shlex.split(cmd), stdout=out_fd,
+                                  stderr=subprocess.STDOUT)
+        except Exception as e:
+            sock.close()
+            return failed(f"Failed: {cmd}\n{e}")
+    pr.out_file = out_file
+
+    # Wait for the address:port from the application, for 3 s (start-up)
+    # plus timeout (None: no limit). Stop waiting if the application ends.
+    deadline = None if timeout is None else time.time() + 3 + timeout
+    sock.settimeout(0.2)
     try:
-        data = sock.recv(1024)
-        host, port = data.decode('utf-8').split(':')
-        port = int(port)
-    except socket.timeout:
-        errmsg = "No response to the request."
-        if verb:
-            sys.stderr.write(f"{errmsg}\n")
-        return None, errmsg
+        while True:
+            try:
+                data = sock.recv(1024)
+                break
+            except socket.timeout:
+                pass
+
+            if pr.poll() is not None:
+                return failed(f"Failed: {cmd} (exit code {pr.returncode})")
+
+            if deadline is not None and time.time() > deadline:
+                # The caller gets no handle of the process; do not leave it
+                # running.
+                pr.terminate()
+                try:
+                    pr.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pr.kill()
+                return failed("No response to the request.")
     finally:
         sock.close()
+
+    host, port = data.decode('utf-8').split(':')
+    port = int(port)
 
     return (host, port), pr
 

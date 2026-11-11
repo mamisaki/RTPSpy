@@ -35,7 +35,8 @@ for your own data and parameters.
 Usage
 -----
 python -m rtpspy.rtp_offline_compare --input func.nii.gz \
-    --masks_dir work/RTP --roi work/RTP/ROI_alFunc.nii.gz \
+    --masks_dir work/RTP \
+    --roi work/RTP/sub-01_task-rest_run-01_label-ROI_mask.nii.gz \
     --card ECG.1D --resp Resp.1D --physio_freq 40 --out compare_out
 
 The AFNI programs (3dvolreg, 3dTshift, 3dBlurInMask) must be on PATH.
@@ -95,9 +96,14 @@ AFNI_VOLREG_INTERP = {'linear': '-linear', 'cubic': '-cubic',
                       'heptic': '-heptic'}
 AFNI_TSHIFT_INTERP = {'linear': '-linear', 'cubic': '-cubic'}
 
-# Mask filenames made by RtpApp.make_masks (glob patterns in masks_dir)
-MASK_PATTERNS = {'RTP': 'RTP_mask.nii*', 'GS': 'GSR_mask.nii*',
-                 'WM': '*_WM_alFunc.nii*', 'Vent': '*_Vent_alFunc.nii*'}
+# Mask filenames made by RtpApp.make_masks (glob patterns in masks_dir):
+# the BIDS names, then the names of the former versions. Files in another
+# space (e.g., '_space-sdc_') are not used.
+MASK_PATTERNS = {
+    'RTP': ('*_desc-RTP_mask.nii*', 'RTP_mask.nii*'),
+    'GS': ('*_desc-GSR_mask.nii*', 'GSR_mask.nii*'),
+    'WM': ('*_label-WM_mask.nii*', '*_WM_alFunc.nii*'),
+    'Vent': ('*_label-Vent_mask.nii*', '*_Vent_alFunc.nii*')}
 
 # Plot colors: online, offline, full-run GLM of the online input
 COLORS = {'online': '#2a78d6', 'offline': '#eb6834', 'fullGLM': '#1baf7a'}
@@ -137,13 +143,22 @@ def find_masks(masks_dir=None, **override):
     keyword arguments (e.g., RTP='mask.nii.gz'). A missing mask is None.
     """
     masks = {}
-    for key, pat in MASK_PATTERNS.items():
+    for key, pats in MASK_PATTERNS.items():
         if override.get(key) is not None:
             masks[key] = Path(override[key])
             continue
         masks[key] = None
         if masks_dir is not None:
-            cands = sorted(Path(masks_dir).glob(pat))
+            cands = []
+            for pat in pats:
+                cands = sorted(
+                    f for f in Path(masks_dir).glob(pat)
+                    if '_space-' not in f.name
+                    # WM/Vent in the anatomy space have no task entity
+                    and (key not in ('WM', 'Vent') or '_task-' in f.name
+                         or pat == pats[-1]))
+                if cands:
+                    break
             if len(cands) > 1:
                 _logger.warning(f"Several {key} masks in {masks_dir}:"
                                 f" {cands}. {cands[0]} is used.")
@@ -919,8 +934,9 @@ def main(argv=None):
         ' offline (AFNI) processing of the same run.')
     parser.add_argument('--input', required=True, help='fMRI run (NIfTI).')
     parser.add_argument('--masks_dir', help='Directory of the masks made by'
-                        ' RtpApp.make_masks (RTP_mask, GSR_mask,'
-                        ' *_WM_alFunc, *_Vent_alFunc).')
+                        ' RtpApp.make_masks (*_desc-RTP_mask,'
+                        ' *_desc-GSR_mask, *_label-WM_mask,'
+                        ' *_label-Vent_mask).')
     parser.add_argument('--rtp_mask', help='Processing mask (overrides'
                         ' masks_dir).')
     parser.add_argument('--gs_mask', help='Global signal mask.')

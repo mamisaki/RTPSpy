@@ -114,13 +114,30 @@ Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnin
 RTPSpy is not a complete application by itself but is intended to be used as part of a user's custom rtfMRI application.
 Example applications using the RTPSpy library are shown below.
 
+### Output files
+RTPSpy names its output files after BIDS (derivatives) as far as the real-time setting allows: `<entities>_<suffix>.<ext>`, with the entities in the BIDS order; tables are TSV files ('n/a' for missing values) with a JSON sidecar describing the columns.
+The entities of a scan come from the DICOM header of its first volume: `sub` is the patient name (the ID of two letters and three digits if it has one), `ses` the study date and time (`YYYYMMDDhhmmss`, as dcm2niix's `%t`), `task` the series description (letters and digits only), and `run` the series number. For NIfTI input, they are read from the file name (a BIDS name, or the name of the DICOM converter, `sub-*_ses-*_ser-*_desc-*`); a name without entities gives `sub-unknown` and `task-<file name>`, and the run is the next free number. If files of the same scan exist (e.g., the same series replayed), the new files get `rep<k>` in `desc` instead of overwriting them.
+
+| Folder | File | Content |
+|---|---|---|
+| `RTP/` | `<scan>_desc-<module>_bold.nii.gz` (+ `.json`) | Processed images saved by a module (`volreg`, `tshift`, `smooth`, `regress`); the sidecar has `RepetitionTime` and `NumberOfVolumesDiscardedByUser` (volumes before the first processed one) |
+| `RTP/` | `<scan>_desc-regressqc_timeseries.tsv` | Online QC of REGRESS (FD, DVARS, tSNR, censored) |
+| `RTP/` | `<scan>_desc-<module>proctime_timeseries.tsv` | Processing time of each volume (with 'save_delay') |
+| `log/` | `<scan>_desc-rtpspy_params.json` | Parameters of the modules and the application |
+| `log/` | `<scan>_desc-roi_timeseries.tsv` | ROI signals |
+| `log/` | `<scan>_desc-latency_timeseries.tsv` | Latency of each volume (see below) |
+| `log/` | `<scan>_physio.tsv.gz` (+ `.json`) | Cardiac and respiration signals and the TTL triggers, saved by rt_physio at the scan end |
+
+`<scan>` is `sub-<label>[_ses-<label>]_task-<label>_run-<index>`.
+The masks made by `RtpApp.make_masks` are in `RTP/`, named with the entities of the anatomy image (`sub-*[_ses-*]_T1w.nii.gz`, `_desc-brain_T1w`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`) or of the base function image (`<scan>_boldref.nii.gz` and its `.json`, `<scan>_desc-RTP_mask`, `_desc-GSR_mask`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`, `_label-<ROI>_mask`). The anatomy aligned to the function image is `_space-func_desc-brain_T1w` (`func` is the space of the base function image), and the transforms are `_from-T1w_to-func_mode-image_xfm.aff12.1D` (AFNI) and `_from-<template>_to-func_mode-image_desc-{affine,warp,invwarp}_xfm` (ANTs). With distortion correction, the images in the corrected space have `space-sdc`.
+
 ### Processing latency
 RTPSpy records three times for each volume: the acquisition onset from the scanner TTL pulse (recorded by rt_physio), the time the image file was read (RtpWatch), and the time the feedback signal was sent to the external application (or saved to the signal file). From these, two latencies are derived:
 - **TTL → image**: image reconstruction and transfer by the scanner (`acq_to_read`)
 - **image → feedback**: RTPSpy processing (`read_to_fb`)
 
 Check 'Latency' in the 'Use / Show' box to plot them in real time, with the total (**TTL → feedback**, `acq_to_fb`) in the bottom panel. The y range of each panel is fitted to the values. Volumes processed retrospectively (the wait period of RtpRegress) are shown as gray points in the image → feedback and total panels and excluded from their y range and median; the first real-time volume (its processing includes the initial fit) is also excluded from their y range. If no TTL pulse matches a volume (e.g., a manual start without the TTL), its onset is estimated from the scan onset and TR, and it is shown with a hollow marker.
-The values of each volume are saved as `latency_{scan}.csv` in the `log` folder of the working directory at the end of a run (with `vol`, `onset`, `read`, `sent`, `acq_to_read`, `read_to_fb`, `acq_to_fb`, `onset_estimated`, `retrospective`).
+The values of each volume are saved as `<scan>_desc-latency_timeseries.tsv` in the `log` folder of the working directory at the end of a run (with `vol`, `onset`, `read`, `sent`, `acq_to_read`, `read_to_fb`, `acq_to_fb`, `onset_estimated`, `retrospective`).
 The TTL of a volume is the pulse nearest to its expected onset, so both one pulse per volume and one pulse per slice work. The feedback time is recorded when an application sends an `NF {time},{volume_index},...;` message with `RtpApp.send_extApp`, so applications that override `do_proc` (e.g., example/ROI-NF) need no change.
 
 ### Compare real-time and offline processing
@@ -129,10 +146,10 @@ It runs the RTPSpy modules volume by volume (VOLREG → TSHIFT → SMOOTH → RE
 The AFNI programs must be on PATH.
 ```
 python -m rtpspy.rtp_offline_compare --input func.nii.gz --masks_dir work/RTP \
-    --roi work/RTP/ROI_alFunc.nii.gz --card ECG.1D --resp Resp.1D --physio_freq 40 \
+    --roi work/RTP/sub-01_task-rest_run-01_label-ROI_mask.nii.gz --card ECG.1D --resp Resp.1D --physio_freq 40 \
     [--param rtp_params.json] --out compare_out
 ```
-`--masks_dir` is the directory of the masks made by `RtpApp.make_masks` (`RTP_mask`, `GSR_mask`, `*_WM_alFunc`, `*_Vent_alFunc`); each mask can also be given with `--rtp_mask`, `--gs_mask`, `--wm_mask`, `--vent_mask`. `--param` is a JSON file of module parameters (`{"VOLREG": {"regmode": "cubic"}, "REGRESS": {...}, ...}`, the format of `rtp_sim.py`); the default is the setting of `rtpspy_system_check.py`.
+`--masks_dir` is the directory of the masks made by `RtpApp.make_masks` (`*_desc-RTP_mask`, `*_desc-GSR_mask`, `*_task-*_label-WM_mask`, `*_task-*_label-Vent_mask`; the names of the former versions, `RTP_mask`, `GSR_mask`, `*_WM_alFunc`, `*_Vent_alFunc`, are also found); each mask can also be given with `--rtp_mask`, `--gs_mask`, `--wm_mask`, `--vent_mask`. `--param` is a JSON file of module parameters (`{"VOLREG": {"regmode": "cubic"}, "REGRESS": {...}, ...}`, the format of `rtp_sim.py`); the default is the setting of `rtpspy_system_check.py`.
 The output directory has the online module outputs and QC (`online/RTP/`), the offline outputs and the AFNI commands (`offline/`), `metrics.csv`, `roi_series.csv`, and `report.html` (with `report.png`). The metrics are computed over the volumes output by the online pipeline, within the RTP mask: the correlation and maximum difference of each motion parameter, the voxelwise correlation and RMSE of each stage (median and 5th percentile), the ROI mean signal correlation, the noise variance removed by the regression (% of the input variance), and `REGRESS_causal`, the difference between the cumulative (online) GLM and the whole-run GLM applied to the same online input. The `*_realtime_vols` metrics exclude the volumes that REGRESS processes retrospectively at its first fit.
 
 ### Example GUI Applications

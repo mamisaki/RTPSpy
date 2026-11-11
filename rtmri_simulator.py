@@ -27,6 +27,7 @@ import traceback
 
 import numpy as np
 import pandas as pd
+import pydicom
 
 try:
     from dicom_reader import DicomReader
@@ -34,6 +35,114 @@ try:
 except ImportError:
     from rtpspy.dicom_reader import DicomReader
     from rtpspy.rpc_socket_server import RPCSocketCom
+
+
+# %% dicom_time_to_sec ========================================================
+def dicom_time_to_sec(value):
+    """Convert a DICOM time to seconds of the day.
+
+    value: TM (HHMMSS.ffffff) or DT (YYYYMMDDHHMMSS.ffffff) string, or the
+    number pandas reads from the cache CSV (e.g., 93359.826 for TM
+    "093359.826"). A TM must not be used as a number directly: 093400.05 -
+    093359.826 is 40.22, not 0.22 s.
+    (The same function as in RT-MRI simulation/rtmri_simulator.py.)
+    """
+    if value is None:
+        return np.nan
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        v = float(value)
+        if not np.isfinite(v):
+            return np.nan
+        if v >= 1e6:  # DT read as a number: drop the date
+            v = v % 1e6
+        h = int(v // 10000)
+        m = int(v // 100) % 100
+        return h * 3600 + m * 60 + (v - h * 10000 - m * 100)
+    txt = str(value).strip()
+    if not txt:
+        return np.nan
+    if len(txt.split(".")[0]) > 6:  # DT: drop the date
+        txt = txt[8:]
+    try:
+        h = int(txt[0:2])
+        m = int(txt[2:4]) if len(txt) >= 4 else 0
+        sec = float(txt[4:]) if len(txt) > 4 else 0.0
+    except ValueError:
+        return np.nan
+    return h * 3600 + m * 60 + sec
+
+
+def content_sec(content_time):
+    """Seconds of the day of the ContentTime values (a pandas Series),
+    continued over midnight within a series."""
+    sec = content_time.map(dicom_time_to_sec).astype(float)
+    if np.nanmax(sec) - np.nanmin(sec) > 43200:  # Over midnight
+        sec = sec.where(sec >= 43200, sec + 86400)
+    return sec
+
+
+def read_acq_sec(dicom_file):
+    """Acquisition time of a DICOM file in seconds of the day (NaN if the
+    file has no acquisition time).
+    (The same function as in RT-MRI simulation/rtmri_simulator.py.)"""
+    try:
+        dcm = pydicom.dcmread(
+            dicom_file, stop_before_pixels=True,
+            specific_tags=["AcquisitionDateTime", "AcquisitionTime"],
+        )
+    except Exception:
+        return np.nan
+    for tag in ("AcquisitionDateTime", "AcquisitionTime"):
+        if tag in dcm and dcm.get(tag):
+            return dicom_time_to_sec(dcm.get(tag))
+    return np.nan
+
+
+def series_timing(series_df, transfer_delay=0.0):
+    """
+    Times (s from the simulation start) to copy each file and to send each
+    TTL, as on the scanner (from RT-MRI simulation/rtmri_simulator.py, with
+    the transfer delay added):
+
+    - TTL: the acquisition time of each volume (AcquisitionNumber).
+    - File: its image creation time (ContentTime) + transfer_delay, the time
+      to transfer the file to the export directory.
+
+    The first file therefore comes TR + reconstruction + transfer after the
+    first TTL. Without acquisition times (an old cache), a TTL is sent one TR
+    before the first file of each volume (no reconstruction delay).
+
+    series_df needs the columns ContentSec, AcqSec, AcquisitionNumber, and
+    ImageType, in the order of the files to copy.
+    """
+    file_sec = series_df["ContentSec"].values.astype(float)
+    acq_nrs = series_df["AcquisitionNumber"].values
+    acq_sec = series_df["AcqSec"].values.astype(float)
+
+    # Over midnight
+    if np.nanmax(file_sec) - np.nanmin(file_sec) > 43200:
+        file_sec = np.where(file_sec < 43200, file_sec + 86400, file_sec)
+        acq_sec = np.where(acq_sec < 43200, acq_sec + 86400, acq_sec)
+
+    first_file, ttl = {}, {}
+    for nr, a_sec, f_sec in zip(acq_nrs, acq_sec, file_sec):
+        if nr not in first_file:
+            first_file[nr] = f_sec
+            ttl[nr] = a_sec
+    acq_list = sorted(first_file, key=lambda nr: first_file[nr])
+    ff = np.array([first_file[nr] for nr in acq_list])
+    ttl_sec = np.array([ttl[nr] for nr in acq_list])
+    if np.isnan(ttl_sec).any():
+        is_fmri = (
+            "FMRI" in str(series_df.ImageType.values[0]) and len(ff) > 1
+        )
+        TR = float(np.median(np.diff(ff))) if is_fmri else 0.0
+        ttl_sec = np.where(np.isnan(ttl_sec), ff - TR, ttl_sec)
+    ttl_sec = np.sort(ttl_sec)
+
+    file_sec = file_sec + transfer_delay
+    t_ref = min(ttl_sec[0], np.nanmin(file_sec))
+    return file_sec - t_ref, ttl_sec - t_ref
 
 
 # %% RTMRISimulator ===========================================================
@@ -101,6 +210,9 @@ class RTMRISimulator:
             "simulation_output_dir": simulation_output_dir,
             "auto_advance": False,
             "series_interval": 10,
+            # Time (s) to transfer an image file from the scanner to the
+            # export directory (measured on the Siemens RT PC: 0.1-0.25 s)
+            "transfer_delay": 0.2,
         }
 
         self.setup_gui()
@@ -346,6 +458,17 @@ class RTMRISimulator:
         ttk.Entry(
             aa_frame,
             textvariable=self.series_interval_var,
+            width=5
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Transfer delay (s) of the image files (see series_timing)
+        self.transfer_delay_var = tk.DoubleVar(
+            value=self.config["transfer_delay"])
+        ttk.Label(aa_frame, text="Transfer delay (s):").pack(
+            side=tk.LEFT, padx=5)
+        ttk.Entry(
+            aa_frame,
+            textvariable=self.transfer_delay_var,
             width=5
         ).pack(side=tk.LEFT, padx=5)
 
@@ -924,6 +1047,13 @@ class RTMRISimulator:
                     series_df.to_csv(cache_file, index=False)
 
             if series_df is not None and not self.scanning_cancelled:
+                if "AcqSec" not in series_df.columns:
+                    series_df["AcqSec"] = np.nan
+                    self.log_message(
+                        "The cache has no acquisition times. TTLs are sent "
+                        "one TR before each volume's image. Rescan the "
+                        "session to simulate the acquisition timing."
+                    )
                 self.dicom_series = series_df
                 self.root.after(0, self._populate_series_tree)
                 self.log_message("Series information loaded successfully")
@@ -989,6 +1119,7 @@ class RTMRISimulator:
                     info = reader.read_dicom_info(dcm_file, timeout=1)
                     if info:
                         info["FilePath"] = dcm_file
+                        info["AcqSec"] = read_acq_sec(dcm_file)
                         series_dfs.append(pd.DataFrame([info]))
                 except Exception as e:
                     errstr = str(e) + "\n" + traceback.format_exc()
@@ -1002,7 +1133,9 @@ class RTMRISimulator:
                     )
 
             series_df = pd.concat(series_dfs, ignore_index=True)
-            series_df.sort_values("ContentTime", inplace=True)
+            series_df.sort_values(
+                "ContentTime", inplace=True,
+                key=lambda t: t.map(dicom_time_to_sec))
 
             message = (
                 f"Loaded {len(series_df.SeriesNumber.unique())} series "
@@ -1282,10 +1415,11 @@ class RTMRISimulator:
                     self.dicom_series.SeriesNumber == self.current_series_nr
                 ].copy()
 
-                series_df["ContentTime"] = (
-                    series_df["ContentTime"].astype(float)
-                )
-                series_df.sort_values("ContentTime", inplace=True)
+                # Times in seconds (ContentTime is HHMMSS.ffffff, which is
+                # not a number of seconds)
+                series_df["ContentSec"] = content_sec(
+                    series_df["ContentTime"])
+                series_df.sort_values("ContentSec", inplace=True)
                 series_df.reset_index(drop=True, inplace=True)
                 total_files = len(series_df)
 
@@ -1293,34 +1427,13 @@ class RTMRISimulator:
                 if self.current_image_nr > 0:
                     series_df = series_df.iloc[self.current_image_nr:]
 
-                timings = (
-                    series_df["ContentTime"].values -
-                    series_df["ContentTime"].values[0]
-                )
-
-                if (
-                    "FMRI" in series_df.ImageType.values[0] and
-                    len(series_df) > 1
-                ):
-                    # fMRI: a volume (acquisition) every TR, with
-                    # num_echoes files (echoes) per acquisition
-                    AcquisitionNumbers = series_df.AcquisitionNumber
-                    n_echoes = [np.sum(AcquisitionNumbers == an)
-                                for an in AcquisitionNumbers.unique()]
-                    num_echoes = np.max(n_echoes)
-                    echo_tdiff = np.median(
-                        np.diff(series_df["ContentTime"].values))
-                    sel_series = series_df.drop_duplicates("AcquisitionNumber")
-                    timings = np.zeros(len(sel_series) * num_echoes)
-                    TR = np.median(np.diff(sel_series["ContentTime"].values))
-                    timings[sel_series.index] = np.arange(
-                        0, len(sel_series)*TR, TR)
-                    for ei in range(1, num_echoes):
-                        timings[ei::num_echoes] = (
-                            timings[sel_series.index] + ei * echo_tdiff
-                        )
-                else:
-                    TR = 0
+                # TTLs at the acquisition times, files at their image
+                # creation times + the transfer delay (see series_timing)
+                try:
+                    transfer_delay = float(self.transfer_delay_var.get())
+                except (tk.TclError, ValueError):
+                    transfer_delay = 0.0
+                file_t, ttl_t = series_timing(series_df, transfer_delay)
 
                 rel_path = Path(series_df["FilePath"].values[0]).relative_to(
                     self.current_session_path
@@ -1351,10 +1464,13 @@ class RTMRISimulator:
                     pha_series_df = None
 
                 # region: Simulate file creation in a series ------------------
-                # Each file is written after its acquisition (TR) ends.
-                timings += TR
-                acqNr = 0
-                for ii, row in series_df.iterrows():
+                # TTLs on time, images late by the acquisition (TR), the
+                # reconstruction, and the transfer.
+                if not series_output_dir.is_dir():
+                    series_output_dir.mkdir(parents=True, exist_ok=True)
+                st_time = time.time()
+                n_ttl = 0
+                for ii, (_, row) in enumerate(series_df.iterrows()):
                     dicom_file = Path(row["FilePath"])
                     dest_file = series_output_dir / dicom_file.name
                     if pha_series_df is not None:
@@ -1366,27 +1482,19 @@ class RTMRISimulator:
                     else:
                         dest_pha_file = None
 
-                    if ii == 0:  # Scan start
-                        if not dest_file.parent.is_dir():
-                            dest_file.parent.mkdir(parents=True, exist_ok=True)
-                        self.send_pulse()
-                        st_time = time.time()
-
-                    while time.time() - st_time < timings[ii]:
-                        if not self.simulation_running:
+                    # Send the TTLs due before this file, then wait for the
+                    # file time
+                    while self.simulation_running:
+                        now = time.time() - st_time
+                        while n_ttl < len(ttl_t) and ttl_t[n_ttl] <= now:
+                            self.send_pulse()
+                            n_ttl += 1
+                        if now >= file_t[ii]:
                             break
-                        time.sleep(0.01)  # Wait for the content time
+                        time.sleep(0.005)
 
                     if not self.simulation_running:
                         break
-
-                    # TTL pulse at each new acquisition (volume)
-                    if (
-                        row["AcquisitionNumber"] != acqNr and
-                        ii < len(series_df) - 1
-                    ):
-                        self.send_pulse()
-                        acqNr = row["AcquisitionNumber"]
 
                     shutil.copy(dicom_file, dest_file)
                     self.current_image_nr = self.current_image_nr + 1
@@ -1751,6 +1859,8 @@ class RTMRISimulator:
 
             if "series_interval" in self.config:
                 self.series_interval_var.set(self.config["series_interval"])
+            if "transfer_delay" in self.config:
+                self.transfer_delay_var.set(self.config["transfer_delay"])
 
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
@@ -1771,6 +1881,7 @@ class RTMRISimulator:
                 self.output_dir_var.get())
             self.config["auto_advance"] = self.auto_advance_var.get()
             self.config["series_interval"] = self.series_interval_var.get()
+            self.config["transfer_delay"] = self.transfer_delay_var.get()
 
             if self.current_session_path:
                 self.config["current_session_path"] = self.current_session_path

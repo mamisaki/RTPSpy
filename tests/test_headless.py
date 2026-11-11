@@ -80,11 +80,17 @@ def test_make_masks_without_qt(tmp_path):
     for key in ("plain", "progress_dlg"):
         assert res[key]["ret"] is None
         assert res[key]["stdout_restored"]
+        # BIDS names (the test files have no entities: sub-unknown, and
+        # the file name in acq/task)
+        func = "sub-unknown_task-funcepi"
         assert res[key]["masks"] == {
-            "RTP_mask": "RTP_mask.nii.gz", "GSR_mask": "GSR_mask.nii.gz",
-            "WM_orig": "WM_alFunc.nii.gz", "Vent_orig": "Vent_alFunc.nii.gz",
-            "aseg_orig": "aseg_alFunc.nii.gz",
-            "alAnat": "anat_Brain_alFunc.nii.gz"}
+            "RTP_mask": f"{func}_desc-RTP_mask.nii.gz",
+            "GSR_mask": f"{func}_desc-GSR_mask.nii.gz",
+            "WM_orig": f"{func}_label-WM_mask.nii.gz",
+            "Vent_orig": f"{func}_label-Vent_mask.nii.gz",
+            "aseg_orig": f"{func}_desc-aseg_dseg.nii.gz",
+            "alAnat": "sub-unknown_acq-anat_space-func_desc-brain_T1w.nii.gz",
+            "func_orig": f"{func}_boldref.nii.gz"}
     assert res["physio_left"] == []
 
 

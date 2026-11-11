@@ -217,7 +217,7 @@ class FastSeg:
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def prep_files(self, in_f, bias_correction=False, prefix=None,
-                   show_proc_progress=None, ETA=None):
+                   show_proc_progress=None, ETA=None, bc_f=None):
         """
         Prepare the input file for FastSurfer: convert an AFNI BRIK file to
         NIfTI and optionally apply N4 bias field correction.
@@ -237,6 +237,9 @@ class FastSeg:
             on success. If None, the command is run with check_call.
         ETA : float, optional
             Expected time (seconds) passed to show_proc_progress.
+        bc_f : str or Path, optional
+            Output file of the bias field correction. The default is in_f
+            with '_N4BCOR' added.
 
         Returns
         -------
@@ -278,7 +281,10 @@ class FastSeg:
         if bias_correction:
             in_img = ants.image_read(str(in_f))
             in_img_bc = in_img.n4_bias_field_correction()
-            in_f = in_f.parent / in_f.name.replace('.nii', '_N4BCOR.nii')
+            if bc_f is not None:
+                in_f = Path(bc_f)
+            else:
+                in_f = in_f.parent / in_f.name.replace('.nii', '_N4BCOR.nii')
             ants.image_write(in_img_bc, str(in_f))
 
             # ANTs does not keep the AFNI space; set it again.
@@ -356,7 +362,7 @@ class FastSeg:
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def make_seg_images(self, in_f, fsSeg_mgz, prefix,
                         segs=['aseg', 'Brain', 'WM', 'Vent'],
-                        show_proc_progress=None, ETA=None):
+                        show_proc_progress=None, ETA=None, out_files=None):
         """
         Make mask images in the in_f space from the FastSurfer segmentation.
 
@@ -375,6 +381,8 @@ class FastSeg:
             See prep_files.
         ETA : float, optional
             Expected time (seconds) passed to show_proc_progress.
+        out_files : dict, optional
+            {seg: output file} to replace the default names.
 
         Returns
         -------
@@ -400,7 +408,10 @@ class FastSeg:
 
         out_fs = []
         for seg_name in segs:
-            out_f = str(prefix) + f"_{seg_name}.nii.gz"
+            if out_files is not None and seg_name in out_files:
+                out_f = str(out_files[seg_name])
+            else:
+                out_f = str(prefix) + f"_{seg_name}.nii.gz"
             if seg_name == 'aseg':
                 out_img = ants.apply_transforms(
                     in_img, aseg_img, reg['fwdtransforms'],

@@ -184,27 +184,31 @@ class StubImgProc(rtp_app_mod.RtpImgProc):
     def copy_deoblique(self, src, dst, progress_bar=None, overwrite=False):
         nib.save(nib.load(src), dst)
 
+    def _touch_f(self, f):
+        return self._touch(Path(f).parent, Path(f).name)
+
     def run_fast_seg(self, out_dir, anat, total_ETA, progress_bar=None,
-                     overwrite=False):
-        return [self._touch(out_dir, f"anat_{n}.nii.gz")
+                     overwrite=False, out_files=None, bias_correction=None,
+                     bc_f=None):
+        return [self._touch_f(out_files[n])
                 for n in ("Brain", "WM", "Vent", "aseg")]
 
     def align_anat2epi(self, out_dir, brain, func, total_ETA,
-                       progress_bar=None, ask_cmd=False, overwrite=False):
-        f = self._touch(out_dir, "anat_Brain_alFunc.nii.gz")
-        (Path(out_dir) / "anat_Brain_alFunc_mat.aff12.1D").write_text("0\n")
+                       progress_bar=None, ask_cmd=False, overwrite=False,
+                       out_f=None, xfm_f=None):
+        f = self._touch_f(out_f)
+        Path(xfm_f).write_text("0\n")
         return f
 
     def make_RTP_GSR_masks(self, out_dir, func, total_ETA, ref_vi=0,
                            alAnat=None, progress_bar=None, ask_cmd=False,
-                           overwrite=False):
-        return [self._touch(out_dir, "RTP_mask.nii.gz"),
-                self._touch(out_dir, "GSR_mask.nii.gz")]
+                           overwrite=False, out_files=None):
+        return [self._touch_f(f) for f in out_files]
 
     def resample_segmasks(self, out_dir, seg_f, segname, erode, func,
                           total_ETA, aff1D_f=None, progress_bar=None,
-                          ask_cmd=False, overwrite=False):
-        return self._touch(out_dir, f"{segname}_alFunc.nii.gz")
+                          ask_cmd=False, overwrite=False, out_f=None):
+        return self._touch_f(out_f)
 
 
 def run_make_masks(work_dir):
@@ -225,7 +229,7 @@ def run_make_masks(work_dir):
                 "ret": ret,
                 "masks": {a: Path(getattr(app, a)).name for a in
                           ("RTP_mask", "GSR_mask", "WM_orig", "Vent_orig",
-                           "aseg_orig", "alAnat")},
+                           "aseg_orig", "alAnat", "func_orig")},
                 "stdout_restored": sys.stdout is sys.__stdout__,
             }
     finally:

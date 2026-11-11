@@ -28,15 +28,18 @@ from watchdog.events import FileSystemEventHandler
 try:
     from .rtp_common import RTP
     from .rtp_volume import RtpVolume
+    from . import bids_name as bn
 except Exception:
     # For DEBUG environment
     try:
         sys.path.append("./")
         from rtpspy.rtp_common import RTP
         from rtpspy.rtp_volume import RtpVolume
+        from rtpspy import bids_name as bn
     except Exception:
         from rtp_common import RTP
         from rtp_volume import RtpVolume
+        import bids_name as bn
 
 
 # %% class RtpWatch ===========================================================
@@ -109,6 +112,9 @@ class RtpWatch(RTP):
         self._proc_ready = False
         self.scan_name = None  # Used for saving a physio signal file.
         self.nii_save_filename = None
+        # BIDS entities of the scan (sub, ses, task, run) from the DICOM
+        # header or the file name of the first volume (see bids_name)
+        self.bids_entities = None
 
         if self.file_type not in self._supported_file_types:
             errmsg = f"file_type = {self.file_type} is not supported."
@@ -126,6 +132,7 @@ class RtpWatch(RTP):
         self._vol_num = 0
         self.scan_name = None
         self.nii_save_filename = None
+        self.bids_entities = None
 
         self._proc_ready = True
         if self.next_proc is not None:
@@ -390,20 +397,12 @@ class RtpWatch(RTP):
             return
 
         if self.nii_save_filename is None:
-            # Set the save filename from the first volume of the series
-            patient = str(dcm.PatientName).split("^")
-            if re.match(r"\w\w\d\d\d", patient[0]):
-                # Subject ID format of two letters and three digits
-                sub = patient[0]
-            else:
-                sub = "_".join(patient)
-            ser = dcm.SeriesNumber
-            serDesc = dcm.SeriesDescription
-            save_filename = f"sub-{sub}_ser-{int(ser)}"
-            if len(serDesc):
-                save_filename += f"_desc-{serDesc}"
-            self.nii_save_filename = self._make_path_safe(save_filename)
-            self.scan_name = f"Ser-{ser}"
+            # Set the save filename from the first volume of the series:
+            # sub-<patient>_ses-<study date time>_task-<series
+            # description>_run-<series number>_bold
+            self.bids_entities = bn.entities_from_dicom(dcm)
+            self.nii_save_filename = bn.bids_name(self.bids_entities, "bold")
+            self.scan_name = f"Ser-{dcm.SeriesNumber}"
 
         nii_fname = self.nii_save_filename + f"_{vol_num:04d}.nii.gz"
         fmri_img.set_filename(nii_fname)
@@ -523,6 +522,9 @@ class RtpWatch(RTP):
                 load_img.dataobj, load_img.affine, header=load_img.header
             )
             fmri_img.set_filename(self.nii_save_filename)
+
+            if self.bids_entities is None:
+                self.bids_entities = bn.entities_from_filename(file_path)
 
             if self.scan_name is None:
                 # scan_name is used for saving a physio signal file.
@@ -901,7 +903,7 @@ class RtpWatch(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_params(self):
         all_opts = super().get_params()
-        excld_opts = ("scan_name", "nii_save_filename")
+        excld_opts = ("scan_name", "nii_save_filename", "bids_entities")
         sel_opts = {}
         for k, v in all_opts.items():
             if k[0] == "_" or k in excld_opts:

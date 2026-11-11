@@ -28,10 +28,40 @@ read_to_fb is not a real-time latency.
 """
 
 # %% import ===================================================================
+from pathlib import Path
+
 import numpy as np
+
+try:
+    from .bids_name import write_json
+except ImportError:
+    from rtpspy.bids_name import write_json
 
 COLUMNS = ("vol", "onset", "onset_estimated", "read", "sent",
            "acq_to_read", "read_to_fb", "acq_to_fb", "retrospective")
+
+# Column descriptions (JSON sidecar of the saved TSV)
+_CLOCK = "time.time() of the RTPSpy PC (Unix time)"
+COLUMNS_INFO = {
+    "vol": {"Description": "0-based index of the volume from the scan "
+            "start"},
+    "onset": {"Description": "Acquisition onset of the volume (the "
+              "matched scanner TTL pulse, or the expected onset if "
+              f"onset_estimated is 1); {_CLOCK}", "Units": "s"},
+    "onset_estimated": {"Description": "The onset is estimated (1) "
+                        "because no TTL pulse was matched, or measured (0)"},
+    "read": {"Description": f"The image file was read; {_CLOCK}",
+             "Units": "s"},
+    "sent": {"Description": "The feedback signal was sent (or saved); "
+             f"{_CLOCK}", "Units": "s"},
+    "acq_to_read": {"Description": "read - onset", "Units": "s"},
+    "read_to_fb": {"Description": "sent - read (RTPSpy processing)",
+                   "Units": "s"},
+    "acq_to_fb": {"Description": "sent - onset", "Units": "s"},
+    "retrospective": {"Description": "Processed after later volumes had "
+                      "been read (1), e.g., in the wait period of REGRESS; "
+                      "read_to_fb is then not a real-time latency"},
+}
 
 
 # %% VolumeLatency ============================================================
@@ -115,25 +145,33 @@ class VolumeLatency:
         d["retrospective"].append(bool(retrospective))
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    def save_csv(self, fname):
-        """Save the records as a CSV file. Returns fname, or None if there
-        is no record."""
+    def save_tsv(self, fname):
+        """Save the records as a BIDS TSV file ('n/a' for missing values)
+        with a JSON sidecar describing the columns. Returns fname, or None
+        if there is no record."""
         if len(self) == 0:
             return None
+        fname = Path(fname)
         with open(fname, "w") as fd:
-            fd.write(",".join(COLUMNS) + "\n")
+            fd.write("\t".join(COLUMNS) + "\n")
             for row in zip(*(self.data[c] for c in COLUMNS)):
                 vals = []
                 for c, v in zip(COLUMNS, row):
                     if isinstance(v, bool):
                         vals.append(str(int(v)))
-                    elif v is None:
-                        vals.append("")
+                    elif v is None or (isinstance(v, float) and
+                                       np.isnan(v)):
+                        vals.append("n/a")
                     elif c in ("onset", "read", "sent"):
                         vals.append(f"{v:.6f}")
                     elif isinstance(v, float):
                         vals.append(f"{v:.4f}")
                     else:
                         vals.append(str(v))
-                fd.write(",".join(vals) + "\n")
+                fd.write("\t".join(vals) + "\n")
+        write_json(fname.parent / (fname.name.replace(".tsv", ".json")),
+                   COLUMNS_INFO)
         return fname
+
+    # Former name
+    save_csv = save_tsv

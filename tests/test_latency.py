@@ -1,4 +1,5 @@
 """Per-volume latency (rtpspy.rtp_latency)."""
+import json
 import numpy as np
 import pytest
 
@@ -47,9 +48,12 @@ def test_record_and_csv(tmp_path):
     assert len(lat) == 2
     assert lat.data["acq_to_read"][1] == pytest.approx(1.4)
     assert lat.data["read_to_fb"][1] == pytest.approx(0.1)
-    f = lat.save_csv(tmp_path / "lat.csv")
+    f = lat.save_tsv(tmp_path / "lat_timeseries.tsv")
     lines = f.read_text().splitlines()
-    assert lines[0] == ",".join(COLUMNS)
-    assert lines[1].split(",")[-1] == "1" and lines[2].split(",")[-1] == "0"
+    assert lines[0] == "\t".join(COLUMNS)
+    assert lines[1].split("\t")[-1] == "1" and \
+        lines[2].split("\t")[-1] == "0"
+    side = json.loads((tmp_path / "lat_timeseries.json").read_text())
+    assert set(side) == set(COLUMNS) and side["onset"]["Units"] == "s"
     lat.reset()
-    assert len(lat) == 0 and lat.save_csv(tmp_path / "x.csv") is None
+    assert len(lat) == 0 and lat.save_tsv(tmp_path / "x.tsv") is None

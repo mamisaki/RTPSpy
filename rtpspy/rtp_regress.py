@@ -25,9 +25,11 @@ import torch
 try:
     from .rtp_common import RTP
     from .rtp_volreg import framewise_displacement
+    from . import bids_name as bn
 except Exception:
     from rtpspy.rtp_common import RTP
     from rtpspy.rtp_volreg import framewise_displacement
+    from rtpspy import bids_name as bn
 
 gpu_available = torch.cuda.is_available() or torch.backends.mps.is_available()
 
@@ -51,6 +53,21 @@ PHYS_REG_OPTS = ('None', 'RICOR8', 'RVT5', 'RVT+RICOR13')
 
 # Columns of the online QC table (see RtpRegress.get_qc_table)
 QC_COLS = ('vol_idx', 'FD', 'DVARS', 'tSNR', 'censored')
+# Column descriptions of the QC table (JSON sidecar of the saved TSV)
+QC_COLUMNS_INFO = {
+    'vol_idx': {'Description': '0-based index of the volume from the scan '
+                'start'},
+    'FD': {'Description': 'Framewise displacement (Power et al., 2012; '
+           'head radius 50 mm) from the previous received volume',
+           'Units': 'mm'},
+    'DVARS': {'Description': 'Root mean square of the volume-to-volume '
+              'difference over the processing mask, relative to the mean '
+              'in-mask signal', 'Units': '%'},
+    'tSNR': {'Description': 'Median over the mask voxels of the running '
+             'temporal SNR (mean / SD) from the first received volume'},
+    'censored': {'Description': 'Censored in the regression (1) or not (0)',
+                 'Levels': {'0': 'not censored', '1': 'censored'}},
+}
 
 
 # %% lstsq_SVDsolver ==========================================================
@@ -977,9 +994,10 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def save_qc(self, image_file=None):
         """
-        Save the QC table as a CSV file. If image_file (the saved processed
-        image) is given, the file is <image_file without .nii*>_QC.csv;
-        otherwise, work_dir/RTP/RtpRegress_QC_<date_time>.csv.
+        Save the QC table as a BIDS TSV file with a JSON sidecar:
+        work_dir/RTP/<entities>_desc-regressqc_timeseries.tsv, with the
+        entities of the scan (those of the saved processed image).
+        image_file is not used (kept for compatibility).
 
         Returns
         -------
@@ -990,15 +1008,11 @@ class RtpRegress(RTP):
         if qc_df is None or len(qc_df) == 0:
             return None
 
-        if image_file is not None:
-            save_f = Path(re.sub(r'\.nii(\.gz)?$', '', str(image_file)) +
-                          '_QC.csv')
-        else:
-            save_f = Path(self.work_dir) / 'RTP' / \
-                f"{self.__class__.__name__}_QC_" \
-                f"{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        ent = self._last_out_entities or self.out_entities()
+        save_f = Path(self.work_dir) / 'RTP' / bn.bids_name(
+            ent, "timeseries", ".tsv", desc=f"{self.bids_desc}qc")
         save_f.parent.mkdir(parents=True, exist_ok=True)
-        qc_df.to_csv(save_f, index=False, float_format='%.6g')
+        bn.write_tsv(qc_df, save_f, columns_info=QC_COLUMNS_INFO)
         self._logger.info(f"Saved the QC table as {save_f}")
         return save_f
 

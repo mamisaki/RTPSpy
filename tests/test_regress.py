@@ -272,12 +272,18 @@ def test_qc_values_and_csv(device, tmp_path):
         for k in ("FD", "DVARS", "tSNR"):
             assert np.isclose(q[k], row[k], equal_nan=True)
 
-    # CSV saved at end_reset next to the processed image
+    # BIDS TSV (with a JSON sidecar) saved at end_reset with the entities
+    # of the processed image
     out = rtp.end_reset()
     qc_f = out["RtpRegress:QC"]
     img_f = out["RtpRegress:processed image"]
-    assert str(qc_f) == str(img_f).replace(".nii.gz", "_QC.csv")
-    df = pd.read_csv(qc_f)
+    assert img_f.name.endswith("_desc-regress_bold.nii.gz")
+    assert qc_f.name == img_f.name.replace(
+        "_desc-regress_bold.nii.gz", "_desc-regressqc_timeseries.tsv")
+    assert qc_f.with_suffix(".json").is_file()
+    assert img_f.parent.joinpath(
+        img_f.name.replace(".nii.gz", ".json")).is_file()
+    df = pd.read_csv(qc_f, sep="\t", na_values="n/a")
     assert list(df.columns) == list(rr.QC_COLS) and len(df) == T - ign
     assert np.allclose(df.FD.values, tab.FD.values, rtol=1e-5,
                        equal_nan=True)

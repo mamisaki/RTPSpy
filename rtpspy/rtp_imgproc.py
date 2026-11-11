@@ -378,7 +378,7 @@ class RtpImgProc(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def run_fast_seg(
         self, work_dir, anat_orig, total_ETA, progress_bar=None,
-        overwrite=False
+        overwrite=False, out_files=None, bias_correction=None, bc_f=None
     ):
         """
         Segment the anatomy image (anat_orig) with FastSeg to make the brain,
@@ -398,6 +398,15 @@ class RtpImgProc(RTP):
         overwrite : bool, optional
             Overwrite existing files. When this is False and the results
             exist, the process is skipped. The default is False.
+        out_files : dict, optional
+            Output files {'Brain', 'WM', 'Vent', 'aseg': Path}. The default
+            is work_dir/<anat_orig name>_<seg>.nii.gz.
+        bias_correction : bool, optional
+            Apply the N4 bias field correction. The default (None) is True
+            unless the anat_orig name has 'N4BCOR.nii'.
+        bc_f : Path, optional
+            Output file of the bias field correction (see
+            FastSeg.prep_files).
 
         Returns
         -------
@@ -410,12 +419,12 @@ class RtpImgProc(RTP):
         self._print_step_header(
             "Brain extraction and WM/Vent segmentation", progress_bar)
 
-        brain_anat_orig = work_dir / (out_prefix + "_Brain.nii.gz")
-        wm_anat_orig = work_dir / (out_prefix + "_WM.nii.gz")
-        vent_anat_orig = work_dir / (out_prefix + "_Vent.nii.gz")
-        aseg_anat_orig = work_dir / (out_prefix + "_aseg.nii.gz")
-        out_files = (brain_anat_orig, wm_anat_orig, vent_anat_orig,
-                     aseg_anat_orig)
+        seg_names = ("Brain", "WM", "Vent", "aseg")
+        if out_files is None:
+            out_files = {seg: work_dir / (out_prefix + f"_{seg}.nii.gz")
+                         for seg in seg_names}
+        seg_files = {seg: Path(out_files[seg]) for seg in seg_names}
+        out_files = tuple(seg_files[seg] for seg in seg_names)
 
         if not overwrite and all([ff.is_file() for ff in out_files]):
             self._report_existing(out_files, progress_bar, total_ETA,
@@ -436,13 +445,15 @@ class RtpImgProc(RTP):
 
         # Prepare the input file (convert BRIK to NIfTI and correct the bias
         # field unless it has been done)
-        bias_correction = "N4BCOR.nii" not in anat_orig.name
+        if bias_correction is None:
+            bias_correction = "N4BCOR.nii" not in anat_orig.name
         in_f, prefix = fastSeg.prep_files(
             anat_orig,
             bias_correction=bias_correction,
             prefix=(work_dir / out_prefix),
             show_proc_progress=show_proc_progress,
             ETA=None,
+            bc_f=bc_f,
         )
         if in_f is None:
             return None
@@ -466,6 +477,7 @@ class RtpImgProc(RTP):
             prefix,
             segs=["Brain", "WM", "Vent", "aseg"],
             show_proc_progress=show_proc_progress,
+            out_files=seg_files,
         )
         if out_fs is None:
             return None
@@ -490,9 +502,11 @@ class RtpImgProc(RTP):
         progress_bar=None,
         ask_cmd=False,
         overwrite=False,
+        out_f=None,
     ):
         """
         Skull-strip the anatomy image (anat_orig) with 3dSkullStrip.
+        The output is out_f (default: work_dir/<anat_orig name>_Brain.nii.gz).
 
         Parameters
         ----------
@@ -520,8 +534,11 @@ class RtpImgProc(RTP):
 
         self._print_step_header("Brain extraction", progress_bar)
 
-        out_prefix = self._out_prefix(anat_orig)
-        brain_anat_orig = work_dir / (out_prefix + "_Brain.nii.gz")
+        if out_f is not None:
+            brain_anat_orig = Path(out_f)
+        else:
+            out_prefix = self._out_prefix(anat_orig)
+            brain_anat_orig = work_dir / (out_prefix + "_Brain.nii.gz")
         if brain_anat_orig.is_file() and not overwrite:
             self._report_existing([brain_anat_orig], progress_bar, total_ETA,
                                   "SkullStrip")
@@ -583,6 +600,7 @@ class RtpImgProc(RTP):
         total_ETA,
         progress_bar=None,
         overwrite=False,
+        out_files=None,
     ):
         """
         Susceptibility distortion correction (SDC) with the reversed
@@ -619,9 +637,15 @@ class RtpImgProc(RTP):
         func_orig_sdc : Path
             Distortion-corrected func_orig.
         """
-        func_stem = func_orig.with_suffix("").stem
-        func_orig_sdc = work_dir / (func_stem + "_sdc.nii.gz")
-        sdc_invwarp = work_dir / (func_stem + "_sdc_invwarp_comptx.nii.gz")
+        # out_files: (func_orig_sdc, sdc_invwarp) to replace the default
+        # names
+        if out_files is not None:
+            func_orig_sdc, sdc_invwarp = (Path(f) for f in out_files)
+        else:
+            func_stem = Path(func_orig).with_suffix("").stem
+            func_orig_sdc = work_dir / (func_stem + "_sdc.nii.gz")
+            sdc_invwarp = work_dir / (
+                func_stem + "_sdc_invwarp_comptx.nii.gz")
         if func_orig_sdc.is_file() and sdc_invwarp.is_file() \
                 and not overwrite:
             self._report_existing([sdc_invwarp], progress_bar, total_ETA,
@@ -667,17 +691,18 @@ class RtpImgProc(RTP):
         func_orig_sdc_aimg = warp_reg["warpedfixout"]
         ants.image_write(func_orig_sdc_aimg, str(func_orig_sdc))
 
-        # Save the warp as a single composite transform file
-        # (sdc_invwarp_stem + 'comptx.nii.gz').
-        sdc_invwarp_stem = work_dir / sdc_invwarp.name.replace(
-            "comptx.nii.gz", ""
-        )
+        # Save the warp as a single composite transform file. ANTs names
+        # it <prefix>comptx.nii.gz; it is renamed to sdc_invwarp.
+        sdc_invwarp_stem = work_dir / "rm_sdc_invwarp_"
         ants.apply_transforms(
             fixed=func_orig_aimg,
             moving=sdc_template_reg_orig,
             transformlist=warp_reg["fwdtransforms"],
             compose=str(sdc_invwarp_stem),
         )
+        comptx = Path(str(sdc_invwarp_stem) + "comptx.nii.gz")
+        if comptx.is_file():
+            shutil.move(comptx, sdc_invwarp)
 
         self.proc_times["SDC"] = np.ceil(time.time() - st)
         assert sdc_invwarp.is_file()
@@ -694,10 +719,18 @@ class RtpImgProc(RTP):
         progress_bar=None,
         ask_cmd=False,
         overwrite=False,
+        out_f=None,
+        xfm_f=None,
     ):
         """
         Align the anatomy image to the base functional image using
         align_epi_anat.py in AFNI.
+
+        The aligned image is out_f (default: work_dir/<brain_anat_orig
+        name>_alFunc.nii.gz) and the affine matrix is xfm_f (default:
+        the align_epi_anat.py output, <brain_anat_orig name>_alFunc_mat.
+        aff12.1D). With out_f, the AFNI BRIK output is deleted after it is
+        converted to NIfTI.
         https://afni.nimh.nih.gov/pub/dist/doc/program_help/align_epi_anat.py.html
 
         Parameters
@@ -733,10 +766,13 @@ class RtpImgProc(RTP):
             for ext in brain_anat_orig.suffixes
             if ext in (".nii", ".gz", ".HEAD", ".BRIK")
         ]
-        alAnat = work_dir / (
-            brain_anat_orig.name.replace("".join(suffs), "_alFunc.nii.gz")
-        )
-        if alAnat.is_file() and not overwrite:
+        afni_stem = brain_anat_orig.name.replace("".join(suffs), "_alFunc")
+        if out_f is not None:
+            alAnat = Path(out_f)
+        else:
+            alAnat = work_dir / (afni_stem + ".nii.gz")
+        if alAnat.is_file() and not overwrite and \
+                (xfm_f is None or Path(xfm_f).is_file()):
             self._report_existing([alAnat], progress_bar, total_ETA,
                                   "AlAnat")
             return alAnat
@@ -775,8 +811,7 @@ class RtpImgProc(RTP):
             return None
 
         # align_epi_anat.py writes an AFNI BRIK file; convert it to NIfTI.
-        alAnat_f_stem = alAnat.stem.replace(".nii", "")
-        alAnat_brik = list(work_dir.glob(alAnat_f_stem + "*.HEAD"))
+        alAnat_brik = list(work_dir.glob(afni_stem + "+*.HEAD"))
         if len(alAnat_brik):
             cmd = f"3dAFNItoNIFTI -overwrite -prefix {alAnat}"
             cmd += f" {alAnat_brik[0]}"
@@ -786,6 +821,20 @@ class RtpImgProc(RTP):
                 msgTxt="Convert alAnat to NIfTI",
                 desc="++ Convert alAnat to NIfTI\n",
             )
+            if out_f is not None and alAnat.is_file():
+                for ff in work_dir.glob(afni_stem + "+*.*"):
+                    ff.unlink()
+
+        # Affine matrices of align_epi_anat.py
+        if xfm_f is not None:
+            mat_f = work_dir / (afni_stem + "_mat.aff12.1D")
+            if mat_f.is_file():
+                shutil.move(mat_f, xfm_f)
+            e2a_f = work_dir / (afni_stem + "_e2a_only_mat.aff12.1D")
+            if e2a_f.is_file():
+                xfm_f = Path(xfm_f)
+                shutil.move(e2a_f, xfm_f.parent / xfm_f.name.replace(
+                    "_mode-image_xfm", "_mode-image_desc-e2aonly_xfm"))
 
         self.proc_times["AlAnat"] = np.ceil(time.time() - st)
         assert alAnat.is_file()
@@ -857,9 +906,12 @@ class RtpImgProc(RTP):
         progress_bar=None,
         ask_cmd=False,
         overwrite=False,
+        out_f=None,
     ):
         """
         Erode a segmentation mask and resample it to the func_orig grid.
+        The output is out_f (default: work_dir/<seg_anat_f name>_alFunc
+        .nii.gz).
 
         Parameters
         ----------
@@ -899,8 +951,12 @@ class RtpImgProc(RTP):
 
         # A template mask warped to alAnat by ants_warp_resample has the
         # '_alAnat' suffix, which is replaced with '_alFunc'.
-        seg_prefix = re.sub(r"_alAnat$", "", self._out_prefix(seg_anat_f))
-        seg_al_f = work_dir / (seg_prefix + "_alFunc.nii.gz")
+        if out_f is not None:
+            seg_al_f = Path(out_f)
+        else:
+            seg_prefix = re.sub(r"_alAnat$", "",
+                                self._out_prefix(seg_anat_f))
+            seg_al_f = work_dir / (seg_prefix + "_alFunc.nii.gz")
         time_key = f"Resample_{segname}_mask"
         if seg_al_f.is_file() and not overwrite:
             self._report_existing([seg_al_f], progress_bar, total_ETA,
@@ -972,9 +1028,12 @@ class RtpImgProc(RTP):
         progress_bar=None,
         ask_cmd=False,
         overwrite=False,
+        out_files=None,
     ):
         """
         Make the masks for RTP and global signal regression (GSR).
+        The outputs are out_files (RTP_mask, GSR_mask); the default is
+        work_dir/RTP_mask.nii.gz and work_dir/GSR_mask.nii.gz.
 
         3dAutomask is used to make a functional image mask.
         If alAnat is None, the functional automask is used for both the RTP
@@ -1014,8 +1073,11 @@ class RtpImgProc(RTP):
             None on cancel.
         """
 
-        RTP_mask = work_dir / "RTP_mask.nii.gz"
-        GSR_mask = work_dir / "GSR_mask.nii.gz"
+        if out_files is not None:
+            RTP_mask, GSR_mask = (Path(f) for f in out_files)
+        else:
+            RTP_mask = work_dir / "RTP_mask.nii.gz"
+            GSR_mask = work_dir / "GSR_mask.nii.gz"
 
         self._print_step_header("Make RTP and GSR masks", progress_bar)
 
@@ -1029,7 +1091,7 @@ class RtpImgProc(RTP):
         func_orig = Path(func_orig)
         fbase = re.sub(r"\+.*", "", func_orig.name)
         fbase = re.sub(r"(\.nii(\.gz)?|\.HEAD|\.BRIK(\.gz)?)$", "", fbase)
-        func_mask = work_dir / f"automask_{fbase}.nii.gz"
+        func_mask = work_dir / f"rm.automask_{fbase}.nii.gz"
         cmd = f"3dAutomask -overwrite -prefix {func_mask}"
         cmd += f" '{func_orig}[{ref_vi}]' && "
         rm_fs.append(func_mask)
@@ -1039,7 +1101,7 @@ class RtpImgProc(RTP):
             fbase = re.sub(r"\+.*", "", alAnat.name)
             fbase = re.sub(r"\.nii(\.gz)?$", "", fbase)
             temp_out = work_dir / "rm.anat_mask_tmp.nii.gz"
-            anat_mask = work_dir / f"anatmask_{fbase}.nii.gz"
+            anat_mask = work_dir / f"rm.anatmask_{fbase}.nii.gz"
 
             # Anatomy mask on the func_orig grid
             cmd += f"3dmask_tool -overwrite -input {alAnat}"
@@ -1099,9 +1161,13 @@ class RtpImgProc(RTP):
         progress_bar=None,
         ask_cmd=False,
         overwrite=False,
+        out_files=None,
     ):
         """
         Register the template image to alAnat with ANTs (ants_run.py).
+        The transforms are out_files (affine, warp, inverse warp); the
+        default is work_dir/template2orig_{0GenericAffine.mat,1Warp.nii.gz,
+        1InverseWarp.nii.gz}.
 
         Parameters
         ----------
@@ -1130,8 +1196,13 @@ class RtpImgProc(RTP):
         """
         self._print_step_header("ANTs registration", progress_bar)
 
-        aff_f = work_dir / "template2orig_0GenericAffine.mat"
-        wrp_f = work_dir / "template2orig_1Warp.nii.gz"
+        ants_names = ("template2orig_0GenericAffine.mat",
+                      "template2orig_1Warp.nii.gz",
+                      "template2orig_1InverseWarp.nii.gz")
+        if out_files is not None:
+            aff_f, wrp_f, iwrp_f = (Path(f) for f in out_files)
+        else:
+            aff_f, wrp_f, iwrp_f = (work_dir / f for f in ants_names)
         if aff_f.is_file() and wrp_f.is_file() and not overwrite:
             self._report_existing([aff_f, wrp_f], progress_bar, total_ETA,
                                   "ANTs")
@@ -1179,6 +1250,12 @@ class RtpImgProc(RTP):
         if progress_bar is not None:
             progress_bar.add_desc("\n")
 
+        # Rename the ANTs outputs
+        for src, dst in zip(ants_names, (aff_f, wrp_f, iwrp_f)):
+            src = work_dir / src
+            if src != dst and src.is_file():
+                shutil.move(src, dst)
+
         return [str(wrp_f), str(aff_f)]
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1194,6 +1271,7 @@ class RtpImgProc(RTP):
         imagetype=0,
         progress_bar=None,
         overwrite=False,
+        out_f=None,
     ):
         """
         Apply ANTs transforms to warp move_f into the fix_f space, and
@@ -1211,6 +1289,8 @@ class RtpImgProc(RTP):
             ANTs transform files (e.g., the output of warp_template).
         res_master_f : str or Path, optional
             Master image file to which the warped image is resampled.
+        out_f : str or Path, optional
+            Output file. If None, the name is made with suffix.
         suffix : str, optional
             Suffix added to the move_f name for the output file. The default
             (None) is '_alFunc' when the image is resampled to res_master_f
@@ -1245,7 +1325,11 @@ class RtpImgProc(RTP):
             warped_name = re.sub(
                 r"(\+\w+)?\.(HEAD|BRIK)(\.gz)?$", "", move_name
             ) + f"{suffix}.nii.gz"
-        warped_f = work_dir / warped_name
+        if out_f is not None:
+            warped_name = Path(out_f).name
+            warped_f = Path(out_f)
+        else:
+            warped_f = work_dir / warped_name
         tmp_out = work_dir / f"rm_tmp_{warped_name}"
         if warped_f.is_file() and not overwrite:
             self._report_existing([warped_f], progress_bar)
