@@ -110,6 +110,9 @@ class RtpTTLPhysio(RTP):
                 # The close button hides the window; the recording goes on
                 # (RtpGUI keeps its 'Physio' check box in sync)
                 "--disable_close",
+                # No window on a PC without the physio and TTL devices
+                # (RtpGUI also disables the physio controls then)
+                "--hide_without_device",
             ]
             # Open the physio window at its place in the RTPSpy layout
             # (window_layout.py), so that it need not be moved later.
@@ -338,6 +341,25 @@ class RtpTTLPhysio(RTP):
         if state in ("normal", "iconic", "withdrawn"):
             return state
         return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_device(self):
+        """Recording device of rt_physio: "Numato", "GE", "Dummy", "" (no
+        device), or None if rt_physio does not respond."""
+        if self.TTLPhysioCom is None:
+            return None
+        ret = self.TTLPhysioCom.call_rt_proc(
+            ("GET_PARAMS", ("recorder_type",)), pkl=True, get_return=True,
+            quiet=True)
+        if isinstance(ret, dict):
+            return ret.get("recorder_type") or ""
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def get_status(self):
+        """(window state, device) for the RtpGUI watch timer; see
+        get_window_state and get_device."""
+        return self.get_window_state(), self.get_device()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def move(self, geometry):

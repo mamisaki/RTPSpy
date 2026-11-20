@@ -178,9 +178,11 @@ class RtpGUI(QtWidgets.QMainWindow):
             if not fut.done():
                 return
             try:
-                state = fut.result()
+                state, device = fut.result()
             except Exception:
-                state = None
+                state, device = None, None
+            if device is not None:
+                self.set_physio_device(device)
             # A state read before the user's last click may be stale
             if state is not None and t_submit > self._physio_chk_time:
                 checked = state in ("normal", "iconic")
@@ -190,7 +192,74 @@ class RtpGUI(QtWidgets.QMainWindow):
                     self.chbShowPhysio.blockSignals(False)
         self._physio_query = (
             time.monotonic(),
-            self._physio_pool.submit(ttl.get_window_state))
+            self._physio_pool.submit(ttl.get_status))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def set_physio_device(self, device):
+        """
+        Enable the physio controls when rt_physio has a recording device,
+        and disable them when it has none (device ""), e.g., on a PC
+        without the physio and TTL devices. The scan is then started with
+        the 'T' key or the 'Manual start' button.
+
+        Without a device, the physio regressors (RETROICOR) cannot be made,
+        so phys_reg of REGRESS is set to 'None'; the previous value is set
+        back when a device comes. The change is deferred while the controls
+        are disabled (during a run) and applied by apply_physio_device.
+        """
+        self._physio_device = device
+        if getattr(self, "_modules_enabled", True):
+            self.apply_physio_device()
+
+    def apply_physio_device(self):
+        """Apply the last device state of set_physio_device to the
+        controls."""
+        device = getattr(self, "_physio_device", None)
+        if device is None:
+            return  # Not known yet
+        has_dev = device != ""
+        if getattr(self, "_physio_has_dev", None) == has_dev:
+            # Re-applied after the controls were enabled again
+            self._set_physio_widgets_enabled(has_dev)
+            return
+        self._physio_has_dev = has_dev
+
+        regress = self.rtp_objs.get("REGRESS")
+        if regress is not None:
+            if not has_dev and regress.phys_reg != "None":
+                self._phys_reg_saved = regress.phys_reg
+                regress.set_param("phys_reg", "None")
+                self._logger.warning(
+                    "No physio/TTL recording device: the physio regressors "
+                    f"({self._phys_reg_saved}) are off.")
+            elif has_dev and getattr(self, "_phys_reg_saved", None):
+                regress.set_param("phys_reg", self._phys_reg_saved)
+                self._logger.info(
+                    f"Physio recording device {device}: the physio "
+                    f"regressors ({self._phys_reg_saved}) are on again.")
+                self._phys_reg_saved = None
+
+        if has_dev:
+            self._logger.info(f"Physio recording device: {device}")
+        else:
+            self._logger.info(
+                "No physio/TTL recording device. The physio window and "
+                "controls are disabled. Start a scan with the 'T' key or "
+                "the 'Manual start' button.")
+        self._set_physio_widgets_enabled(has_dev)
+
+    def _set_physio_widgets_enabled(self, has_dev):
+        tip = "" if has_dev else "No physio/TTL recording device"
+        if hasattr(self, "chbShowPhysio"):
+            self.chbShowPhysio.setEnabled(has_dev)
+            self.chbShowPhysio.setToolTip(tip)
+        regress = self.rtp_objs.get("REGRESS")
+        cmb = getattr(regress, "ui_physReg_cmbBx", None)
+        if cmb is not None:
+            # Only while the module controls are enabled (not in a run)
+            if getattr(self, "_modules_enabled", True):
+                cmb.setEnabled(has_dev)
+            cmb.setToolTip(tip)
 
     def _stop_physio_watch(self):
         timer = getattr(self, "_physio_watch_timer", None)

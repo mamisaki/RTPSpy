@@ -1921,8 +1921,13 @@ class PlotTTLPhysio:
         buf_len_sec=3600,
         disable_close=False,
         signal_range=(0, ADC_MAX_VALUE),
+        start_hidden=False,
     ):
         self._logger = logging.getLogger("PlotTTLPhysio")
+        # Start with the window hidden (no recording device; see
+        # RtPhysio.hide_without_device). SHOW opens it.
+        self._start_hidden = start_hidden
+        self._placed = False  # The window has been placed at _geometry
         self.controller = controller
 
         # --- Initialize parameters ---
@@ -2105,11 +2110,13 @@ class PlotTTLPhysio:
 
         try:
             self._init_window()
-            self._win.show()
-            # The window manager may place a window elsewhere when it is
-            # shown; set the position again.
-            if self._geometry is not None:
-                self.set_position(self._geometry)
+            if not self._start_hidden:
+                self._win.show()
+                # The window manager may place a window elsewhere when it
+                # is shown; set the position again.
+                if self._geometry is not None:
+                    self.set_position(self._geometry)
+                self._placed = True
 
             # Start the update timer. The QUIT command ends the event loop.
             self._running = True
@@ -2868,6 +2875,12 @@ class PlotTTLPhysio:
         if self._win.isMinimized():
             self._win.showNormal()
         self._win.show()
+        if not self._placed:
+            # First show of a window started hidden: place it as at a
+            # normal start
+            if self._geometry is not None:
+                self.set_position(self._geometry)
+            self._placed = True
         self._win.raise_()
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -3009,10 +3022,16 @@ class RtPhysio:
             the screen.
         disable_close : bool, optional
             Disable the close button. The default is False.
+        hide_without_device : bool, optional
+            Keep the plot window hidden while no recording device is used
+            (NULL), and show or hide it when a device is set or removed.
+            RTPSpy uses it, so that no empty physio window is shown on a PC
+            without the physio and TTL devices. The default is False.
         plot_len_sec : float, optional (in kwargs)
             Length (s) of the plotted signals. The default is 10.
         """
         self._logger = logging.getLogger("RtPhysio")
+        self.hide_without_device = kwargs.pop("hide_without_device", False)
 
         # --- Initialize parameters ---
         self.buf_len_sec = buf_len_sec
@@ -3236,10 +3255,11 @@ class RtPhysio:
         # The plot process can be made before the device is chosen
         self._plot_send(("SET_TITLE", self._recorder_type))
 
-        if self._recorder_type is not None:
-            self._logger.debug(
-                f"Stopping current recorder: {self._recorder_type}"
-            )
+        # Stop the running recorder. (The check is not on _recorder_type,
+        # which is already the new one: with "NULL", the old recorder was
+        # left running.)
+        if self.is_recording():
+            self._logger.debug("Stopping the current recorder")
             try:
                 self.stop_recording()
                 time.sleep(0.5)  # Let the device be released
@@ -3258,6 +3278,20 @@ class RtPhysio:
             self._logger.error(
                 f"Error starting recorder {self._recorder_type}: {errstr}"
             )
+
+        # Show the window with a device and hide it without one. (The plot
+        # is not open yet at the first call from __init__; open_plot starts
+        # it hidden then.)
+        if self.hide_without_device:
+            self._plot_send(
+                "SHOW" if self._recorder_type is not None else "HIDE")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    @property
+    def recorder_type(self):
+        """Recording device in use: "Numato", "GE", "Dummy", or None (no
+        device). Read by GET_PARAMS (RtpTTLPhysio.get_device)."""
+        return self._recorder_type
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _create_recorder(self, device_type):
@@ -3389,6 +3423,9 @@ class RtPhysio:
                 plot_len_sec=self.plot_len_sec,
                 disable_close=self.disable_close,
                 signal_range=self.signal_range,
+                start_hidden=(
+                    self.hide_without_device and self._recorder_type is None
+                ),
             )
 
         self._plot_proc_pipe, cmd_pipe = Pipe()
@@ -4701,6 +4738,12 @@ if __name__ == "__main__":
         help="Save the TTL onset and offset times (off by default when "
         "run from the command line)",
     )
+    parser.add_argument(
+        "--hide_without_device",
+        action="store_true",
+        help="Keep the plot window hidden while no recording device is "
+        "used, and show it when a device is set (RTPSpy uses it)",
+    )
     parser.add_argument("--debug", action="store_true",
                         help="Log DEBUG messages to the console")
 
@@ -4750,6 +4793,7 @@ if __name__ == "__main__":
         "geometry": geometry,
         "disable_close": disable_close,
         "save_ttl": save_ttl,
+        "hide_without_device": args.hide_without_device,
     }
 
     rt_physio = RtPhysio(**kwarg)

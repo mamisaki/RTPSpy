@@ -190,6 +190,12 @@ class RtpAppUI(RtpModuleUI):
         o.main_win.btnSetWorkDir.setEnabled(enabled)
         o.main_win.btnSetWatchDir.setEnabled(enabled)
 
+        # The physio controls stay disabled without a recording device, and
+        # a device change during a run is applied now (RtpGUI)
+        o.main_win._modules_enabled = enabled
+        if enabled and hasattr(o.main_win, "apply_physio_device"):
+            o.main_win.apply_physio_device()
+
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def show_run_plots(self):
         """Show the motion and physio plots of the enabled modules."""
@@ -200,6 +206,8 @@ class RtpAppUI(RtpModuleUI):
         if (
             o.rtp_objs["REGRESS"].enabled
             and o.rtp_objs["REGRESS"].phys_reg != "None"
+            and hasattr(o.main_win, "chbShowPhysio")
+            and o.main_win.chbShowPhysio.isEnabled()  # A device is in use
         ):
             o.main_win.chbShowPhysio.setChecked(True)
 
