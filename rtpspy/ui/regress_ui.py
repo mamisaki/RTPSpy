@@ -161,6 +161,12 @@ class RtpRegressUI(RtpModuleUI):
                         o.ui_waitNum_cmbBx.currentData(),
                         o.ui_waitNum_cmbBx.setCurrentIndex))
 
+        # Start in the 'Set' mode when wait_num was given (e.g., by the
+        # application's default parameters), so that it is kept when the
+        # number of regressors changes
+        if getattr(o, '_wait_num_spec', None) is not None:
+            o.ui_waitNum_cmbBx.setCurrentIndex(1)
+
         o.ui_waitNum_lb = QtWidgets.QLabel()
         o.set_wait_num()
         o.ui_waitNum_lb.setText(f'{o.wait_num} volumes')

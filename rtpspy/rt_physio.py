@@ -4273,7 +4273,11 @@ class RtPhysio:
             self._plot_send("SCAN_OFF")
 
         elif call == "SHOW":
-            self._plot_send("SHOW")
+            # No window without a device (hide_without_device); it is shown
+            # when a device is set (set_device)
+            if not (self.hide_without_device and
+                    self._recorder_type is None):
+                self._plot_send("SHOW")
 
         elif call == "HIDE":
             self._plot_send("HIDE")

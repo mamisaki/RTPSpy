@@ -259,7 +259,9 @@ class RtpRegress(RTP):
             Minimum number of volumes (excluding the ignored volumes) to
             receive before starting the regression. If it is smaller than the
             number of regressors + 1, the regression waits for that number of
-            volumes instead. The default is 0.
+            volumes instead. A given value is kept when the number of
+            regressors changes (e.g., the physio regressors are turned off).
+            The default is 0 (wait for the number of regressors + 1).
         ridge_c : float, optional
             Ridge regularization of the early fits. The nuisance regressors
             (motion, physio, GS/WM/Vent; not the polynomials or desMtx) are
@@ -318,6 +320,11 @@ class RtpRegress(RTP):
         self.onGPU = onGPU
         self.reg_retro_proc = reg_retro_proc
         self.wait_num = wait_num
+        # wait_num given by the user (constructor, set_param, or the GUI 'Set'
+        # mode). The wait is max(_wait_num_spec, number of regressors + 1),
+        # so the given value is used whenever it is large enough. None:
+        # follow the number of regressors.
+        self._wait_num_spec = int(wait_num) if wait_num else None
         self.censor_FD = censor_FD
         # True while the retrospective outputs are passed (see _retro_proc)
         self.in_retro_proc = False
@@ -1557,8 +1564,18 @@ class RtpRegress(RTP):
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _update_wait_num(self):
         """Update wait_num after the number of regressors has changed.
-        In the GUI, wait_num follows the number of regressors only when the
-        wait mode is 'number of regressors'."""
+
+        A wait_num given by the user is kept as long as it is at least the
+        number of regressors + 1 (and is used again when the number of
+        regressors decreases after a temporary increase). Without a given
+        value, wait_num follows the number of regressors in the GUI.
+        """
+        if self._wait_num_spec is not None:
+            # set_wait_num raises it to the number of regressors + 1 if
+            # needed
+            self.set_wait_num(self._wait_num_spec)
+            return
+
         wait_mode = self._ui_value('wait_num_mode')
         if wait_mode is not None:
             if 'regressor' in wait_mode:
@@ -1658,16 +1675,18 @@ class RtpRegress(RTP):
                 self._ui_update(attr, val)
 
         elif attr == 'wait_num':
-            if type(val) is int:
-                self.set_wait_num(val)
+            if isinstance(val, (int, np.integer)):
+                # A given value: kept while it is large enough (see
+                # _update_wait_num)
+                self._wait_num_spec = int(val)
+                self.set_wait_num(int(val))
                 if reset_fn is None:
                     # Wait mode: 0, number of regressors; 1, set value
-                    self._ui_update(
-                        'wait_num_mode',
-                        0 if self.wait_num == self.get_reg_num()+1 else 1)
+                    self._ui_update('wait_num_mode', 1)
                 return
 
             elif 'regressor' in val:
+                self._wait_num_spec = None
                 self.set_wait_num(self.get_reg_num()+1)
 
             elif 'set' in val:
@@ -1678,6 +1697,7 @@ class RtpRegress(RTP):
                 if not okflag:
                     return
 
+                self._wait_num_spec = int(num1)
                 self.set_wait_num(num1)
 
             val = self.wait_num
