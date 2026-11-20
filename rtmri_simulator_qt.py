@@ -21,9 +21,9 @@ without the scanner:
   scan start or at every volume, in the window whose title matches a
   pattern (default: the RTPSpy main window).
 
-This is the PyQt6 version of rtmri_simulator.py (Tk), which was ported from
-RT-MRI simulation/rtmri_simulator.py. The series cache in each session
-directory (.rtmri_series_cache.csv) is shared with the Tk version.
+Based on RT-MRI simulation/rtmri_simulator.py (Tk). The series of a session
+are read once and cached in the session directory
+(.rtmri_series_cache.csv).
 
 Author: mmisaki@laureateinstitute.org
 """
@@ -58,11 +58,11 @@ except ImportError:
     import gui_theme
 
 APP_DIR = Path(__file__).resolve().parent
-CACHE_NAME = ".rtmri_series_cache.csv"  # Same as the Tk version
+CACHE_NAME = ".rtmri_series_cache.csv"  # Series cache in a session
 
 
 # %% DICOM time helpers =======================================================
-# The same functions as in rtmri_simulator.py (Tk version).
+# From RT-MRI simulation/rtmri_simulator.py, with the transfer delay added.
 def dicom_time_to_sec(value):
     """Convert a DICOM time to seconds of the day.
 
@@ -190,8 +190,7 @@ def _is_series_dir(d):
 
 
 def find_sessions(base_dir, max_depth=3):
-    """Find the session directories under base_dir (the same rules as the Tk
-    version).
+    """Find the session directories under base_dir.
 
     A session directory has DICOM files (*.dcm) directly or in a 'dicom'
     subdirectory, or has series subdirectories (S001, Ser001, ...) and no
