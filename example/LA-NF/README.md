@@ -1,79 +1,86 @@
-# RTPSpy LA-NF application
-This is an example application with RTPSpy GUI for the left amygdala neurofeedback seesion (Zotev et al., 2011;Young et al., 2017). The application extracts the average signal in the left amygdala (LA) region and sends the signal to an external application in real-time. This script is for a demonstration of a full-fledged GUI application using RTPSpy. Note that the application was not used in the previous studies (Zotev et al., 2011;Young et al., 2017), and several parameters are different from the previous reports.  
-* On Mac OSX, the GUI layout is a bit broken due to an incompatibility of PyQt.  
+# LA-NF: Left Amygdala Neurofeedback Example
 
-    - Young et al. (2017). Randomized Clinical Trial of Real-Time fMRI Amygdala Neurofeedback for Major Depressive Disorder: Effects on Symptoms and Autobiographical Memory Recall. Am J Psychiatry 174, 748-755.  
-    - Zotev et al. (2011). Self-Regulation of Amygdala Activation Using Real-Time fMRI Neurofeedback. PLoS ONE 6, e24522.  
+LA-NF is a complete RTPSpy application for a left amygdala (LA) neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011; Young et al., 2017). It extracts the mean signal of the left amygdala from each fMRI volume in real time and sends it to a PsychoPy application, which presents the task blocks and the feedback.
 
-## Operations
-### 1. Start
-1. Open a console (Ubuntu console if you are working on the Windows WSL, or Terminal application on Max OSX).  
-2. Run the boot script (it uses the environments made by `~/RTPSpy/install.sh`).  
-```
+This application is a demonstration. It was not used in the studies cited above, and several parameters differ from those reports. For a simpler template to build your own application, see the [ROI-NF example](../ROI-NF#readme).
+
+- Young K.D. et al. (2017). Randomized Clinical Trial of Real-Time fMRI Amygdala Neurofeedback for Major Depressive Disorder: Effects on Symptoms and Autobiographical Memory Recall. Am J Psychiatry 174, 748-755.
+- Zotev V. et al. (2011). Self-Regulation of Amygdala Activation Using Real-Time fMRI Neurofeedback. PLoS ONE 6, e24522.
+
+Before you start, install RTPSpy with `install.sh` (see the [README](../../README.md#installation)). On macOS, the GUI layout may be slightly broken.
+
+## 1. Start the application
+
+```bash
 cd ~/RTPSpy/example/LA-NF
 ./boot_LANF_RTPSpy.sh
 ```
-* On Mac OSX, if you run the 'run_RTPSpyApp.py' as a background job (with '&'), the process may be stacked at booting a PsychoPy application.
 
-3. The dialogs, 'Select Watch directory' and 'Select working directory' are opened.  
+Two dialogs ask for the **watch directory** (where the scanner exports the images during the scan) and the **working directory** (where RTPSpy saves its results). If you cancel a dialog, the previous setting is kept. You can change them later at the top of the window.
 
-<img src="/example/LA-NF/doc/select_watch_dir.png" height=200>  
+<img src="doc/select_watch_dir.png" alt="Folder selection dialog" height=200>
 
-Set the watching and warking directory. You can change these later. If you canceled the dialog, the previous settings are used. The application automatically saves the previous settings at the exit and loads the saved parameters at booting.  
+The LA-NF window opens.
 
-The LA-NF App window opens.  
-<img src="/example/LA-NF/doc/LA-NF_initial.png" height=400>  
+<img src="doc/LA-NF_initial.png" alt="LA-NF window at the start" height=400>
 
-* The previous settings are saved in the 'RTPSpy_params.pkl' file in the application directory. Remove this file if you don't want to load the previous settings, or press the 'Reset to default parameters' button to reset the parameters (wathcing and working directories have no default settings so they are not changed by the button).  
+The application saves its settings when it exits, in `RTPSpy_params.pkl` in the folder where you started it, and loads them at the next start. To start from the default settings, press 'Reset to default parameters' (the folders are not reset), or delete the file.
 
-### 2. Scan anatomy and reference function images to make the mask images.  
-Start MRI scan for taking anatomical and reference functional images.   
+## 2. Make the masks
 
-#### Set files for 'Anatomy image' and 'Base function image'.  
-Once the images are ready, press the 'Go to mask creation' button and set the 'Anatomy' and 'Base function' images.  
-<img src="/example/LA-NF/doc/LA-NF_MaskCreation.png" height=400>  
+Scan an anatomical image and a reference functional image, and convert them to NIfTI ('DICOM to NIfTI (dcm2niix)' on the 'Preprocessing' tab). Then:
 
-#### Create masks
-Press the 'Create masks' button.  
-If GPU is not available, 'Skip FastSeg' is checked. Then, 3dSkullStrip and template white-matter and ventricle masks will be used, instead of FastSeg.  
-The 'Mask image creation' dialog will open to show the progress.  
-Once the process finishes, all the result images are automatically set as masks for the real-time processing.  
-<img src="/example/LA-NF/doc/MaskCreationDlg.png" height=200>  
+1. Press 'Go to parameter setting' (or open the 'Preprocessing' tab) and set the **Anatomy** and **Base function** images with the 'Set' buttons.
+2. Press **'Create masks'**. A dialog shows the progress. When it finishes, the results are set as the masks for the real-time processing.
 
-### 3. Set RTP parameters
-You can adjust the real-time processing parameters on the 'RTP' tab above the yellow 'ROI-NF' bar.  
-Press a module button to set detailed parameters.  
-<img src="/example/LA-NF/doc/LA-NF_REGRESS.png" height=400>  
+<img src="doc/LA-NF_MaskCreation.png" alt="Mask creation panel" height=400>
 
-### 4. Run a task session
-Return to the 'App' tab by pressing the 'App' above the yellow 'ROI-NF' bar.
-Press the 'Go to task' button at the bottom of the 'Preprocessing' tab or press the 'Task' tab to show the 'Task' operation interface.   
-<img src="/example/LA-NF/doc/TaskOperation.png" height=400>  
+<img src="doc/MaskCreationDlg.png" alt="Mask creation progress dialog" height=200>
 
-Press one of the session setup buttons (e.g., resting state, baseline run without neurofeedback, neurofeedback training run 1, etc.) in the 'Session setup' area. This starts the neurofeedback presentation application if it is not running, and run the RTP setup. 
+> [!NOTE]
+> FastSeg (part of FastSurfer) segments the white matter and ventricles, and needs a GPU. Without one, 'Skip FastSeg' is checked, and AFNI's 3dSkullStrip and the template masks are used instead.
 
-The neurofeedback presentation window opens with the task instruction screen.   
-<img src="/example/LA-NF/doc/TaskInstruction.png" height=400>  
+Check the result with the buttons in the 'Check the images' box (see the [ROI-NF guide](../ROI-NF#5-create-the-masks) for the image viewer).
 
-The size and the position of the application screen can be adjusted by command line variables in the 'Command' field on the 'External app' tab.  
-Add '--fullscr' option to the command line to make it full screen.  
-<img src="/example/LA-NF/doc/LA-NF_ExtApp.png" height=400>  
+## 3. Set the processing parameters (optional)
 
-The dialog 'TSHIFT: Select slice timing sample' will open if the slice timings are not set on the TSHIFT tab in the RTP tab. Select a function image file having the slice-timing information. This is necessary only for the first scan session.   
-<img src="/example/LA-NF/doc/TSHIFT_SelectSpliceTiming.png" height=300>  
+The processing parameters are in the 'RTP' panel. Press a module button to see and change its parameters.
 
-### 5. Ready to scan start
-Press the 'Ready' button.
-The psychopy application window shows a 'Ready' message.  
-<img src="/example/LA-NF/doc/Ready.png" height=400>  
+<img src="doc/LA-NF_REGRESS.png" alt="REGRESS parameters" height=400>
 
-### 6. Start the scan and real-time processing
-You are ready to start the scan.  
-* If the TTL signal trigger is set (in the 'RTP' -> 'EXTSIG' tab), the RTP and the psychopy application will start with the trigger input.  
-* You can also start the process manually by pressing the 'Manual start' button.  
+## 4. Set up a run
 
-The regression starts after receiving enough samples.   
-The application shows the taks block indication and the neurofeedback signal in the happy block.  
-<img src="/example/LA-NF/doc/LA-NF_happy.png" height=400>  
+Press 'Go to Task' at the bottom of the 'Preprocessing' tab, or open the 'Task' tab.
 
-* Refer also to the ROI-NF application in the example directory, [example/ROI-NF](/example/ROI-NF), for a simple boilarplate application to develop a custom application.
+<img src="doc/TaskOperation.png" alt="Task tab" height=400>
+
+Press a button in the 'Session setup' box for the run you are about to scan: 'Rest', 'Baseline' (without feedback), 'Practice', 'NF1' to 'NF3' (neurofeedback training), or 'Transfer'. This starts the PsychoPy application if it is not running, and sets up the processing for the run. The PsychoPy window shows the task instructions.
+
+<img src="doc/TaskInstruction.png" alt="Task instruction screen" height=400>
+
+- **PsychoPy window.** Its screen, size, and position are set in the 'Command' field of the 'External app' tab. Add `--fullscr` for full screen.
+- **Slice timing.** At the first run, a dialog 'TSHIFT: Select a slice timing sample' may ask for a functional image with the slice timing information. Select one of the functional images of this session.
+
+<img src="doc/LA-NF_ExtApp.png" alt="External app tab" height=400>
+
+<img src="doc/TSHIFT_SelectSpliceTiming.png" alt="Slice timing selection dialog" height=300>
+
+## 5. Get ready
+
+Press **'Ready'**. The PsychoPy window shows 'Ready', and RTPSpy waits for the scan to start.
+
+<img src="doc/Ready.png" alt="Ready screen" height=400>
+
+## 6. Start the scan
+
+Start the fMRI scan. The processing and the PsychoPy task start with one of:
+
+- the **scanner's TTL pulse**, if a TTL recording device is connected (see [Physiological signal and TTL recording](../../PhysioRecording.md));
+- the **'T' key**, pressed while the RTPSpy window is active (a trigger box that sends the 't' key also works);
+- the **'Manual start'** button.
+
+The noise regression starts after enough volumes have arrived ('RTP' → 'REGRESS' → 'Start after'). The PsychoPy window shows the task blocks, and the neurofeedback signal during the happy memory blocks.
+
+<img src="doc/LA-NF_happy.png" alt="Neurofeedback display during a happy block" height=400>
+
+To test the application without a scanner, use the RT-MRI simulator (see the [README](../../README.md#testing-without-a-scanner-the-rt-mri-simulator)).

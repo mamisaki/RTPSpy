@@ -1,134 +1,158 @@
-# RTPSpy ROI-NF application
-This example demonstrates the use of the RTPSpy GUI for a real-time processing application. The application extracts the average signal from a region of interest (ROI) and transmits it in real time to an external application. The external application then displays the received value in a PsychoPy window.  
+# ROI-NF: Example RTPSpy Application
 
-## 1. Start  
-Run the following commands in a console.  
-```
+ROI-NF extracts the mean signal of a region of interest (ROI) from each fMRI volume in real time and sends it to an external application. The example external application, a PsychoPy script (`NF_psypy.py`), simply shows the received values on the screen.
+
+Use it as a template for your own neurofeedback application: the [last section](#customizing-the-application) shows which parts to edit.
+
+Before you start, install RTPSpy with `install.sh` (see the [README](../../README.md#installation)).
+
+## Contents
+
+1. [Start the application](#1-start-the-application)
+2. [Set the folders](#2-set-the-folders)
+3. [Scan and convert the reference images](#3-scan-and-convert-the-reference-images)
+4. [Set the reference and template images](#4-set-the-reference-and-template-images)
+5. [Create the masks](#5-create-the-masks)
+6. [Start the feedback application](#6-start-the-feedback-application)
+7. [Set up the real-time processing](#7-set-up-the-real-time-processing)
+8. [Get ready and start the scan](#8-get-ready-and-start-the-scan)
+
+- [Testing without a scanner](#testing-without-a-scanner)
+- [Customizing the application](#customizing-the-application)
+
+## 1. Start the application
+
+```bash
 cd ~/RTPSpy/example/ROI-NF
 ./boot_ROINF_RTPSpy.sh
 ```
 
-The ROI-NF App window opens.  
-<img src="/example/ROI-NF/doc/initial.png" height=400>  
+First, the application asks 'Load previous settings?'. Answer 'Yes' to continue with the settings of the last session, which the application saves when it exits (in `RTPSpy_ROINF_params.pkl`, in the folder where you started it).
+
+<img src="doc/load_settings.png" alt="Load previous settings dialog" height=100>
+
+Then the ROI-NF window opens.
+
+<img src="doc/initial.png" alt="ROI-NF window at the start" height=400>
+
+## 2. Set the folders
+
+Set the two folders at the top of the window:
+
+- **Watch directory**: where the scanner exports the fMRI images (e.g., DICOM files) during the scan. To test without a scanner, this is where the [simulator](#testing-without-a-scanner) copies the images.
+- **Working directory**: where RTPSpy saves the converted and processed images and the logs.
+
+<img src="doc/SetWatch.png" alt="Watch and working directory fields" width=400>
+
+## 3. Scan and convert the reference images
+
+Scan the images needed to make the masks:
+
+- an **anatomical image** (e.g., T1-weighted);
+- a **reference functional image** for position (e.g., an SBRef image);
+- a short functional scan with **the same parameters as the real-time fMRI scan** (image size, TR, multiband setting, and so on). RTPSpy reads the scan parameters, such as the slice timing, from it.
+
+Convert them to NIfTI: press 'DICOM to NIfTI (dcm2niix)' on the 'Preprocessing' tab and select the folder of the session's DICOM files. The NIfTI files are saved in the working directory.
+
+## 4. Set the reference and template images
+
+On the 'Preprocessing' tab, use the 'Set' buttons to choose the **Anatomy** and **Base function** images.
+
+<img src="doc/MaskCreation.png" alt="Mask creation panel" height=400>
+
+On the 'Template' tab, set the **Template** image and the **ROI** on the template. Prepare these files before the session (this example includes the MNI152 template and a left amygdala ROI).
+
+<img src="doc/SetTemplate.png" alt="Template tab" height=400>
+
+The white matter and ventricle masks are made from the subject's anatomy by FastSeg (part of FastSurfer), so the 'WM' and 'Ventricle' template images are needed only when FastSeg is not used (see below).
+
+## 5. Create the masks
+
+On the 'Preprocessing' tab, press 'Create masks'. A dialog shows the progress.
+
+<img src="doc/MaskCreationDlg.png" alt="Mask creation progress dialog" height=200>
 
 > [!NOTE]
-> If this is not your first time using the application, you will be prompted with 'Load previous settings?' The application automatically saves your settings upon exit, allowing them to be reloaded during your next session. Select 'Yes' to load the previous settings.  
+> FastSeg needs a GPU. Without one, 'Skip FastSeg' is checked, and the brain is extracted with AFNI's 3dSkullStrip and the white matter and ventricle masks come from the template.
 
-<img src="/example/ROI-NF/doc/load_settings.png" height=100>  
+**Check the result.** Press the buttons in the 'Check the images' box. An image viewer shows the mask over the reference image in three views (sagittal, coronal, axial). Click a view to move the cursor, use the mouse wheel to change the slice, and set the overlay opacity with the slider. The 'Base' and 'Overlay' menus of the viewer choose the images to show.
 
-## 2. Set the watching and woking directories  
-The first step is to set up the watching and working directories at the top of the window.  
-The 'rtfMRI Watching Directory' is where fMRI images (e.g., DICOM files) are transferred in real time during the scan. It can also serve as the location where image files are copied to simulate real-time MRI.  
-The Working Directory is used to store all processed images and related files.  
-<img src="/example/ROI-NF/doc/SetWatch.png"  width=400>  
+## 6. Start the feedback application
 
-## 3. Scan anatomy and reference function images to make the mask images  
-Scan anatomical and functional images to use as a reference and to create mask images for real-time processing.  
-For the reference functional images, both a positional reference (e.g., sbref) and a parameter reference, which uses the same scanning parameters as the real-time fMRI scan (e.g., image space, TR, and multiband settings), need to be acquired.  
+The 'External app' tab sets the application that receives the ROI signal.
 
-### Convert DICOM files received in real time  
-Let's convert the DICOM files of the anatomical and reference functional images.   
-- Press the 'DICOM to NIfTI (dcm2niix)' button on the 'Preprocessing' tab in the 'App' panel.  
-- Selct folder where the DICOM files for the current session stored.  
+<img src="doc/ExtApp.png" alt="External app tab" height=400>
 
-The 'dcm2niix' command will run for the selected folder, and the converted NIfTI files will be saved in the 'working' directory.
+- 'Command' is the command line that starts it. Change `--screen`, `--size`, and `--pos` to set the screen, size, and position of the PsychoPy window, or add `--fullscr` for full screen.
+- Press 'Start the app' to open the PsychoPy window. Loading PsychoPy can take a minute. The window first shows the address and port it uses to talk with RTPSpy.
+- To close the PsychoPy window, press `Esc` while it is active.
 
-## 4. Set the template and reference files
-### Set 'Anatomy image' and 'Base function image'  
-Once the NIfTI images are ready, use the 'Set' buttons to assign the 'Anatomy' and 'Base function' images.  
-<img src="/example/ROI-NF/doc/MaskCreation.png" height=400>  
+You can skip this step: 'RTP setup' (next step) starts the application if it is not running.
 
-### Set the template files
-Press the 'Template' tab and set the 'Template' and 'ROI' files. These files hsould be prepared before the scanning session.
+## 7. Set up the real-time processing
 
-> White matter and ventricle segmentation are performed in the native image space by FastSeg during the mask creation process. Therefore, 'White Matter on Template' and 'Ventricle on Template' do not need to be set. However, if FastSeg is unavailable, these images will be used to generate the masks.
-<img src="/example/ROI-NF/doc/SetTemplate.png" height=400>  
+1. On the 'Preprocessing' tab, set the **fMRI parameters** image: the functional scan with the same parameters as the real-time scan (step 3).
+2. Press **'RTP setup'**. This prepares the processing for this session (and starts the feedback application if needed).
+3. To change the processing parameters, open the 'RTP' panel and press a module button (e.g., REGRESS). Press 'RTP setup' again after changing them.
 
-## 5. Create masks
-Go to the 'Preprocessing' tab and click the 'Create masks' button.  
-> [!NOTE]  
-> If a GPU is not available, 'Skip FastSeg' will be selected. In this case, 3dSkullStrip and template white matter and ventricle masks will be used instead of FastSeg.  
+<img src="doc/REGRESS.png" alt="REGRESS parameters" height=400>
 
-The 'Mask Image Creation' dialog will then open.
-<img src="/example/ROI-NF/doc/MaskCreationDlg.png" height=200>  
+If you loaded the previous settings at the start, the parameters are already set; 'RTP setup' updates the session-specific ones.
 
-### Check the images  
-Press the buttons in the 'Check the images' box to verify image alignment.
-An image viewer opens, showing the created mask overlaid on the reference image in three orthogonal views (sagittal, coronal, axial). Click on a view to move the cursor, use the mouse wheel to change the slice, and set the overlay opacity with the slider. 'Image viewer' shows the base function image; the Base and Overlay menus of the viewer choose the images to show.
+## 8. Get ready and start the scan
 
-## 6. Set an external application  
-> [!NOTE]  
-> This step can be skipped if the setup was completed in a previous session and loaded via the 'Load Previous Settings?' prompt at startup.  
+Press **'Ready'**. The PsychoPy window shows 'Ready', and RTPSpy waits for the scan to start.
 
-The external application that receives the ROI signals in real time can be configured in the 'External app' tab.  
-<img src="/example/ROI-NF/doc/ExtApp.png" height=400>  
+Start the fMRI scan. The processing starts with one of:
 
-The 'Command' field displays the command line used to launch the external application.  
-> Edit the options --screen, --size, and --pos to adjust the PsychoPy window's shape and position.
+- the **scanner's TTL pulse**, if a TTL recording device is connected (see [Physiological signal and TTL recording](../../PhysioRecording.md));
+- the **'T' key**, pressed while the RTPSpy window is active (a trigger box that sends the 't' key also works);
+- the **'Manual start'** button.
 
-The example application, a PsychoPy script named NF_psypy.py, demonstrates how to receive ROI signals from RTPSpy in real time. It simply displays the received values on the screen.  
+Each volume is processed as it arrives, and its ROI signal is sent to the PsychoPy window. The noise regression (REGRESS) starts after the number of volumes set in 'RTP' → 'REGRESS' → 'Start after'. When no new image arrives, the run ends and the results are saved in the working directory.
 
-Press the 'Start the app' button to open the application window.  
-> - It may take a minute to load, depending on the PsychoPy installation environment.  
-> - The initial window displays the address and port of the application server (RTP_SERV) for communication with RTPSpy.  
-> - You can quit this sample application by pressing 'ESC' when the window has a focus.
+## Testing without a scanner
 
-### 5. RTP setup
-1. Set the 'fMRI parameters' image on the 'Preprocessing' tab. The parameter reference must use the same scanning parameters as the real-time fMRI scan (e.g., image space, TR, and multiband settings).  
+The RT-MRI simulator replays a recorded session into the watch directory at the original timing:
 
-2. Press the 'RTP Setup' button to configure the real-time processing parameters. If the application window is not already open, it will launch automatically.  
+```bash
+~/RTPSpy/boot_rtmri_simulator.sh
+```
 
-3. Detailed settings for real-time processing parameter
-> [!NOTE]  
-> - The detailed setup step can be skipped if it was completed in a previous session and loaded via the 'Load Previous Settings?' prompt at startup.  
-> - Session-specific parameters are automatically updated when the 'RTP Setup' button is pressed.
+Set its output folder to the watch directory, select a session and a series, press 'Ready' in ROI-NF, and then 'Start Simulation'. If you have no TTL device, check 'Press 'T' key' in the simulator to start ROI-NF with the 'T' key. See the [README](../../README.md#testing-without-a-scanner-the-rt-mri-simulator) for details.
 
-You can adjust the real-time processing parameters in the 'RTP' panel.  
-Press a module button to set detailed parameters.  
-<img src="/example/ROI-NF/doc/REGRESS.png" height=400>  
+## Customizing the application
 
-When the parameters are modified, press the 'RTP Setup' button to apply the changes.  
+Two files make this application:
 
-## 7. Ready to scan
-Press the 'Ready' button.  
-- The application window shows a 'Ready' message.  
+- [roi_nf.py](roi_nf.py): computes the neurofeedback signal from each processed volume and sends it.
+- [NF_psypy.py](NF_psypy.py): the PsychoPy application that receives and presents the signal.
 
-## 8. Start the scan and real-time processing
-You are now ready to start the scan.
+### roi_nf.py: computing the signal
 
-- If the TTL signal trigger is set (refer to [Cardiogram, Respiration, and Scan Timing TTL Signal Recording](./PhysioRecording.md)), the RTP and PsychoPy application will start automatically with the trigger input.  
-- Alternatively, you can start the process manually by pressing the 'Manual Start' button.
+The signal is computed in the `do_proc` method of the `ROINF` class. The figure shows the code that extracts the signal from a processed volume (the output of REGRESS).
 
-> Regression begins after receiving a certain number of images, as specified in the 'RTP' -> 'REGRESS' -> 'Start after' field.
+<img src="doc/roi_nf_custom.png" alt="Signal extraction code in roi_nf.py" width=600>
 
-This boilerplate PsychoPy application simply displays the received values. To create a functional feedback application, edit the script at '[example/ROI-NF/NF_psypy.py](/example/ROI-NF/NF_psypy.py)'  
+To compute your own signal:
 
-# Customize the application
-The ROI-NF application class, [example/ROI-NF/roi_nf.py](/example/ROI-NF/roi_nf.py), extracts the mean signal from the ROI and sends the value to an external application.
-The external PsychoPy application, [example/ROI-NF/NF_psypy.py](/example/ROI-NF/NF_psypy.py), displays the received value on the screen.
-You can customize the application by editing these files.
+1. Make an application class that inherits from `RtpApp` (A).
+2. Override the `do_proc` method (B).
+3. Use the `ROI_orig` property (C), set by 'Create masks', for the ROI mask file.
+4. Compute the signal, e.g., the mean value within the ROI (D).
+5. Format the message (E).
+6. Send it to the external application with `send_extApp` (F).
 
-## roi_nf.py
-Neurofeedback signal extraction is performed in the 'do_proc' method of the ROINF class, defined in the roi_nf.py file.  
-The figure below shows a code snippet for extracting the signal from a processed fMRI image (the output of RtpRegress). By modifying this section, you can define a custom neurofeedback signal extraction method.   
-<img src="/example/ROI-NF/doc/roi_nf_custom.png" width=600>  
+### NF_psypy.py: presenting the signal
 
-To customize the neurofeedback signal calculation, follow these steps:
-1. Create a new application class inheriting from RtpApp (A).
-2. Override the do_proc method (B) to define your custom processing.
-3. Use the ROI_orig property (C), set during the mask creation process, to specify the ROI mask file.
-4. Implement signal calculation logic, such as calculating the mean value within the ROI mask (D).
-5. Format the signal using a specific format string (E).
-6. Send the signal to an external application in real-time with the send_extApp method (F).
+`NF_psypy.py` is a standalone PsychoPy script. It runs in its own environment (`~/RTPSpy/.venv-psychopy`) and does not import rtpspy. The figure shows the part that communicates with RTPSpy.
 
-## NF_psypy.py
-The neurofeedback application is defined in the NF_psypy.py file. This standalone PsychoPy application communicates with an RTPSpy application. The figure below shows a script snippet for handling this communication.  
-<img src="/example/ROI-NF/doc/NF_psypy_custom.png" width=600>
+<img src="doc/NF_psypy_custom.png" alt="Communication code in NF_psypy.py" width=600>
 
-The RTP_SERVE class, defined in the rtp_serve.py file within the RTPSpy package, facilitates signal and text message exchange with an RTPSpy application. Here’s how it works:
-1. Instantiating the RTP_SERVE class starts a TCP/IP socket server in a separate thread (A), handling data exchange in the background.
-2. The received neurofeedback data is stored in a Pandas DataFrame (https://pandas.pydata.org/) (B).
-3. The example script displays the most recent value on the screen as text (C). You can modify this section to create a more advanced feedback presentation.
+1. Creating an `RTP_SERVE` object (from `rtp_serve.py`, a copy of `rtpspy/rtp_serve.py` in this folder) starts a network server in the background that exchanges data with RTPSpy (A).
+2. The received signals are stored in a [pandas](https://pandas.pydata.org/) DataFrame (B).
+3. The script shows the latest value as text (C). Replace this part with your own feedback display.
 
-## Additional Example: LA-NF Application
-For a more comprehensive application example, refer to the LA-NF application in the example directory: [example/LA-NF/roi_nf.py](/example/LA-NF/),
+### A complete example
+
+For a full neurofeedback session with task blocks and feedback display, see the [LA-NF application](../LA-NF#readme).

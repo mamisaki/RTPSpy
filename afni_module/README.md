@@ -1,15 +1,8 @@
-# Compile librtp.so module
-RTPSpy uses some AFNI functions that are compiled in the librtp.so shared object. A prepared file, RTPSpy/rtpspy/librtp.so, usually works fine and you do not need to recompile it yourself.
-However, if it does not work due to a library compatibility error or other reasons, you can compile it using the procedure below.
+# librtp source
 
-Install the packages needed to compile afni from source;
-```
-sudo apt install build-essential zlib1g-dev libxt-dev libxext-dev libexpat1-dev libmotif-dev libf2c2-dev
-```
+This folder has the source code of the librtp library (`librtp.c`, `rtp_retrots.c`), which provides some AFNI C functions to RTPSpy, and the scripts to build it:
 
-Clone the AFNI sources to afni_module and run make;
-```
-cd ~/RTPSpy/afni_module
-git clone https://github.com/afni/afni.git
-make -f Makefile.librtp.linux_ubuntu
-```
+- `build_librtp_container.sh`: builds the Linux library in a container (used by `install.sh`).
+- `Makefile.librtp.*`: build on your computer (Linux, macOS).
+
+You usually do not need to build it. See [Compile the librtp Library](../Compilelibrtp.md) for when and how to build it.

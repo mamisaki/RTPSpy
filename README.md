@@ -1,175 +1,272 @@
 # RTPSpy: fMRI Real-Time Processing System in Python
 
-> [!NOTE]
-> We are currently developing a new version of the library that will run in a container (i.e., Docker, Singularity (Apptainer)).  
-> Some packages are under development and may not work outside of our environment.  
-> If you need help setting them up in your environment, please contact me at (mamisaki@gmail.com). I may be able to assist you in implementing the system for your environment.
+RTPSpy is a Python library for building real-time fMRI (rtfMRI) applications, such as neurofeedback.
+It provides:
 
-RTPSpy is a Python library for real-time fMRI (rtfMRI) data processing systems.
-The package includes:
-* A fast and comprehensive online fMRI processing pipeline comparable to offline processing, including RETROICOR [physiological noise correction](./PhysioRecording.md).  
-* Utilities for fast and accurate anatomical image processing to identify a target region on-site.
-* An interface to an external application for feedback presentation.
+- **Online fMRI processing** comparable to offline processing: motion correction, slice-timing correction, smoothing, and noise regression, including RETROICOR [physiological noise correction](./PhysioRecording.md).
+- **Fast anatomical image processing** to define a target brain region on site (brain extraction, segmentation, and template-to-subject ROI transformation).
+- **A link to an external application** (e.g., a PsychoPy script) that presents the feedback.
 
-Please see the following article:
-https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full
+RTPSpy is a library, not a complete application. You build your own application on it; the [example applications](#example-applications) are a good starting point.
 
-Also, refer to the article below for the evaluation of the system:  
-[Masaya Misaki and Jerzy Bodurka (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33)
+For a description of the system, see [Misaki and Bodurka (2022), Frontiers in Neuroscience](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full).
 
-## Requirements and Dependencies
-### Supporting Systems
-RTPSpy has been developed on a Ubuntu Linux system. It can also be run on macOS and Windows with the Windows Subsystem for Linux (WSL), although GPU computation is not currently supported on macOS and WSL.
+For an evaluation of the online denoising, see [Misaki M. and Bodurka J. (2021) The impact of real-time fMRI denoising on online evaluation of brain activity and functional connectivity. J. Neural Eng. 18 046092](https://iopscience.iop.org/article/10.1088/1741-2552/ac0b33).
 
-### External Tools
-`install.sh` sets up everything: the Python environment (with [uv](https://docs.astral.sh/uv/); conda is not needed), the AFNI command-line programs, FastSurfer, and dcm2niix.
-AFNI and FastSurfer are run from container images, which needs [Apptainer](https://apptainer.org/docs/admin/main/installation.html) (recommended on Linux; `sudo apt install apptainer` or the .deb package from the Apptainer releases) or Docker (e.g., Docker Desktop on macOS).
-Without a container runtime, AFNI installed on the host is used, and masks are made without FastSurfer.
+If you need help setting up RTPSpy in your environment, contact Masaya Misaki (<mamisaki@gmail.com>).
 
-The AFNI GUI is not run from the container.
+## Contents
 
-### GPU
-RTPSpy can take advantage of GPU computation; however, it is not mandatory for real-time image processing, as computational speed is sufficient for real-time fMRI even without a GPU. GPU acceleration is utilized in online fMRI data processing and anatomical image processing with FastSurfer (https://deep-mi.org/research/fastsurfer/).
-To use GPU computation, install an NVIDIA GPU driver before running `install.sh`. The installer selects the PyTorch build and the FastSurfer image for the driver (`--torch-backend` overrides the PyTorch build, e.g., `cpu`, `cu126`).
+- [What you need](#what-you-need)
+- [Installation](#installation)
+- [Check the installation](#check-the-installation)
+- [How a real-time session works](#how-a-real-time-session-works)
+- [Starting the scan: TTL trigger or the 'T' key](#starting-the-scan-ttl-trigger-or-the-t-key)
+- [Testing without a scanner: the RT-MRI simulator](#testing-without-a-scanner-the-rt-mri-simulator)
+- [Example applications](#example-applications)
+- [Output files](#output-files)
+- [Processing latency](#processing-latency)
+- [Comparing real-time and offline processing](#comparing-real-time-and-offline-processing)
+- [For developers](#for-developers)
+
+## What you need
+
+| | Required? | Notes |
+|---|---|---|
+| Linux (Ubuntu) | Yes, or one of the next two | RTPSpy is developed and used on Ubuntu. |
+| macOS | | Works, without GPU computation. The librtp library must be [compiled](./Compilelibrtp.md). |
+| Windows (WSL) | | Works in the Windows Subsystem for Linux, without GPU computation. An X server is needed for the GUI. |
+| Apptainer or Docker | Recommended | Runs the AFNI programs and FastSurfer from container images. On Linux, Apptainer is recommended (`sudo apt install apptainer`, or the .deb package from the [Apptainer releases](https://apptainer.org/docs/admin/main/installation.html)); on macOS, Docker Desktop. Without a container runtime, AFNI installed on the computer is used, and masks are made without FastSurfer. |
+| NVIDIA GPU | No | Speeds up the online processing and the anatomical segmentation (FastSurfer). Real-time processing is fast enough without a GPU. Install the NVIDIA driver before running the installer. |
+| Physio and TTL devices | No | Needed only for RETROICOR and for starting the processing with the scanner trigger. Without them, start the scan with the 'T' key or the 'Manual start' button. See [Physiological signal and TTL recording](./PhysioRecording.md). |
+
+You do not need conda or a separate AFNI installation: the installer sets up everything.
 
 ## Installation
-Every command should be entered in the terminal (Terminal application on macOS and Ubuntu console on WSL).
 
-### Clone the package and run the installer
-```
+Enter the commands in a terminal (on Windows, the Ubuntu console of WSL).
+
+```bash
 git clone https://github.com/mamisaki/RTPSpy.git ~/RTPSpy
 cd ~/RTPSpy
 ./install.sh
 ```
-The installer
-1. installs uv if it is not found,
-2. makes a Python 3.13 environment in `~/RTPSpy/.venv` (uv downloads Python) and installs RTPSpy, PyTorch, dcm2niix, and the other Python packages,
-3. pulls the AFNI (`afni/afni_docker_universal`) and FastSurfer (`deepmi/fastsurfer`, v2.6.0) images; with Apptainer they are saved as `.sif` files in `~/RTPSpy/containers` (about 2 GB and 2-6 GB),
-4. writes `containers/containers.json`, and wrapper scripts for the AFNI programs in `containers/afni_bin`,
-5. builds librtp.so in a container if the bundled one does not load on this system (see below).
 
-Re-running `./install.sh` updates the environment and does not download existing images again. Options (`./install.sh --help`):
+The installer:
 
-| Option | |
+1. installs [uv](https://docs.astral.sh/uv/) (the Python package manager) if it is not found;
+2. makes a Python 3.13 environment in `~/RTPSpy/.venv` and installs RTPSpy, PyTorch (built for your GPU driver, or for the CPU), dcm2niix, and the other Python packages;
+3. downloads the AFNI and FastSurfer (v2.6.0) container images. With Apptainer, they are saved as `.sif` files in `~/RTPSpy/containers` (about 2 GB and 2-6 GB);
+4. makes `~/RTPSpy/.venv-psychopy`, a separate Python 3.12 environment for the PsychoPy feedback scripts of the examples;
+5. rebuilds the librtp library in a container if the bundled one does not work on your system.
+
+Running `./install.sh` again updates the packages to their newest versions. Images that already exist are not downloaded again.
+
+### Installer options
+
+Run `./install.sh --help` for the full list.
+
+| Option | Meaning |
 |---|---|
-| `--afni auto\|container\|host` | `auto` (default) uses AFNI on the host if found, otherwise the container. `container` always uses the container. |
-| `--runtime apptainer\|docker\|...\|none` | Container runtime (default: detected). |
-| `--no-fastsurfer` | Do not pull the FastSurfer image. |
-| `--torch-backend B` | PyTorch build (`auto`, `cpu`, `cu126`, `cu130`, ...). |
-| `--bind DIRS` | Extra host directories (colon-separated) visible in the containers. |
+| `--afni auto\|container\|host` | `auto` (default): use AFNI installed on this computer if found, otherwise the container. `container`: always the container. `host`: never download the AFNI container. |
+| `--runtime auto\|apptainer\|singularity\|docker\|podman\|none` | Container runtime. The default is detected. |
+| `--no-fastsurfer` | Do not download the FastSurfer image. |
+| `--no-psychopy` | Do not make the PsychoPy environment. |
+| `--torch-backend B` | PyTorch build: `auto` (default), `cpu`, `cu126`, `cu128`, `cu130`, ... |
+| `--python V` | Python version (default 3.13). |
 | `--container-dir D` | Where to save the `.sif` images. |
-| `--build-librtp auto\|yes\|no` | Build librtp.so in a container: if the bundled one does not load (`auto`, default), always, or never. |
+| `--bind DIRS` | Extra folders (colon-separated) to make visible in the containers. |
+| `--build-librtp auto\|yes\|no` | Build librtp in a container: if the bundled one does not load (`auto`), always, or never. |
 
-The containers see `$HOME`, `/tmp`, the current directory, `/mnt`, `/media`, `/data`, `/scratch`, and the top-level directory of each absolute path given to the program. Add others with `--bind` or the `RTPSPY_BIND` environment variable.
+The containers can see your home folder, `/tmp`, the current folder, `/mnt`, `/media`, `/data`, `/scratch`, and the top-level folder of any absolute path given to a program. To add other folders, use `--bind` or the `RTPSPY_BIND` environment variable.
 
-Activate the environment with
-```
-source ~/RTPSpy/.venv/bin/activate
-```
-The AFNI wrappers are put on PATH by the activation, and by `import rtpspy` in any case.
+### After installing (Linux and WSL)
 
-### (Linux, WSL) Qt library for the GUI
-The GUI uses PyQt6 (Qt 6), which needs `libxcb-cursor0` on X11 (`install.sh` tells you if it is missing):
-```
+The GUI needs one system library on X11 (the installer tells you if it is missing):
+
+```bash
 sudo apt install libxcb-cursor0
 ```
 
-### (Linux, WSL) Add user to the dialout group to access the serial port
-> [!TIP]
-> Serial (USB) port access is required to record physiological signals using a USB GPIO device.  
-> For details, see [Cardiogram, Respiration, and Scan Timing TTL Signal Recording](./PhysioRecording.md).   
-```
+To record physio and TTL signals with a USB device, your user must be allowed to use serial ports. Log out and in again (or reboot) after this command:
+
+```bash
 sudo usermod -a -G dialout $USER
 ```
 
-You may need to reboot the system.  
+### Using the environment
 
-### Test the system
+The example applications and tools have start scripts that use the environment directly. To use RTPSpy in your own scripts, activate the environment first:
+
+```bash
+source ~/RTPSpy/.venv/bin/activate
 ```
+
+The AFNI programs (through wrapper scripts in `containers/afni_bin`) are put on the PATH by the activation, and also by `import rtpspy`.
+
+## Check the installation
+
+```bash
 ~/RTPSpy/.venv/bin/python ~/RTPSpy/rtpspy_system_check.py
 ```
-> [!TIP]
-> The bundled librtp.so is built in the AFNI build container (Ubuntu 18.04) and needs GLIBC 2.27 or later. If it does not load, `install.sh` rebuilds it in the container (`afni_module/build_librtp_container.sh`) and saves it as `containers/librtp.so`, which is then used in place of the bundled one (`./install.sh --build-librtp yes` always rebuilds it).  
-> On macOS, compile the librtp library from the source; refer to [Compile librtp library](./Compilelibrtp.md).
 
-### Using a local FastSurfer clone
-Instead of the container, a FastSurfer clone in `rtpspy/FastSurfer` can be used (`RTPSPY_FASTSURFER=local`, or when the container is not set up):
-```
-git clone --branch v2.6.0 https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
-uv pip install --python ~/RTPSpy/.venv/bin/python -r ~/RTPSpy/rtpspy/FastSurfer/requirements.txt
+This runs the whole real-time pipeline on the test data in `tests/`, writing the volumes one by one at the TR as a scanner would. If it ends without errors, RTPSpy is ready.
+
+If the librtp library fails to load, see [Compile the librtp library](./Compilelibrtp.md).
+
+## How a real-time session works
+
+A typical neurofeedback session with an RTPSpy application goes as follows (the [ROI-NF example](example/ROI-NF#readme) walks through each step):
+
+1. **Set the folders.** The *watch directory* is where the scanner exports the images in real time. The *working directory* is where RTPSpy saves its results.
+2. **Scan the reference images.** Scan an anatomical image and a functional reference image, and convert them to NIfTI ('DICOM to NIfTI (dcm2niix)' button).
+3. **Make the masks.** RTPSpy extracts the brain, segments white matter and ventricles, and brings the template ROI into the subject's functional space ('Create masks' button). Check the result in the built-in image viewer.
+4. **Set up the processing.** Choose the processing steps and their parameters, then press 'RTP setup'.
+5. **Get ready.** Press 'Ready'. RTPSpy now waits for the scan to start.
+6. **Start the scan.** The processing starts with the scanner trigger, the 'T' key, or the 'Manual start' button (see the next section). Each new volume is processed as it arrives, and the feedback value is sent to the presentation application.
+7. **End of the scan.** When no new image arrives, RTPSpy ends the run and saves the results.
+
+## Starting the scan: TTL trigger or the 'T' key
+
+RTPSpy needs to know when the scan starts. There are three ways:
+
+- **Scanner TTL pulse.** If a TTL recording device is connected (see [Physiological signal and TTL recording](./PhysioRecording.md)), the processing starts with the first TTL pulse after 'Ready'.
+- **The 'T' key.** Press `T` while the RTPSpy window is active. This also works with a trigger box that sends the 't' key, as long as the RTPSpy window has the keyboard focus.
+- **The 'Manual start' button.**
+
+The physio and TTL devices are optional. RTPSpy starts a helper program, rt_physio, which records the signals if a device is found. **If no device is found**:
+
+- the physio signal window is not shown, and the 'Physio' check box is disabled;
+- the 'Physio (RICOR)' option of REGRESS is disabled and set to 'None', since the RETROICOR regressors cannot be made without the signals. (It is set back when a device becomes available.)
+
+Start the scan with the 'T' key or the 'Manual start' button in that case.
+
+## Testing without a scanner: the RT-MRI simulator
+
+The RT-MRI simulator replays a recorded scan session, so that you can test an application on any computer.
+
+```bash
+~/RTPSpy/boot_rtmri_simulator.sh
 ```
 
-### Running the tests
-The unit tests in `tests/` use pytest and only the test data in `tests/` or synthetic data.
-```
-cd ~/RTPSpy
-source .venv/bin/activate                                        # pytest is installed by install.sh
-QT_QPA_PLATFORM=offscreen python -m pytest tests                 # all tests
-python -m pytest tests -m "not gpu and not afni and not slow"    # quick CPU-only tests (as in CI)
-```
-Tests are marked `gpu` (needs CUDA), `afni` (compares with AFNI programs on PATH), and `slow` (long runs). The `gpu` and `afni` tests are skipped when CUDA or AFNI is not available.
+- **DICOM images.** Select a session folder of DICOM files and a series. The files are copied into the output folder (set it to RTPSpy's watch directory) at the times they were made on the scanner, plus a transfer delay (0.2 s by default). Start, pause, stop, or copy one file at a time; 'Auto-advance' continues with the next series.
+- **TTL pulses.** A TTL pulse is sent to rt_physio at the acquisition time of each volume. rt_physio records these pulses only while it plays the simulated physio signals, so press 'Start Physio' first (see below).
+- **The 'T' key.** With 'Press 'T' key', the simulator presses the `t` key at the scan start or at every volume, in the window whose title matches 'Key window' (default: the RTPSpy window). This tests a setup without a TTL device. It needs `xdotool` (`sudo apt install xdotool`).
+- **Physio signals.** Feed rt_physio with cardiac and respiration signals from two text files (one value per line) or from a BIDS `*_physio.tsv[.gz]` file with its JSON sidecar. The signals are played in a loop, and the physio window appears.
 
-## Usage
-Please refer to [this article](https://www.frontiersin.org/articles/10.3389/fnins.2022.834827/full) for usage information about the library.
-RTPSpy is not a complete application by itself but is intended to be used as part of a user's custom rtfMRI application.
-Example applications using the RTPSpy library are shown below.
+Put your recorded sessions in `~/RTPSpy/simulation_data` (or choose another folder with 'Set'). The simulator reads the DICOM headers of a session once and caches them in the session folder (`.rtmri_series_cache.csv`).
 
-### Output files
-RTPSpy names its output files after BIDS (derivatives) as far as the real-time setting allows: `<entities>_<suffix>.<ext>`, with the entities in the BIDS order; tables are TSV files ('n/a' for missing values) with a JSON sidecar describing the columns.
-The entities of a scan come from the DICOM header of its first volume: `sub` is the patient name (the ID of two letters and three digits if it has one), `ses` the study date and time (`YYYYMMDDhhmmss`, as dcm2niix's `%t`), `task` the series description (letters and digits only), and `run` the series number. For NIfTI input, they are read from the file name (a BIDS name, or the name of the DICOM converter, `sub-*_ses-*_ser-*_desc-*`); a name without entities gives `sub-unknown` and `task-<file name>`, and the run is the next free number. If files of the same scan exist (e.g., the same series replayed), the new files get `rep<k>` in `desc` instead of overwriting them.
+## Example applications
+
+The examples are GUI applications built on RTPSpy. They show how to write a custom neurofeedback application with little code. The feedback is presented by a separate PsychoPy script (`NF_psypy.py`), which RTPSpy starts and communicates with over a network socket.
+
+- **[ROI-NF](example/ROI-NF#readme)**: extracts the mean signal of a region of interest (ROI) at each TR and sends it to the PsychoPy script, which shows the value. A template for your own application.
+- **[LA-NF](example/LA-NF#readme)**: a complete left-amygdala neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011; Young et al., 2017). Several parameters differ from those of the published studies.
+
+The PsychoPy scripts run in `~/RTPSpy/.venv-psychopy` (Python 3.12, because PsychoPy supports Python < 3.13). They do not import rtpspy; each example folder has a copy of `rtpspy/rtp_serve.py` for the communication.
+
+Young K.D., Siegle G.J., Zotev V., Phillips R., Misaki M., Yuan H., Drevets W.C., and Bodurka J. (2017). Randomized Clinical Trial of Real-Time fMRI Amygdala Neurofeedback for Major Depressive Disorder: Effects on Symptoms and Autobiographical Memory Recall. Am J Psychiatry 174, 748-755.
+Zotev V., Krueger F., Phillips R., Alvarez R.P., Simmons W.K., Bellgowan P., Drevets W.C., and Bodurka J. (2011). Self-Regulation of Amygdala Activation Using Real-Time fMRI Neurofeedback. PLoS ONE 6, e24522.
+
+## Output files
+
+RTPSpy saves its results in the working directory. The file names follow the BIDS (derivatives) convention as far as the real-time setting allows. Tables are TSV files ('n/a' for missing values) with a JSON file describing the columns.
+
+Each scan is named `<scan>` = `sub-<label>[_ses-<label>]_task-<label>_run-<index>`, taken from the DICOM header of its first volume:
+
+| Entity | From |
+|---|---|
+| `sub` | Patient name (the ID of two letters and three digits, if it has one) |
+| `ses` | Study date and time (`YYYYMMDDhhmmss`) |
+| `task` | Series description (letters and digits only) |
+| `run` | Series number |
+
+For NIfTI input, the entities are read from the file name (a BIDS name, or a name like `sub-*_ses-*_ser-*_desc-*`). A name without entities gives `sub-unknown` and `task-<file name>`. If files of the same scan already exist (e.g., the same series replayed), the new files get `rep<k>` in `desc` instead of overwriting them.
 
 | Folder | File | Content |
 |---|---|---|
-| `RTP/` | `<scan>_desc-<module>_bold.nii.gz` (+ `.json`) | Processed images saved by a module (`volreg`, `tshift`, `smooth`, `regress`); the sidecar has `RepetitionTime` and `NumberOfVolumesDiscardedByUser` (volumes before the first processed one) |
-| `RTP/` | `<scan>_desc-regressqc_timeseries.tsv` | Online QC of REGRESS (FD, DVARS, tSNR, censored) |
-| `RTP/` | `<scan>_desc-<module>proctime_timeseries.tsv` | Processing time of each volume (with 'save_delay') |
+| `RTP/` | `<scan>_desc-<module>_bold.nii.gz` (+ `.json`) | Processed images of a module (`volreg`, `tshift`, `smooth`, `regress`) |
+| `RTP/` | `<scan>_desc-regressqc_timeseries.tsv` | Online quality control of REGRESS (FD, DVARS, tSNR, censored volumes) |
+| `RTP/` | `<scan>_desc-<module>proctime_timeseries.tsv` | Processing time of each volume |
 | `log/` | `<scan>_desc-rtpspy_params.json` | Parameters of the modules and the application |
 | `log/` | `<scan>_desc-roi_timeseries.tsv` | ROI signals |
-| `log/` | `<scan>_desc-latency_timeseries.tsv` | Latency of each volume (see below) |
-| `log/` | `<scan>_physio.tsv.gz` (+ `.json`) | Cardiac and respiration signals and the TTL triggers, saved by rt_physio at the scan end |
+| `log/` | `<scan>_desc-latency_timeseries.tsv` | Latency of each volume (see [Processing latency](#processing-latency)) |
+| `log/` | `<scan>_physio.tsv.gz` (+ `.json`) | Cardiac and respiration signals and the TTL pulses (with a recording device) |
 
-`<scan>` is `sub-<label>[_ses-<label>]_task-<label>_run-<index>`.
-The masks made by `RtpApp.make_masks` are in `RTP/`, named with the entities of the anatomy image (`sub-*[_ses-*]_T1w.nii.gz`, `_desc-brain_T1w`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`) or of the base function image (`<scan>_boldref.nii.gz` and its `.json`, `<scan>_desc-RTP_mask`, `_desc-GSR_mask`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`, `_label-<ROI>_mask`). The anatomy aligned to the function image is `_space-func_desc-brain_T1w` (`func` is the space of the base function image), and the transforms are `_from-T1w_to-func_mode-image_xfm.aff12.1D` (AFNI) and `_from-<template>_to-func_mode-image_desc-{affine,warp,invwarp}_xfm` (ANTs). With distortion correction, the images in the corrected space have `space-sdc`.
+<details>
+<summary>Mask and transform files made by 'Create masks'</summary>
 
-### Processing latency
-RTPSpy records three times for each volume: the acquisition onset from the scanner TTL pulse (recorded by rt_physio), the time the image file was read (RtpWatch), and the time the feedback signal was sent to the external application (or saved to the signal file). From these, two latencies are derived:
-- **TTL → image**: image reconstruction and transfer by the scanner (`acq_to_read`)
-- **image → feedback**: RTPSpy processing (`read_to_fb`)
+The masks are saved in `RTP/`, named after the anatomy image (`sub-*[_ses-*]_T1w.nii.gz`, `_desc-brain_T1w`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`) or the base function image (`<scan>_boldref.nii.gz` and its `.json`, `<scan>_desc-RTP_mask`, `_desc-GSR_mask`, `_label-WM_mask`, `_label-Vent_mask`, `_desc-aseg_dseg`, `_label-<ROI>_mask`).
+The anatomy aligned to the function image is `_space-func_desc-brain_T1w` (`func` is the space of the base function image). The transforms are `_from-T1w_to-func_mode-image_xfm.aff12.1D` (AFNI) and `_from-<template>_to-func_mode-image_desc-{affine,warp,invwarp}_xfm` (ANTs). With distortion correction, images in the corrected space have `space-sdc`.
+</details>
 
-Check 'Latency' in the 'Use / Show' box to plot them in real time, with the total (**TTL → feedback**, `acq_to_fb`) in the bottom panel. The y range of each panel is fitted to the values. Volumes processed retrospectively (the wait period of RtpRegress) are shown as gray points in the image → feedback and total panels and excluded from their y range and median; the first real-time volume (its processing includes the initial fit) is also excluded from their y range. If no TTL pulse matches a volume (e.g., a manual start without the TTL), its onset is estimated from the scan onset and TR, and it is shown with a hollow marker.
-The values of each volume are saved as `<scan>_desc-latency_timeseries.tsv` in the `log` folder of the working directory at the end of a run (with `vol`, `onset`, `read`, `sent`, `acq_to_read`, `read_to_fb`, `acq_to_fb`, `onset_estimated`, `retrospective`).
-The TTL of a volume is the pulse nearest to its expected onset, so both one pulse per volume and one pulse per slice work. The feedback time is recorded when an application sends an `NF {time},{volume_index},...;` message with `RtpApp.send_extApp`, so applications that override `do_proc` (e.g., example/ROI-NF) need no change.
+## Processing latency
 
-### Compare real-time and offline processing
-`rtpspy/rtp_offline_compare.py` quantifies how close the real-time (online, causal) processing is to standard offline processing of the same run, as evaluated in Misaki and Bodurka (2022), using your own data and parameters.
-It runs the RTPSpy modules volume by volume (VOLREG → TSHIFT → SMOOTH → REGRESS, as in `RtpApp`; the RETROICOR regressors of each volume use only the physio samples recorded up to that volume), and processes the whole run offline with matched settings: `3dvolreg` (same reference volume and interpolation), `3dTshift` (same method, reference time, slice timing, and ignored initial volumes), `3dBlurInMask -preserve` (same FWHM and mask; the same algorithm as RtpSmooth), and a whole-run least-squares GLM (numpy) with the same regressors (Legendre polynomials, motion, GS/WM/Vent mean signals, and RICOR8 from the whole physio signals).
-The AFNI programs must be on PATH.
-```
+RTPSpy records, for each volume, when it was acquired (from the scanner TTL pulse), when its image file was read, and when the feedback value was sent. From these it reports:
+
+- **TTL → image**: image reconstruction and transfer by the scanner;
+- **image → feedback**: processing by RTPSpy;
+- **TTL → feedback**: the total delay.
+
+Check 'Latency' in the 'Use / Show' box to plot them during the scan. The values are saved in `log/<scan>_desc-latency_timeseries.tsv` at the end of each run.
+
+<details>
+<summary>Details</summary>
+
+- Volumes processed retrospectively (while REGRESS waits for enough volumes) are shown as gray points and excluded from the y range and the median. The first real-time volume (whose processing includes the initial fit) is also excluded from the y range.
+- If no TTL pulse matches a volume (e.g., a start with the 'T' key or 'Manual start' without a TTL device), its onset is estimated from the scan start and the TR and shown with a hollow marker.
+- The TTL of a volume is the pulse nearest to its expected onset, so both one pulse per volume and one pulse per slice work.
+- The feedback time is recorded when the application sends an `NF {time},{volume_index},...;` message with `RtpApp.send_extApp`. Applications that override `do_proc` (e.g., ROI-NF) need no change.
+- Columns of the file: `vol`, `onset`, `read`, `sent`, `acq_to_read`, `read_to_fb`, `acq_to_fb`, `onset_estimated`, `retrospective`.
+</details>
+
+## Comparing real-time and offline processing
+
+`rtpspy/rtp_offline_compare.py` measures how close the real-time processing is to standard offline processing of the same run, with your own data and parameters (as evaluated in Misaki and Bodurka, 2022).
+
+It runs the RTPSpy modules volume by volume, as in a real-time session (VOLREG → TSHIFT → SMOOTH → REGRESS; the RETROICOR regressors of each volume use only the physio signals recorded up to that volume). It then processes the whole run offline with matched settings (AFNI `3dvolreg`, `3dTshift`, `3dBlurInMask`, and a whole-run GLM with the same regressors), and compares the two.
+
+```bash
 python -m rtpspy.rtp_offline_compare --input func.nii.gz --masks_dir work/RTP \
-    --roi work/RTP/sub-01_task-rest_run-01_label-ROI_mask.nii.gz --card ECG.1D --resp Resp.1D --physio_freq 40 \
+    --roi work/RTP/sub-01_task-rest_run-01_label-ROI_mask.nii.gz \
+    --card ECG.1D --resp Resp.1D --physio_freq 40 \
     [--param rtp_params.json] --out compare_out
 ```
-`--masks_dir` is the directory of the masks made by `RtpApp.make_masks` (`*_desc-RTP_mask`, `*_desc-GSR_mask`, `*_task-*_label-WM_mask`, `*_task-*_label-Vent_mask`; the names of the former versions, `RTP_mask`, `GSR_mask`, `*_WM_alFunc`, `*_Vent_alFunc`, are also found); each mask can also be given with `--rtp_mask`, `--gs_mask`, `--wm_mask`, `--vent_mask`. `--param` is a JSON file of module parameters (`{"VOLREG": {"regmode": "cubic"}, "REGRESS": {...}, ...}`, the format of `rtp_sim.py`); the default is the setting of `rtpspy_system_check.py`.
-The output directory has the online module outputs and QC (`online/RTP/`), the offline outputs and the AFNI commands (`offline/`), `metrics.csv`, `roi_series.csv`, and `report.html` (with `report.png`). The metrics are computed over the volumes output by the online pipeline, within the RTP mask: the correlation and maximum difference of each motion parameter, the voxelwise correlation and RMSE of each stage (median and 5th percentile), the ROI mean signal correlation, the noise variance removed by the regression (% of the input variance), and `REGRESS_causal`, the difference between the cumulative (online) GLM and the whole-run GLM applied to the same online input. The `*_realtime_vols` metrics exclude the volumes that REGRESS processes retrospectively at its first fit.
 
-### Example GUI Applications
-We provide a boilerplate graphical user interface (GUI) application that integrates operations with RTPSpy.  
-We also present a sample external application for neurofeedback. This application uses PsychoPy (Peirce, 2008) for neurofeedback presentation and demonstrates how RTPSpy communicates with an external application using the library module (RTP_SERV).
+- `--masks_dir`: the folder of the masks made by 'Create masks'. Each mask can also be given with `--rtp_mask`, `--gs_mask`, `--wm_mask`, `--vent_mask`.
+- `--param`: a JSON file of module parameters, e.g., `{"VOLREG": {"regmode": "cubic"}, "REGRESS": {...}}`. The default is the setting of `rtpspy_system_check.py`.
+- The output folder has `report.html` (with `report.png`), `metrics.csv`, `roi_series.csv`, the online outputs (`online/RTP/`), and the offline outputs with the AFNI commands (`offline/`).
 
-The GUI application serves as just an example of library usage. However, users may develop a custom neurofeedback application with minimal modifications to the example script.
+<details>
+<summary>The metrics</summary>
 
-The feedback presentation scripts (`NF_psypy.py`) run with PsychoPy in a separate environment, `~/RTPSpy/.venv-psychopy` (Python 3.12, because PsychoPy supports Python < 3.13). `install.sh` makes it (skip it with `--no-psychopy`). The scripts do not import rtpspy; each example directory has a copy of `rtpspy/rtp_serve.py` for the communication with RTPSpy.
+The metrics are computed over the volumes output by the online pipeline, within the RTP mask: the correlation and maximum difference of each motion parameter; the voxelwise correlation and RMSE of each stage (median and 5th percentile); the ROI mean signal correlation; the noise variance removed by the regression (% of the input variance); and `REGRESS_causal`, the difference between the cumulative (online) GLM and the whole-run GLM applied to the same online input. The `*_realtime_vols` metrics exclude the volumes that REGRESS processes retrospectively at its first fit.
+</details>
 
-On WSL, you also need to set up an X server application. The instructions for AFNI installation on WSL describe this setup, so I assume you have already completed it.
+## For developers
 
-#### ROI-NF (example/ROI-NF)
-This application extracts the signal from a region of interest (ROI) at each TR and sends it to an external application in real time. No feedback presentation script is provided, except for a script that receives the signal in real time from the system via a network socket. This serves as a boilerplate for the RTPSpy application to create a custom neurofeedback application with minimal scripting.
-See [example/ROI-NF](example/ROI-NF#readme)
+### Running the tests
 
-#### LA-NF (example/LA-NF)
-This application implements a left amygdala neurofeedback session with happy autobiographical memory recall (Zotev et al., 2011; Young et al., 2017). This script serves as a demonstration of a full-fledged GUI application using RTPSpy. Note that this application was not used in the previous studies, and several parameters differ from those in earlier reports.  
-See [example/LA-NF](example/LA-NF#readme)
+The tests in `tests/` use pytest (installed by `install.sh`) and only the test data in `tests/` or synthetic data.
 
-Young, K.D., Siegle, G.J., Zotev, V., Phillips, R., Misaki, M., Yuan, H., Drevets, W.C., and Bodurka, J. (2017). Randomized Clinical Trial of Real-Time fMRI Amygdala Neurofeedback for Major Depressive Disorder: Effects on Symptoms and Autobiographical Memory Recall. Am J Psychiatry 174, 748-755.  
-Zotev, V., Krueger, F., Phillips, R., Alvarez, R.P., Simmons, W.K., Bellgowan, P., Drevets, W.C., and Bodurka, J. (2011). Self-Regulation of Amygdala Activation Using Real-Time fMRI Neurofeedback. PLoS ONE 6, e24522.
+```bash
+cd ~/RTPSpy
+source .venv/bin/activate
+QT_QPA_PLATFORM=offscreen python -m pytest tests                 # all tests
+python -m pytest tests -m "not gpu and not afni and not slow"    # quick CPU-only tests
+```
 
+Tests marked `gpu` (needs CUDA) and `afni` (compares with AFNI programs) are skipped when CUDA or AFNI is not available; `slow` marks long runs.
+
+### The librtp library
+
+RTPSpy uses some AFNI C functions compiled into `librtp.so` (`librtp.dylib` on macOS). The bundled Linux library needs GLIBC 2.27 or later; if it does not load, `install.sh` rebuilds it in a container. See [Compile the librtp library](./Compilelibrtp.md).
+
+### Using a local FastSurfer instead of the container
+
+A FastSurfer clone in `rtpspy/FastSurfer` is used when `RTPSPY_FASTSURFER=local` is set, or when the container is not set up:
+
+```bash
+git clone --branch v2.6.0 https://github.com/Deep-MI/FastSurfer.git ~/RTPSpy/rtpspy/FastSurfer
+uv pip install --python ~/RTPSpy/.venv/bin/python -r ~/RTPSpy/rtpspy/FastSurfer/requirements.txt
+```
