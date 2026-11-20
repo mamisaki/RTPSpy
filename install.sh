@@ -201,7 +201,8 @@ pull_image() {
 msg "AFNI"
 AFNI_JSON='{"mode": "none"}'
 # AFNI on the host (not the wrappers of a previous installation)
-HOST_AFNI="$(PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$CONF_DIR/afni_bin" | paste -sd:)" command -v 3dvolreg || true)"
+# ('paste -sd: -': BSD paste on macOS needs the '-' for stdin)
+HOST_AFNI="$(PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$CONF_DIR/afni_bin" | paste -sd: -)" command -v 3dvolreg || true)"
 case "$AFNI_MODE" in
     auto) if [ -n "$HOST_AFNI" ]; then AFNI_MODE=host; else AFNI_MODE=container; fi ;;
     host|container) ;;

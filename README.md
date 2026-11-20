@@ -35,7 +35,7 @@ If you need help setting up RTPSpy in your environment, contact Masaya Misaki (<
 | | Required? | Notes |
 |---|---|---|
 | Linux (Ubuntu) | Yes, or one of the next two | RTPSpy is developed and used on Ubuntu. |
-| macOS | | Works, without GPU computation. The librtp library must be [compiled](./Compilelibrtp.md). |
+| macOS | | Works, without GPU computation. The librtp library must be [compiled](./Compilelibrtp.md). See [Installing RTPSpy on macOS](./InstallMacOS.md). |
 | Windows (WSL) | | Works in the Windows Subsystem for Linux, without GPU computation. An X server is needed for the GUI. |
 | Apptainer or Docker | Recommended | Runs the AFNI programs and FastSurfer from container images. On Linux, Apptainer is recommended (`sudo apt install apptainer`, or the .deb package from the [Apptainer releases](https://apptainer.org/docs/admin/main/installation.html)); on macOS, Docker Desktop. Without a container runtime, AFNI installed on the computer is used, and masks are made without FastSurfer. |
 | NVIDIA GPU | No | Speeds up the online processing and the anatomical segmentation (FastSurfer). Real-time processing is fast enough without a GPU. Install the NVIDIA driver before running the installer. |
@@ -45,7 +45,7 @@ You do not need conda or a separate AFNI installation: the installer sets up eve
 
 ## Installation
 
-Enter the commands in a terminal (on Windows, the Ubuntu console of WSL).
+Enter the commands in a terminal (on Windows, the Ubuntu console of WSL). On macOS, follow [Installing RTPSpy on macOS](./InstallMacOS.md) instead.
 
 ```bash
 git clone https://github.com/mamisaki/RTPSpy.git ~/RTPSpy
