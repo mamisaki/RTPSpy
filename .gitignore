@@ -38,3 +38,4 @@ dump/*
 .venv/
 containers/
 .venv-psychopy/
+uv.lock
