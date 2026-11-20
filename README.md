@@ -20,6 +20,7 @@ If you need help setting up RTPSpy in your environment, contact Masaya Misaki (<
 - [What you need](#what-you-need)
 - [Installation](#installation)
 - [Check the installation](#check-the-installation)
+- [Connecting to the scanner](#connecting-to-the-scanner)
 - [How a real-time session works](#how-a-real-time-session-works)
 - [Starting the scan: TTL trigger or the 'T' key](#starting-the-scan-ttl-trigger-or-the-t-key)
 - [Testing without a scanner: the RT-MRI simulator](#testing-without-a-scanner-the-rt-mri-simulator)
@@ -114,11 +115,18 @@ This runs the whole real-time pipeline on the test data in `tests/`, writing the
 
 If the librtp library fails to load, see [Compile the librtp library](./Compilelibrtp.md).
 
+## Connecting to the scanner
+
+RTPSpy receives the images through a folder, the *watch directory*: the scanner writes each reconstructed volume there as a file, and RTPSpy processes each new file as it arrives.
+
+- **Siemens scanners**: the BOLD AddIn writes each volume as a DICOM file into a folder that the RTPSpy computer shares over the network. See [Real-Time Image Export from a Siemens Scanner](./SiemensSetup.md). RTPSpy reads the DICOM files of the XA software (enhanced multi-frame) and of the older software (mosaic).
+- **Other scanners**: DICOM files are read only for Siemens. Export the images as NIfTI or AFNI BRIK files into the watch directory, and set the 'File type' of the WATCH module accordingly.
+
 ## How a real-time session works
 
 A typical neurofeedback session with an RTPSpy application goes as follows (the [ROI-NF example](example/ROI-NF#readme) walks through each step):
 
-1. **Set the folders.** The *watch directory* is where the scanner exports the images in real time. The *working directory* is where RTPSpy saves its results.
+1. **Set the folders.** The *watch directory* is where the scanner exports the images in real time (see [Connecting to the scanner](#connecting-to-the-scanner)). The *working directory* is where RTPSpy saves its results.
 2. **Scan the reference images.** Scan an anatomical image and a functional reference image, and convert them to NIfTI ('DICOM to NIfTI (dcm2niix)' button).
 3. **Make the masks.** RTPSpy extracts the brain, segments white matter and ventricles, and brings the template ROI into the subject's functional space ('Create masks' button). Check the result in the built-in image viewer.
 4. **Set up the processing.** Choose the processing steps and their parameters, then press 'RTP setup'.
