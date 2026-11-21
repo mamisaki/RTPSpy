@@ -137,7 +137,7 @@ So the first image comes about one TR plus the reconstruction time after the fir
 ## 8. Settings, cache, and options
 
 - **Settings** are saved when the simulator closes and restored at the next start: `~/.RTPSpy/rtmri_simulator_qt_config.json`.
-- **Header cache**: the headers of a session are read once and saved in the session folder as `.rtmri_series_cache.csv`. Delete it or press 'Rescan' to read them again.
+- **Header cache**: the headers of a session are read once and saved in the session folder as `.rtmri_series_cache.csv`. Delete it or press 'Rescan' to read them again. The file paths in it are relative to the session folder, so a session can be moved or copied to another computer with its cache (a cache made by an older version, with absolute paths, is read from where the session is now and saved again with relative paths).
 - **Command-line options** (`boot_rtmri_simulator.sh --help`):
 
   | Option | Meaning |

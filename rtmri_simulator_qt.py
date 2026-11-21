@@ -346,6 +346,59 @@ def _is_series_dir(d):
     )
 
 
+# %% Series cache =============================================================
+# The cache (CACHE_NAME in the session folder) keeps the file paths relative
+# to the session folder, so a session can be moved or copied to another
+# computer with its cache. Caches made before have absolute paths: they are
+# re-rooted to the session folder where they are now found.
+def cache_paths_relative(df, session_path):
+    """Copy of df with the FilePath relative to session_path (the paths
+    outside it are kept as they are)."""
+    out = df.copy()
+    root = Path(session_path).resolve()
+
+    def rel(p):
+        try:
+            return Path(p).resolve().relative_to(root).as_posix()
+        except ValueError:
+            return str(p)
+
+    out["FilePath"] = [rel(p) for p in out.FilePath]
+    return out
+
+
+def cache_paths_resolve(df, session_path):
+    """Resolve the FilePath of a cache read from session_path: relative
+    paths are joined to session_path; absolute paths that do not exist
+    (the session was moved) are re-rooted to session_path. Returns (df,
+    old_root), old_root being the re-rooted folder or None."""
+    root = Path(session_path)
+    paths = [Path(p) for p in df.FilePath.astype(str)]
+    old_root = None
+    for p in paths:
+        if p.is_absolute() and not p.exists():
+            # The longest tail of p found under the session folder
+            for k in range(1, len(p.parts)):
+                if (root / Path(*p.parts[k:])).exists():
+                    old_root = Path(*p.parts[:k])
+                    break
+            break
+
+    def resolve(p):
+        if not p.is_absolute():
+            return str(root / p)
+        if old_root is not None:
+            try:
+                return str(root / p.relative_to(old_root))
+            except ValueError:
+                pass
+        return str(p)
+
+    out = df.copy()
+    out["FilePath"] = [resolve(p) for p in paths]
+    return out, old_root
+
+
 def find_sessions(base_dir, max_depth=3):
     """Find the session directories under base_dir.
 
@@ -1112,18 +1165,21 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                 if not rescan and cache.is_file():
                     try:
                         df = pd.read_csv(cache)
+                        df, old_root = cache_paths_resolve(df, session_path)
                         self.sig.log.emit("Loaded series info from cache")
+                        if old_root is not None:
+                            # Moved session: save the paths as relative
+                            self.sig.log.emit(
+                                f"The cache paths in {old_root} are read "
+                                f"from {session_path}")
+                            self._save_cache(df, session_path, cache)
                     except Exception as e:
                         self.sig.log.emit(f"Error reading the cache: {e}")
                         df = None
                 if df is None:
                     df = self._scan_series(session_path, cancel, load_id)
                     if df is not None and not cancel.is_set():
-                        try:
-                            df.to_csv(cache, index=False)
-                        except Exception as e:
-                            self.sig.log.emit(
-                                f"Could not write the cache {cache}: {e}")
+                        self._save_cache(df, session_path, cache)
             except Exception as e:
                 self.sig.error.emit(
                     f"Error loading series info: {e}\n"
@@ -1134,6 +1190,14 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
             self.sig.series_loaded.emit((load_id, session_path), df)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _save_cache(self, df, session_path, cache):
+        """Write the series cache with the paths relative to the session."""
+        try:
+            cache_paths_relative(df, session_path).to_csv(cache, index=False)
+        except Exception as e:
+            self.sig.log.emit(f"Could not write the cache {cache}: {e}")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _scan_series(self, session_path, cancel, load_id):
