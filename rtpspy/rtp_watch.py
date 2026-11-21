@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Watch for new image files and feed them into the real-time processing
-pipeline. DICOM is supported only for Siemens (XA enhanced multi-frame and
-classic mosaic).
+pipeline. DICOM is supported for Siemens (XA enhanced multi-frame and
+classic mosaic) and GE (one slice per file; the slices of a volume are
+put together here). GE files are sent from the console by
+ge_dicom_sender.py and received into the watch directory by the receiver
+that RtpWatch runs when 'ge_port' is set (rt_dicom_receiver.py).
 
 @author: mmisaki@libr.net
 """
@@ -16,6 +19,7 @@ import time
 import re
 import traceback
 import shutil
+import threading
 
 import numpy as np
 import nibabel as nib
@@ -71,6 +75,8 @@ class RtpWatch(RTP):
         read_timeout=3,
         polling_observer=False,
         polling_timeout=1,
+        ge_port=0,
+        ge_allow_hosts="",
         **kwargs,
     ):
         """
@@ -94,6 +100,14 @@ class RtpWatch(RTP):
             file system. The default is False.
         polling_timeout : float, optional
             Timeout (seconds) for polling watch_dir.
+        ge_port : int, optional
+            TCP port to receive the GE DICOM files sent by ge_dicom_sender.py
+            on the console. The files are written into watch_dir, as long as
+            RtpWatch exists (also when not 'Ready', so that the reference
+            scans are received too). 0 (default): no receiver.
+        ge_allow_hosts : str, optional
+            IP addresses (separated by spaces) from which the GE receiver
+            accepts connections, e.g., the console. Empty (default): any.
         """
         super().__init__(**kwargs)  # call __init__() in RTP base class
 
@@ -106,6 +120,10 @@ class RtpWatch(RTP):
         self.polling_observer = polling_observer
         self.polling_timeout = polling_timeout
         self.clean_ready = False
+        self.ge_port = int(ge_port) if ge_port else 0
+        self.ge_allow_hosts = ge_allow_hosts or ""
+        self._ge_server = None  # DicomReceiveServer of the GE receiver
+        self._ge_reset()
 
         self._last_proc_f = ""  # Last processed filename
         self._done_proc = -1  # Number of the processed volumes
@@ -115,6 +133,9 @@ class RtpWatch(RTP):
         # BIDS entities of the scan (sub, ses, task, run) from the DICOM
         # header or the file name of the first volume (see bids_name)
         self.bids_entities = None
+
+        if self.ge_port:
+            self.start_ge_receiver()
 
         if self.file_type not in self._supported_file_types:
             errmsg = f"file_type = {self.file_type} is not supported."
@@ -130,6 +151,7 @@ class RtpWatch(RTP):
         self._last_proc_f = ""
         self._done_proc = -1
         self._vol_num = 0
+        self._ge_reset()
         self.scan_name = None
         self.nii_save_filename = None
         self.bids_entities = None
@@ -286,56 +308,67 @@ class RtpWatch(RTP):
             if fmri_img is None:
                 return
 
-            # Increment the number of received volumes
-            self._vol_num = vol_num  # 1-base
-
-            # Record process time
-            tstamp = time.time()
-            self._proc_time.append(tstamp)
-            acq_time = file_path.stat().st_ctime
-            proc_delay = tstamp - acq_time
-            if self.save_delay:
-                self.proc_delay.append(proc_delay)
-
-            # Log message
-            if len(self._proc_time) > 1:
-                t_interval = self._proc_time[-1] - self._proc_time[-2]
-            else:
-                t_interval = -1
-            msg = f"#{self._vol_num};Read file;{file_path.name}"
-            msg += f";tstamp={tstamp}"
-            msg += f";took {proc_delay:.4f}s"
-            msg += f";interval {t_interval:.4f}s"
-            self._logger.info(msg)
-
-            # The volume made in this module (an image returned by an
-            # overridden reader is converted)
-            fmri_img = RtpVolume.as_volume(fmri_img)
-            fmri_img.vol_idx = self._vol_num - 1
-            fmri_img.acq_time = acq_time
-            fmri_img.proc_time = tstamp
-
-            # Run the next process. self.proc_data is a copy of the data,
-            # as the next process may modify the array in place.
-            self._pass_to_next(
-                fmri_img, self._vol_num - 1, self._proc_time[-1], copy=True)
-
-            # Record the number of the processed volume
-            self._done_proc = self._vol_num
-
-            # Keep the image read in this module (its data copy, if it was
-            # passed to the next process)
-            if self.save_proc:
-                if self.next_proc:
-                    fmri_img = fmri_img.with_data(self.proc_data)
-                self.keep_processed_image(fmri_img, vol_num=None,
-                                          save_temp=self.online_saving)
+            # A GE slice file can complete more than one volume (volumes
+            # completed out of order wait for the earlier ones)
+            imgs = fmri_img if isinstance(fmri_img, list) else [fmri_img]
+            for fmri_img in imgs:
+                self._emit_volume(fmri_img, file_path)
 
         except Exception:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             errmsg = "".join(
                 traceback.format_exception(exc_type, exc_obj, exc_tb))
             self._logger.error(errmsg)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _emit_volume(self, fmri_img, file_path):
+        """Pass a volume made from file_path to the next process."""
+        vol_num = self._vol_num + 1
+
+        # Increment the number of received volumes
+        self._vol_num = vol_num  # 1-base
+
+        # Record process time
+        tstamp = time.time()
+        self._proc_time.append(tstamp)
+        acq_time = file_path.stat().st_ctime
+        proc_delay = tstamp - acq_time
+        if self.save_delay:
+            self.proc_delay.append(proc_delay)
+
+        # Log message
+        if len(self._proc_time) > 1:
+            t_interval = self._proc_time[-1] - self._proc_time[-2]
+        else:
+            t_interval = -1
+        msg = f"#{self._vol_num};Read file;{file_path.name}"
+        msg += f";tstamp={tstamp}"
+        msg += f";took {proc_delay:.4f}s"
+        msg += f";interval {t_interval:.4f}s"
+        self._logger.info(msg)
+
+        # The volume made in this module (an image returned by an
+        # overridden reader is converted)
+        fmri_img = RtpVolume.as_volume(fmri_img)
+        fmri_img.vol_idx = self._vol_num - 1
+        fmri_img.acq_time = acq_time
+        fmri_img.proc_time = tstamp
+
+        # Run the next process. self.proc_data is a copy of the data,
+        # as the next process may modify the array in place.
+        self._pass_to_next(
+            fmri_img, self._vol_num - 1, self._proc_time[-1], copy=True)
+
+        # Record the number of the processed volume
+        self._done_proc = self._vol_num
+
+        # Keep the image read in this module (its data copy, if it was
+        # passed to the next process)
+        if self.save_proc:
+            if self.next_proc:
+                fmri_img = fmri_img.with_data(self.proc_data)
+            self.keep_processed_image(fmri_img, vol_num=None,
+                                      save_temp=self.online_saving)
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _read_dicom_file(self, file_path):
@@ -383,8 +416,23 @@ class RtpWatch(RTP):
             return
 
         manufacturer = str(dcm.get("Manufacturer", "")).lower()
+        if manufacturer.startswith("ge"):
+            imgs = self._proc_GEDicom(file_path, dcm)
+            if not imgs:
+                return
+            if self.nii_save_filename is None:
+                self.bids_entities = bn.entities_from_dicom(dcm)
+                self.nii_save_filename = bn.bids_name(
+                    self.bids_entities, "bold")
+                self.scan_name = f"Ser-{dcm.SeriesNumber}"
+            for i, img in enumerate(imgs):
+                img.set_filename(
+                    self.nii_save_filename + f"_{vol_num + i:04d}.nii.gz")
+            return imgs
+
         if "siemens" not in manufacturer:
-            self._logger.debug(f"{file_path.name} is not a Siemens DICOM.")
+            self._logger.debug(
+                f"{file_path.name} is not a Siemens or GE DICOM.")
             return
 
         soft_ver = dcm.get("SoftwareVersions", "")
@@ -555,6 +603,195 @@ class RtpWatch(RTP):
         if dcm is None or "PixelData" not in dcm:
             raise RuntimeError(f"Failed to read pixel data in {file_path}")
         return dcm.pixel_array
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # GE DICOM: one slice per file
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ge_reset(self):
+        """Reset the state of the GE series (at 'Ready')."""
+        self._ge_series = None  # SeriesInstanceUID of the fMRI series
+        self._ge_nslices = 0  # Slices per volume
+        self._ge_TR = None  # ms
+        self._ge_slices = {}  # {TemporalPositionIdentifier: {pos: dcm}}
+        self._ge_ready = {}  # {TemporalPositionIdentifier: volume image}
+        self._ge_next = 1  # Next TemporalPositionIdentifier to pass on
+        self._ge_wait_since = None  # When a later volume began to wait
+        self._ge_skipped = set()  # Series UIDs reported as skipped
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _proc_GEDicom(self, file_path, dcm):
+        """Add a GE slice file to its volume.
+
+        The first fMRI series after 'Ready' is processed; files of other
+        series (e.g., late files of an earlier series) are ignored. Only the
+        first echo is used. The slices are grouped by
+        TemporalPositionIdentifier, and a volume is made when all its slices
+        have arrived. Volumes are passed on in their temporal order: a volume
+        completed before an earlier one (multiband reconstruction) waits for
+        it. A volume still missing after max(30 s, 10 TR) while later volumes
+        are complete is skipped with a warning.
+
+        Returns
+        -------
+        list of RtpVolume
+            The volumes to pass on now (may be empty).
+        """
+        uid = str(dcm.get("SeriesInstanceUID", ""))
+        if self._ge_series is None:
+            nt = int(dcm.get("NumberOfTemporalPositions", 0) or 0)
+            nsl = 0
+            if (0x0021, 0x104F) in dcm:  # Locations in acquisition
+                try:
+                    nsl = int(dcm[(0x0021, 0x104F)].value)
+                except Exception:
+                    nsl = 0
+            if nsl == 0 and nt > 0:
+                nsl = int(dcm.get("ImagesInAcquisition", 0) or 0) // nt
+            if nt < 2 or nsl < 2:
+                # Not an fMRI series (e.g., a localizer or an anatomy)
+                if uid not in self._ge_skipped:
+                    self._ge_skipped.add(uid)
+                    self._logger.info(
+                        f"GE series {dcm.get('SeriesNumber', '')} "
+                        f"({dcm.get('SeriesDescription', '')}) is not fMRI;"
+                        " its files are not processed.")
+                return []
+            self._ge_series = uid
+            self._ge_nslices = nsl
+            TR = dcm.get("RepetitionTime", None)
+            self._ge_TR = float(TR) if TR is not None else None
+            self._logger.info(
+                f"GE fMRI series {dcm.get('SeriesNumber', '')} "
+                f"({dcm.get('SeriesDescription', '')}): {nt} volumes, "
+                f"{nsl} slices, TR {self._ge_TR} ms")
+
+        elif uid != self._ge_series:
+            self._logger.debug(
+                f"{file_path.name} is not of the current GE series.")
+            return []
+
+        if int(dcm.get("EchoNumbers", 1) or 1) != 1:
+            return []  # Only the first echo is used
+
+        tpos = int(dcm.get("TemporalPositionIdentifier", 1) or 1)
+        pos = int(dcm.get("InStackPositionNumber", 0) or 0)
+        if tpos < self._ge_next or tpos in self._ge_ready:
+            self._logger.debug(f"{file_path.name}: volume {tpos} is done.")
+            return []
+
+        grp = self._ge_slices.setdefault(tpos, {})
+        grp[pos] = dcm
+        if len(grp) >= self._ge_nslices:
+            del self._ge_slices[tpos]
+            img = self._ge_make_volume(list(grp.values()))
+            if img is not None:
+                self._ge_ready[tpos] = img
+
+        return self._ge_flush()
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ge_flush(self):
+        """Return the volumes that can be passed on in temporal order."""
+        out = []
+        while True:
+            while self._ge_next in self._ge_ready:
+                out.append(self._ge_ready.pop(self._ge_next))
+                self._ge_next += 1
+
+            if not self._ge_ready:
+                self._ge_wait_since = None
+                return out
+
+            # Later volumes are waiting for a missing one
+            if self._ge_wait_since is None:
+                self._ge_wait_since = time.time()
+                return out
+            wait = max(30.0, 10 * (self._ge_TR or 2000.0) / 1000.0)
+            if time.time() - self._ge_wait_since < wait:
+                return out
+
+            self._logger.warning(
+                f"GE volume {self._ge_next} is not complete after {wait:.0f}"
+                " s. It is skipped.")
+            self._ge_slices.pop(self._ge_next, None)
+            self._ge_next += 1
+            self._ge_wait_since = None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ge_make_volume(self, dcms):
+        """Make a volume (RtpVolume, LPI) from the GE slice datasets."""
+        try:
+            ori = np.array(dcms[0].ImageOrientationPatient, dtype=float)
+            ori_row, ori_col = ori[:3], ori[3:]
+            normal = np.cross(ori_row, ori_col)
+            pos = np.array([np.array(d.ImagePositionPatient, dtype=float)
+                            for d in dcms])
+            order = np.argsort(pos @ normal, kind="stable")
+            pos = pos[order]
+            img_array = np.stack([dcms[i].pixel_array for i in order])
+
+            # Affine from the (column, row, slice) index to RAS+ (mm)
+            F = np.stack([ori_row, ori_col], axis=1)
+            dr, dc = [float(v) for v in dcms[0].PixelSpacing]
+            if len(pos) > 1:
+                k = (pos[-1] - pos[0]) / (len(pos) - 1)
+            else:
+                k = normal * float(dcms[0].get("SliceThickness", 1.0))
+            A = np.concatenate([F * [[dc, dr]], k[:, None], pos[0][:, None]],
+                               axis=1)
+            A = np.concatenate([A, [[0, 0, 0, 1]]], axis=0)
+            A[:2, :] *= -1  # LPS+ to RAS+
+
+            return self._make_nifti(img_array, A, ori_row, ori_col,
+                                    self._ge_TR)
+        except Exception as e:
+            self._logger.error(f"Failed to make a GE volume: {e}")
+            return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def start_ge_receiver(self):
+        """Start (or restart) the receiver of the files sent by
+        ge_dicom_sender.py, writing into watch_dir."""
+        self.stop_ge_receiver()
+        if not self.ge_port:
+            return
+        if self.watch_dir is None or not Path(self.watch_dir).is_dir():
+            self._logger.warning(
+                "The GE receiver starts when the watch directory is set.")
+            return
+
+        try:
+            from .rt_dicom_receiver import DicomReceiveServer
+        except ImportError:
+            from rt_dicom_receiver import DicomReceiveServer
+
+        hosts = self.ge_allow_hosts.replace(",", " ").split() or None
+        try:
+            server = DicomReceiveServer(
+                ("", int(self.ge_port)), self.watch_dir, allow_hosts=hosts)
+        except OSError as e:
+            errmsg = f"Failed to start the GE receiver on port " \
+                f"{self.ge_port}: {e}"
+            self._logger.error(errmsg)
+            self.err_popup(errmsg)
+            return
+
+        thread = threading.Thread(target=server.serve_forever,
+                                  name="GE receiver", daemon=True)
+        thread.start()
+        self._ge_server = server
+        self._logger.info(
+            f"GE receiver on port {self.ge_port} writes into {self.watch_dir}"
+            + (f" (from {', '.join(hosts)})" if hosts else ""))
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def stop_ge_receiver(self):
+        server = getattr(self, "_ge_server", None)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            self._ge_server = None
+            self._logger.info("Stopped the GE receiver.")
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _make_nifti(self, img_array, affine, ori_row, ori_col, TR):
@@ -839,6 +1076,8 @@ class RtpWatch(RTP):
             self._ui_update(attr, val)
 
             val = Path(val)
+            changed = self.watch_dir is None or \
+                Path(self.watch_dir) != val or self._ge_server is None
             setattr(self, attr, val)
 
             if self.main_win is not None:
@@ -846,6 +1085,9 @@ class RtpWatch(RTP):
 
             if reset_fn is not None:
                 reset_fn(val)
+
+            if self.ge_port and changed:
+                self.start_ge_receiver()
 
         elif attr == "work_dir":
             if val is None or not Path(val).is_dir():
@@ -876,6 +1118,19 @@ class RtpWatch(RTP):
         elif attr in ("read_timeout", "polling_observer", "polling_timeout"):
             if reset_fn is None:
                 self._ui_update(attr, val)
+
+        elif attr in ("ge_port", "ge_allow_hosts"):
+            if attr == "ge_port":
+                val = int(val) if val else 0
+            else:
+                val = str(val or "").strip()
+            if getattr(self, attr, None) == val:
+                return
+            setattr(self, attr, val)
+            if reset_fn is None:
+                self._ui_update(attr, val)
+            self.start_ge_receiver()
+            return
 
         elif attr in ("save_proc", "clean_ready"):
             self._ui_update(attr, val)
@@ -918,10 +1173,14 @@ class RtpWatch(RTP):
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def __del__(self):
-        # Stop the observer thread
+        # Stop the observer thread and the GE receiver
         if hasattr(self, "_observer") and self._observer.is_alive():
             self._observer.stop()
             self._observer.join()
+        try:
+            self.stop_ge_receiver()
+        except Exception:
+            pass
 
 
 # %% __main__ (test) ==========================================================

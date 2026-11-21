@@ -6,9 +6,13 @@ RT-MRI Simulator (PyQt6)
 A GUI tool to simulate the real-time data of an MRI scan for testing RTPSpy,
 without the scanner:
 
-- DICOM: the files of a recorded session are copied, series by series, into
-  the output (watch) directory at the time each image was made on the
-  scanner (ContentTime) plus the transfer delay.
+- DICOM (Siemens): the files of a recorded session are copied, series by
+  series, into the output (watch) directory at the time each image was made
+  on the scanner (ContentTime) plus the transfer delay.
+- DICOM (GE): the slice files (i*.MRDC.*) are sent over TCP to the receiver
+  of RTPSpy (WATCH 'GE receiver port'), as ge_dicom_sender.py does on the
+  console, at the times planned by ge_plan (the recorded write times of a
+  console listing, or volume end + reconstruction delay).
 - TTL: a pulse is sent to the rt_physio process (RPC) at the acquisition
   time of each volume. The planned time is sent with the pulse, so that the
   RPC delay does not change the recorded TTL time.
@@ -37,6 +41,9 @@ import shutil
 import logging
 import argparse
 import threading
+import re
+import socket
+import struct
 import subprocess
 import traceback
 from pathlib import Path
@@ -167,15 +174,150 @@ def series_timing(series_df, transfer_delay=0.0):
     return file_sec - t_ref, ttl_sec - t_ref
 
 
+# %% GE files =================================================================
+# GE writes one slice per file, named i<N>.MRDC.<N>, in the image pool
+# p<N>/e<N>/s<N>/ (exam e<N>, series s<N>).
+GE_FILE_PAT = re.compile(r"^i\d+\.MRDC\.\d+$")
+GE_MAGIC = b"GEDC"  # Protocol of ge_dicom_sender.py / rt_dicom_receiver.py
+GE_SLICE_WRITE_SEC = 0.007  # Time to write a slice file on the console
+GE_TAGS = [
+    "Manufacturer", "StudyDescription", "SeriesNumber", "SeriesDescription",
+    "ImageType", "ContentTime", "InstanceNumber", "EchoNumbers",
+    "NumberOfTemporalPositions", "TemporalPositionIdentifier",
+    "InStackPositionNumber", "RepetitionTime", "TriggerTime",
+]
+
+
+def is_ge_file(path):
+    return GE_FILE_PAT.match(Path(path).name) is not None
+
+
+def session_dicom_files(path):
+    """DICOM files of a session: *.dcm and GE i*.MRDC.* files."""
+    return sorted(f for f in Path(path).rglob("*")
+                  if f.is_file() and (f.suffix == ".dcm" or is_ge_file(f)))
+
+
+def read_ge_header(dicom_file):
+    """Header fields of a GE slice file for the simulation (a dict)."""
+    d = pydicom.dcmread(dicom_file, stop_before_pixels=True,
+                        specific_tags=GE_TAGS)
+    info = {k: d.get(k, None) for k in GE_TAGS}
+    for k in ("SeriesNumber", "InstanceNumber", "EchoNumbers",
+              "NumberOfTemporalPositions", "TemporalPositionIdentifier",
+              "InStackPositionNumber"):
+        info[k] = int(info[k]) if info[k] not in (None, "") else 0
+    for k in ("RepetitionTime", "TriggerTime"):
+        info[k] = float(info[k]) if info[k] not in (None, "") else np.nan
+    info["ImageType"] = "\\".join(info["ImageType"] or [])
+    for k in ("Manufacturer", "StudyDescription", "SeriesDescription",
+              "ContentTime"):
+        info[k] = str(info[k] or "")
+    info["AcquisitionNumber"] = 1
+    info["IsGE"] = True
+    return info
+
+
+def ge_pool_name(path, series_nr):
+    """Name sent to the receiver: the path relative to the image pool
+    (p<N>/e<N>/s<N>/i<N>.MRDC.<N>), as ge_dicom_sender.py sends it."""
+    parts = Path(path).parts
+    if len(parts) >= 4 and re.match(r"p\d+$", parts[-4]) and \
+            re.match(r"e\d+$", parts[-3]) and re.match(r"s\d+$", parts[-2]):
+        return "/".join(parts[-4:])
+    return f"p0/e0/s{series_nr}/{Path(path).name}"
+
+
+def read_ge_timing(timing_file):
+    """Read a listing of the file modification times made on the console:
+    lines of '<mtime> <size> <path>' (find ... -printf '%T@ %s %p\\n').
+    Returns {'p<N>/e<N>/s<N>/i<N>.MRDC.<N>': mtime}."""
+    times = {}
+    with open(timing_file) as fid:
+        for line in fid:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            m = re.search(r"(p\d+/e\d+/s\d+/i\d+\.MRDC\.\d+)$", parts[-1])
+            if m:
+                try:
+                    times[m.group(1)] = float(parts[0])
+                except ValueError:
+                    pass
+    return times
+
+
+def ge_plan(series_df, recon_delay=0.5, timing=None):
+    """Plan the times to send the files of a GE series.
+
+    Returns the rows sorted by 'PlanSec', the time (s) from the scan start
+    (the first TTL) to the end of writing the file on the console, and the
+    TTL times (s from the scan start).
+
+    - fMRI (NumberOfTemporalPositions > 1): a TTL at the start of each
+      volume, (k - 1) x TR. The files of volume k are written after its
+      acquisition (k x TR) plus recon_delay, one slice every
+      GE_SLICE_WRITE_SEC. With a timing listing of the console (timing), the
+      recorded write times are used instead, shifted so that the first file
+      comes TR + recon_delay after the first TTL (this reproduces the order
+      and the delays of multiband reconstruction).
+    - Other series: no TTL; the files follow each other.
+    """
+    df = series_df.copy()
+    nt = int(df.NumberOfTemporalPositions.max() or 0)
+    TR = float(np.nanmax(df.RepetitionTime)) / 1000.0 \
+        if df.RepetitionTime.notna().any() else 0.0
+    names = [ge_pool_name(f, s) for f, s in zip(df.FilePath, df.SeriesNumber)]
+    t_rec = None
+    if timing:
+        t_rec = np.array([timing.get(n, np.nan) for n in names], dtype=float)
+        if np.isnan(t_rec).any():
+            t_rec = None  # Not all the files are listed: use the model
+
+    if nt > 1 and TR > 0:
+        ttl = (np.arange(1, nt + 1) - 1) * TR
+        if t_rec is not None:
+            df["PlanSec"] = t_rec - np.nanmin(t_rec) + TR + recon_delay
+        else:
+            df = df.sort_values(["TemporalPositionIdentifier",
+                                 "InStackPositionNumber", "InstanceNumber"])
+            j = df.groupby("TemporalPositionIdentifier").cumcount().values
+            df["PlanSec"] = df.TemporalPositionIdentifier.values * TR + \
+                recon_delay + (j + 1) * GE_SLICE_WRITE_SEC
+    else:
+        ttl = np.array([])
+        if t_rec is not None:
+            df["PlanSec"] = t_rec - np.nanmin(t_rec) + recon_delay
+        else:
+            df = df.sort_values("InstanceNumber")
+            df["PlanSec"] = recon_delay + \
+                np.arange(1, len(df) + 1) * GE_SLICE_WRITE_SEC
+    df = df.sort_values("PlanSec", kind="stable").reset_index(drop=True)
+    return df, ttl
+
+
+def ge_series_timing(todo, ttl_all, transfer_delay=0.0):
+    """Times (s from the simulation start) to send the files in todo (rows
+    of ge_plan) and to send the TTLs of their volumes (cf. series_timing)."""
+    file_sec = todo.PlanSec.values.astype(float) + transfer_delay
+    if len(ttl_all):
+        tpos0 = int(todo.TemporalPositionIdentifier.min())
+        ttl = np.asarray(ttl_all)[max(tpos0 - 1, 0):]
+    else:
+        ttl = np.array([])
+    t_ref = min(ttl[0], file_sec.min()) if len(ttl) else file_sec.min()
+    return file_sec - t_ref, ttl - t_ref
+
+
 # %% Session search ===========================================================
 def _study_description(dicom_files):
     """StudyDescription of the first readable file, or 'Unknown'."""
-    reader = DicomReader()
     for dcm_file in dicom_files:
         try:
-            info = reader.read_dicom_info(dcm_file, timeout=0.1)
-            if info and info.get("StudyDescription"):
-                return str(info["StudyDescription"])
+            d = pydicom.dcmread(dcm_file, stop_before_pixels=True,
+                                specific_tags=["StudyDescription"])
+            if d.get("StudyDescription"):
+                return str(d.StudyDescription)
         except Exception:
             continue
     return "Unknown"
@@ -194,7 +336,8 @@ def find_sessions(base_dir, max_depth=3):
 
     A session directory has DICOM files (*.dcm) directly or in a 'dicom'
     subdirectory, or has series subdirectories (S001, Ser001, ...) and no
-    other subdirectories.
+    other subdirectories. A GE exam directory (e<N>, with series
+    directories s<N> of i*.MRDC.* files) is also a session.
 
     Returns a list of dicts with 'name' (path relative to base_dir), 'path',
     'files', and 'study_description', sorted by name.
@@ -223,6 +366,16 @@ def find_sessions(base_dir, max_depth=3):
             return
 
         subdirs = [d for d in cur.iterdir() if d.is_dir()]
+
+        # GE exam directory
+        ge_series = [d for d in subdirs if re.match(r"s\d+$", d.name)]
+        if ge_series:
+            ge_files = [f for d in ge_series for f in d.iterdir()
+                        if is_ge_file(f)]
+            if ge_files:
+                _add(cur, sorted(ge_files))
+                return
+
         series_dirs = [d for d in subdirs if _is_series_dir(d)]
         if series_dirs:
             dicom_files = list(cur.glob("**/*.dcm"))
@@ -342,6 +495,11 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
             "t_key": False,
             "t_key_mode": "start",
             "t_key_window": "^RTPSpy$",
+            # GE: receiver of RTPSpy (host:port), reconstruction delay (s),
+            # and the listing of the console file times (optional)
+            "ge_receiver": "127.0.0.1:8322",
+            "ge_recon_delay": 0.5,
+            "ge_timing_file": "",
             "physio_source": "1D",  # '1D' or 'BIDS'
             "card_file": "",
             "resp_file": "",
@@ -582,6 +740,40 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                 w.setToolTip("xdotool is not installed")
         vbox.addLayout(form)
 
+        # --- GE series: sent to the RTPSpy receiver ---
+        ge = QtWidgets.QGroupBox("GE series (sent to the RTPSpy receiver)")
+        gf = QtWidgets.QFormLayout(ge)
+        self.ge_receiver_edit = QtWidgets.QLineEdit()
+        self.ge_receiver_edit.setToolTip(
+            "host:port of the GE receiver of RTPSpy (WATCH 'GE receiver "
+            "port')")
+        gf.addRow("Receiver:", self.ge_receiver_edit)
+        self.ge_recon_spin = QtWidgets.QDoubleSpinBox()
+        self.ge_recon_spin.setRange(0, 600)
+        self.ge_recon_spin.setDecimals(2)
+        self.ge_recon_spin.setSingleStep(0.1)
+        self.ge_recon_spin.setSuffix(" s")
+        self.ge_recon_spin.setToolTip(
+            "Time from the end of a volume's acquisition to the writing of "
+            "its first slice file on the console")
+        gf.addRow("Recon delay:", self.ge_recon_spin)
+        trow = QtWidgets.QHBoxLayout()
+        self.ge_timing_edit = self._path_edit()
+        self.ge_timing_edit.setToolTip(
+            "Optional listing of the file times made on the console "
+            "(find ... -printf '%T@ %s %p\\n'): the recorded write order and "
+            "timing are replayed")
+        trow.addWidget(self.ge_timing_edit, stretch=1)
+        self.ge_timing_set_btn = QtWidgets.QPushButton("Set")
+        self.ge_timing_set_btn.clicked.connect(self._select_ge_timing)
+        trow.addWidget(self.ge_timing_set_btn)
+        self.ge_timing_clear_btn = QtWidgets.QPushButton("Clear")
+        self.ge_timing_clear_btn.clicked.connect(
+            lambda: self.ge_timing_edit.setText(""))
+        trow.addWidget(self.ge_timing_clear_btn)
+        gf.addRow("Timing list:", trow)
+        vbox.addWidget(ge)
+
         # --- Current status ---
         st = QtWidgets.QGroupBox("Current Status")
         sv = QtWidgets.QVBoxLayout(st)
@@ -738,6 +930,10 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
         for w in (self.out_set_btn, self.out_clear_btn,
                   self.transfer_delay_spin, self.send_ttl_chk):
             w.setEnabled(not running)
+        if hasattr(self, "ge_receiver_edit"):
+            for w in (self.ge_receiver_edit, self.ge_recon_spin,
+                      self.ge_timing_set_btn, self.ge_timing_clear_btn):
+                w.setEnabled(not running)
         if self._xdotool is not None and hasattr(self, "t_key_window_edit"):
             for w in (self.t_key_chk, self.t_key_mode_cmb,
                       self.t_key_window_edit):
@@ -929,7 +1125,7 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
         """Read the DICOM information of all files in a session (worker
         thread). Returns a DataFrame with a row per file sorted by
         ContentTime, or None."""
-        files = sorted(session_path.glob("**/*.dcm"))
+        files = session_dicom_files(session_path)
         if not files:
             self.sig.log.emit("No DICOM files found in the session")
             return None
@@ -940,10 +1136,16 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
             if cancel.is_set():
                 return None
             try:
-                info = reader.read_dicom_info(f, timeout=1)
+                if is_ge_file(f):
+                    info = read_ge_header(f)
+                    info["AcqSec"] = np.nan
+                else:
+                    info = reader.read_dicom_info(f, timeout=1)
+                    if info:
+                        info["AcqSec"] = read_acq_sec(f)
+                        info["IsGE"] = False
                 if info:
                     info["FilePath"] = str(f)
-                    info["AcqSec"] = read_acq_sec(f)
                     rows.append(info)
             except Exception as e:
                 self.sig.log.emit(f"Error reading {f}: {e}")
@@ -983,6 +1185,9 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
             if col not in df.columns:
                 df[col] = ""
             df[col] = df[col].fillna("").astype(str)
+        if "IsGE" not in df.columns:
+            df["IsGE"] = False
+        df["IsGE"] = df["IsGE"].fillna(False).astype(bool)
         if "AcqSec" not in df.columns:
             df["AcqSec"] = np.nan
             self.log_message(
@@ -1150,6 +1355,10 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                       if self.t_key_chk.isChecked() and self._xdotool
                       else None),
             "t_key_window": self.t_key_window_edit.text().strip(),
+            # GE: receiver address, reconstruction delay, console timing
+            "ge_receiver": self.ge_receiver_edit.text().strip(),
+            "ge_recon_delay": float(self.ge_recon_spin.value()),
+            "ge_timing": self._load_ge_timing(),
         }
         self._stop_event = threading.Event()
         self._stop_reset = False
@@ -1222,9 +1431,15 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                 ser_nr = p["series_list"][idx]
                 sdf = self.dicom_series[
                     self.dicom_series.SeriesNumber == ser_nr].copy()
-                sdf["ContentSec"] = content_sec(sdf["ContentTime"])
-                sdf.sort_values("ContentSec", inplace=True, kind="stable")
-                sdf.reset_index(drop=True, inplace=True)
+                is_ge = bool(sdf["IsGE"].any())
+                if is_ge:
+                    sdf, ge_ttl = ge_plan(sdf, p["ge_recon_delay"],
+                                          p["ge_timing"])
+                else:
+                    sdf["ContentSec"] = content_sec(sdf["ContentTime"])
+                    sdf.sort_values("ContentSec", inplace=True,
+                                    kind="stable")
+                    sdf.reset_index(drop=True, inplace=True)
                 total = len(sdf)
                 self.sig.sim_series.emit(int(ser_nr), total)
 
@@ -1234,22 +1449,30 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
 
                 # Phase images copied with the magnitude images
                 pha = None
-                if ser_nr in self.partners:
+                if ser_nr in self.partners and not is_ge:
                     pha = self.dicom_series[
                         self.dicom_series.SeriesNumber ==
                         self.partners[ser_nr]]
                     pha = dict(zip(pha.InstanceNumber, pha.FilePath))
 
-                file_t, ttl_t = series_timing(todo, p["delay"])
+                if is_ge:
+                    file_t, ttl_t = ge_series_timing(todo, ge_ttl,
+                                                     p["delay"])
+                else:
+                    file_t, ttl_t = series_timing(todo, p["delay"])
                 if p["one_step"]:
                     # Copy the next file now, with the TTLs due before it
                     ttl_t = ttl_t[ttl_t <= file_t[0]] - file_t[0]
                     file_t = file_t - file_t[0]
 
-                rel = Path(todo.FilePath.values[0]).relative_to(
-                    self.current_session_path)
-                out_dir = p["out_base"] / rel.parent
-                out_dir.mkdir(parents=True, exist_ok=True)
+                if is_ge:
+                    conn = self._ge_connect(p["ge_receiver"])
+                else:
+                    conn = None
+                    rel = Path(todo.FilePath.values[0]).relative_to(
+                        self.current_session_path)
+                    out_dir = p["out_base"] / rel.parent
+                    out_dir.mkdir(parents=True, exist_ok=True)
 
                 t0 = time.perf_counter()
                 wall0 = time.time()
@@ -1262,7 +1485,10 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                     if n_ttl is None:
                         break
                     src = Path(row.FilePath)
-                    shutil.copy(src, out_dir / src.name)
+                    if conn is not None:
+                        self._ge_send(conn, src, row.SeriesNumber)
+                    else:
+                        shutil.copy(src, out_dir / src.name)
                     if pha is not None and row.InstanceNumber in pha:
                         psrc = Path(pha[row.InstanceNumber])
                         shutil.copy(psrc, out_dir / psrc.name)
@@ -1271,6 +1497,8 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
                     if p["one_step"]:
                         break
 
+                if conn is not None:
+                    conn.close()
                 if stop.is_set() or p["one_step"] or image_nr < total:
                     break
 
@@ -1311,7 +1539,7 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
         self.current_image_nr = image_nr
         self.series_progress_bar.setMaximum(total)
         self.series_progress_bar.setValue(image_nr)
-        self.log_message(f"Copy file {image_nr}/{total}: {name}")
+        self.log_message(f"File {image_nr}/{total}: {name}")
 
     def _on_sim_wait(self, sec):
         self.log_message(f"Waiting {sec:g} s for the next series")
@@ -1363,6 +1591,55 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
             self._ttl_count += 1
             self.sig.ttl_sent.emit(self._ttl_count)
 
+    def _select_ge_timing(self):
+        f, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select the listing of the console file times",
+            self.ge_timing_edit.text() or str(APP_DIR),
+            "Text (*.txt);;All (*)")
+        if f:
+            self.ge_timing_edit.setText(f)
+
+    def _load_ge_timing(self):
+        """The console timing listing ({name: mtime}), or None."""
+        f = self.ge_timing_edit.text().strip()
+        if not f:
+            return None
+        try:
+            times = read_ge_timing(f)
+            self.log_message(f"GE timing list: {len(times)} files ({f})")
+            return times
+        except Exception as e:
+            self.err_message(f"Cannot read the GE timing list {f}: {e}",
+                             popup=False)
+            return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def _ge_connect(self, receiver):
+        """Connect to the GE receiver of RTPSpy (host:port)."""
+        host, _, port = receiver.rpartition(":")
+        host = host or "127.0.0.1"
+        try:
+            conn = socket.create_connection((host, int(port)), timeout=5)
+        except (OSError, ValueError) as e:
+            raise RuntimeError(
+                f"Cannot connect to the GE receiver {receiver}: {e}. Is "
+                "RTPSpy running with WATCH 'GE receiver port' set?") from e
+        conn.settimeout(10)
+        self.sig.log.emit(f"Connected to the GE receiver {receiver}")
+        return conn
+
+    def _ge_send(self, conn, src, series_nr):
+        """Send a GE file as ge_dicom_sender.py does."""
+        name = ge_pool_name(src, series_nr).encode("utf-8")
+        data = Path(src).read_bytes()
+        conn.sendall(GE_MAGIC + struct.pack(">HI", len(name), len(data))
+                     + name + data)
+        ack = conn.recv(1)
+        if ack != b"K":
+            raise RuntimeError(
+                f"The GE receiver rejected {name.decode()} ({ack!r})")
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def send_manual_pulse(self):
         self._ttl_queue.put(time.time())
         self.log_message("Send TTL")
@@ -1559,6 +1836,9 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
         idx = self.t_key_mode_cmb.findData(c["t_key_mode"])
         self.t_key_mode_cmb.setCurrentIndex(max(idx, 0))
         self.t_key_window_edit.setText(str(c["t_key_window"]))
+        self.ge_receiver_edit.setText(str(c["ge_receiver"]))
+        self.ge_recon_spin.setValue(float(c["ge_recon_delay"]))
+        self.ge_timing_edit.setText(str(c["ge_timing_file"]))
         self.card_file_edit.setText(c["card_file"])
         self.resp_file_edit.setText(c["resp_file"])
         self.physio_freq_spin.setValue(int(c["physio_freq"]))
@@ -1580,6 +1860,9 @@ class RTMRISimulatorQt(QtWidgets.QMainWindow):
         c["t_key"] = self.t_key_chk.isChecked()
         c["t_key_mode"] = self.t_key_mode_cmb.currentData()
         c["t_key_window"] = self.t_key_window_edit.text()
+        c["ge_receiver"] = self.ge_receiver_edit.text()
+        c["ge_recon_delay"] = self.ge_recon_spin.value()
+        c["ge_timing_file"] = self.ge_timing_edit.text()
         c["card_file"] = self.card_file_edit.text()
         c["resp_file"] = self.resp_file_edit.text()
         c["physio_freq"] = self.physio_freq_spin.value()

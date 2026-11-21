@@ -15,6 +15,14 @@ import pydicom
 import nibabel as nib
 
 
+def _get_value(dcm, tag, default):
+    """Value of a (private) tag, or default if the tag is missing."""
+    try:
+        return dcm[tag].value if tag in dcm else default
+    except Exception:
+        return default
+
+
 # %% DicomReader ==============================================================
 class DicomReader():
     """Read scan information from DICOM headers and convert DICOM images to
@@ -250,8 +258,10 @@ class DicomReader():
             acqtime = datetime.strptime(dcm.AcquisitionTime, tfmt)
             scan_info['Scan started'] = acqtime.strftime('%H:%M:%S')
 
-            Service_id = dcm[(0x0009, 0x1030)].value
-            scan_info['Scanner'] = f'GE-{Service_id[-3:]}'
+            # Descriptive fields may be missing (e.g., no exam description
+            # entered on the console). They must not stop the processing.
+            Service_id = _get_value(dcm, (0x0009, 0x1030), "")
+            scan_info['Scanner'] = f'GE-{str(Service_id)[-3:]}'
             if (0x0043, 0x1096) in dcm:
                 scan_info['Mode'] = dcm[(0x0043, 0x1096)].value
 
@@ -261,22 +271,23 @@ class DicomReader():
                 scan_info['Exam'] = dcm.PatientID[1:]
 
             scan_info['SeriesNumber'] = int(dcm.SeriesNumber)
-            scan_info['Protocol'] = dcm.ProtocolName
-            scan_info['Patient Initials'] = str(dcm.PatientName)[:2]
-            scan_info['ID'] = dcm.PatientID
-            scan_info['Exam description'] = dcm.StudyDescription
-            scan_info['Series De'] = dcm.SeriesDescription
+            scan_info['Protocol'] = dcm.get('ProtocolName', '')
+            scan_info['Patient Initials'] = str(dcm.get('PatientName', ''))[:2]
+            scan_info['ID'] = dcm.get('PatientID', '')
+            scan_info['Exam description'] = dcm.get('StudyDescription', '')
+            scan_info['Series De'] = dcm.get('SeriesDescription', '')
             if hasattr(dcm, 'OperatorsName'):
                 scan_info['Operator'] = dcm.OperatorsName
-            scan_info['Receive Coil Name'] = dcm.ReceiveCoilName
-            scan_info['Pulse Sequence Name'] = dcm[(0x0019, 0x109c)].value
+            scan_info['Receive Coil Name'] = dcm.get('ReceiveCoilName', '')
+            scan_info['Pulse Sequence Name'] = _get_value(
+                dcm, (0x0019, 0x109c), '')
             plane_types = {2: 'Axial',
                            4: 'Sagittal',
                            8: 'Coronal',
                            16: 'Oblique',
                            32: '3-Plane'
                            }
-            pltype = dcm[(0x0027, 0x1035)].value
+            pltype = _get_value(dcm, (0x0027, 0x1035), None)
             if pltype in plane_types:
                 scan_info['Image Plane'] = plane_types[pltype]
             else:
@@ -295,7 +306,9 @@ class DicomReader():
                 scan_info['Nr of slices'] = dcm[(0x0025, 0x1007)].value
 
             scan_info['Slice Thickness'] = float(dcm.SliceThickness)
-            scan_info['Image FOV'] = float(dcm[(0x0019, 0x101e)].value)
+            fov = _get_value(dcm, (0x0019, 0x101e), None)
+            if fov is not None:
+                scan_info['Image FOV'] = float(fov)
             scan_info['TR'] = float(dcm.RepetitionTime)
             scan_info['TE'] = float(dcm.EchoTime)
             scan_info['Number of Echoes'] = int(dcm.EchoNumbers)
@@ -303,8 +316,10 @@ class DicomReader():
             if hasattr(dcm, 'InversionTime'):
                 scan_info['TI'] = dcm.InversionTime
 
-            AdditionalAssetData = dcm[(0x0043, 0x1084)].value
-            if AdditionalAssetData[5] == 'NO':
+            AdditionalAssetData = _get_value(dcm, (0x0043, 0x1084), None)
+            if AdditionalAssetData is None or len(AdditionalAssetData) < 6:
+                pass  # Unknown acceleration
+            elif AdditionalAssetData[5] == 'NO':
                 scan_info['Asset-slice'] = 0.0
                 scan_info['Asset-phase'] = 0.0
             else:

@@ -25,6 +25,8 @@ class RtpWatchUI(RtpModuleUI):
         "polling_observer": ("ui_pollingObserver_chb", "setChecked"),
         "polling_timeout": ("ui_pollingTimeout_dSpBx", "setValue"),
         "clean_ready": ("ui_cleanReady_chb", "setChecked"),
+        "ge_port": ("ui_gePort_spBx", "setValue", int),
+        "ge_allow_hosts": ("ui_geHosts_lnEd", "setText", str),
     }
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -121,6 +123,36 @@ class RtpWatchUI(RtpModuleUI):
         )
         ui_rows.append((var_lb, o.ui_pollingTimeout_dSpBx))
         o.ui_objs.extend([var_lb, o.ui_pollingTimeout_dSpBx])
+
+        # ge_port: receiver of the files sent from a GE console
+        var_lb = QtWidgets.QLabel("GE receiver port :")
+        var_lb.setToolTip(
+            "TCP port to receive the image files sent by ge_dicom_sender.py"
+            " on a GE console (e.g., 8322). Off for other scanners.")
+        o.ui_gePort_spBx = QtWidgets.QSpinBox()
+        o.ui_gePort_spBx.setRange(0, 65535)
+        o.ui_gePort_spBx.setSpecialValueText("Off")
+        o.ui_gePort_spBx.setValue(int(o.ge_port or 0))
+        o.ui_gePort_spBx.editingFinished.connect(
+            lambda: o.set_param(
+                "ge_port", o.ui_gePort_spBx.value(),
+                o.ui_gePort_spBx.setValue))
+        ui_rows.append((var_lb, o.ui_gePort_spBx))
+        o.ui_objs.extend([var_lb, o.ui_gePort_spBx])
+
+        # ge_allow_hosts
+        var_lb = QtWidgets.QLabel("GE console IP :")
+        var_lb.setToolTip(
+            "Accept the GE files only from these IP addresses (separated by"
+            " spaces). Empty: from any host.")
+        o.ui_geHosts_lnEd = QtWidgets.QLineEdit()
+        o.ui_geHosts_lnEd.setText(str(o.ge_allow_hosts or ""))
+        o.ui_geHosts_lnEd.editingFinished.connect(
+            lambda: o.set_param(
+                "ge_allow_hosts", o.ui_geHosts_lnEd.text(),
+                o.ui_geHosts_lnEd.setText))
+        ui_rows.append((var_lb, o.ui_geHosts_lnEd))
+        o.ui_objs.extend([var_lb, o.ui_geHosts_lnEd])
 
         # clean_ready
         # The checkbox is made but not shown in the panel.

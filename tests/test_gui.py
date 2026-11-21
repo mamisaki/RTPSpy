@@ -61,7 +61,7 @@ def gui_app(tmp_path_factory):
 def test_panels(gui_app):
     qt_app, app, gui, _ = gui_app
     assert isinstance(nt.get_notifier(), QtNotifier)
-    n_rows = {"WATCH": 8, "VOLREG": 7, "TSHIFT": 8, "SMOOTH": 5,
+    n_rows = {"WATCH": 10, "VOLREG": 7, "TSHIFT": 8, "SMOOTH": 5,
               "REGRESS": 15}
     for proc, n in n_rows.items():
         obj = app.rtp_objs[proc]
