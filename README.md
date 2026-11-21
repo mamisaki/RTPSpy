@@ -120,7 +120,8 @@ If the librtp library fails to load, see [Compile the librtp library](./Compilel
 RTPSpy receives the images through a folder, the *watch directory*: the scanner writes each reconstructed volume there as a file, and RTPSpy processes each new file as it arrives.
 
 - **Siemens scanners**: the BOLD AddIn writes each volume as a DICOM file into a folder that the RTPSpy computer shares over the network. See [Real-Time Image Export from a Siemens Scanner](./SiemensSetup.md). RTPSpy reads the DICOM files of the XA software (enhanced multi-frame) and of the older software (mosaic).
-- **Other scanners**: DICOM files are read only for Siemens. Export the images as NIfTI or AFNI BRIK files into the watch directory, and set the 'File type' of the WATCH module accordingly.
+- **GE scanners**: a small program on the console (`ge_dicom_sender.py`) sends each image file to RTPSpy over the network, and RTPSpy puts the slices of each volume together. See [Real-Time Image Export from a GE Scanner](./GESetup.md).
+- **Other scanners**: DICOM files are read only for Siemens and GE. Export the images as NIfTI or AFNI BRIK files into the watch directory, and set the 'File type' of the WATCH module accordingly.
 
 ## How a real-time session works
 
@@ -151,18 +152,17 @@ Start the scan with the 'T' key or the 'Manual start' button in that case.
 
 ## Testing without a scanner: the RT-MRI simulator
 
-The RT-MRI simulator replays a recorded scan session, so that you can test an application on any computer.
+The RT-MRI simulator replays a recorded scan session as if the scanner were running, so that you can test an application on any computer:
 
 ```bash
 ~/RTPSpy/boot_rtmri_simulator.sh
 ```
 
-- **DICOM images.** Select a session folder of DICOM files and a series. The files are copied into the output folder (set it to RTPSpy's watch directory) at the times they were made on the scanner, plus a transfer delay (0.2 s by default). Start, pause, stop, or copy one file at a time; 'Auto-advance' continues with the next series.
-- **TTL pulses.** A TTL pulse is sent to rt_physio at the acquisition time of each volume. rt_physio records these pulses only while it plays the simulated physio signals, so press 'Start Physio' first (see below).
-- **The 'T' key.** With 'Press 'T' key', the simulator presses the `t` key at the scan start or at every volume, in the window whose title matches 'Key window' (default: the RTPSpy window). This tests a setup without a TTL device. It needs `xdotool` (`sudo apt install xdotool`).
-- **Physio signals.** Feed rt_physio with cardiac and respiration signals from two text files (one value per line) or from a BIDS `*_physio.tsv[.gz]` file with its JSON sidecar. The signals are played in a loop, and the physio window appears.
+- **Images**: Siemens DICOM files are copied into the watch directory, and GE slice files are sent to the GE receiver of RTPSpy, at the times they were made on the scanner.
+- **Scan trigger**: a TTL pulse at each volume (to rt_physio), and/or the 'T' key pressed in the RTPSpy window (with `xdotool`).
+- **Physiological signals**: recorded cardiac and respiration signals (text files or a BIDS `*_physio.tsv[.gz]`) are played to rt_physio.
 
-Put your recorded sessions in `~/RTPSpy/simulation_data` (or choose another folder with 'Set'). The simulator reads the DICOM headers of a session once and caches them in the session folder (`.rtmri_series_cache.csv`).
+See the [RT-MRI Simulator guide](./Simulator.md) for how to use it.
 
 ## Example applications
 

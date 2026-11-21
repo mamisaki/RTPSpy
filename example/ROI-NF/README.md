@@ -119,7 +119,7 @@ The RT-MRI simulator replays a recorded session into the watch directory at the 
 ~/RTPSpy/boot_rtmri_simulator.sh
 ```
 
-Set its output folder to the watch directory, select a session and a series, press 'Ready' in ROI-NF, and then 'Start Simulation'. If you have no TTL device, check 'Press 'T' key' in the simulator to start ROI-NF with the 'T' key. See the [README](../../README.md#testing-without-a-scanner-the-rt-mri-simulator) for details.
+Set its output folder to the watch directory, select a session and a series, press 'Ready' in ROI-NF, and then 'Start Simulation'. If you have no TTL device, check 'Press 'T' key' in the simulator to start ROI-NF with the 'T' key. See the [RT-MRI Simulator guide](../../Simulator.md) for details.
 
 ## Customizing the application
 

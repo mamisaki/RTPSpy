@@ -156,7 +156,7 @@ RTPSpy skips the images that are not for the processing: derived images, the mot
    - RTPSpy processes each volume (the log in the RTPSpy window);
    - with 'Latency' checked, the 'TTL → image' delay is stable (usually a few seconds or less; it includes the image reconstruction).
 
-To practice without the scanner, the [RT-MRI simulator](README.md#testing-without-a-scanner-the-rt-mri-simulator) copies recorded DICOM files into the folder at the original timing.
+To practice without the scanner, the [RT-MRI simulator](Simulator.md) copies recorded DICOM files into the folder at the original timing.
 
 ## 8. Troubleshooting
 

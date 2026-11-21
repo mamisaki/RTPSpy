@@ -83,4 +83,4 @@ The noise regression starts after enough volumes have arrived ('RTP' → 'REGRES
 
 <img src="doc/LA-NF_happy.png" alt="Neurofeedback display during a happy block" height=400>
 
-To test the application without a scanner, use the RT-MRI simulator (see the [README](../../README.md#testing-without-a-scanner-the-rt-mri-simulator)).
+To test the application without a scanner, use the RT-MRI simulator (see the [RT-MRI Simulator guide](../../Simulator.md)).

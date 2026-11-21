@@ -33,7 +33,7 @@ In your own code, the `RtpTTLPhysio` class (`rtpspy/rtp_ttl_physio.py`) is the i
 |---|---|---|
 | [Numato 8 Channel USB GPIO Module](https://numato.com/product/8-channel-usb-gpio-module-with-analog-inputs/) | TTL, cardiac, respiration | TTL on **IO0** (digital input), cardiac on **IO1/ADC1**, respiration on **IO2/ADC2** (analog inputs, 0-5 V, 10 bits). Sampled at 100 Hz by default. |
 | GE scanner physio output (serial port) | Cardiac, respiration | From the scanner's pulse oximeter and respiration belt, at 100 Hz. The TTL still comes from the Numato module. |
-| Dummy (simulation) | Simulated | Plays recorded signals from files in a loop. Used by the [RT-MRI simulator](./README.md#testing-without-a-scanner-the-rt-mri-simulator). |
+| Dummy (simulation) | Simulated | Plays recorded signals from files in a loop. Used by the [RT-MRI simulator](./Simulator.md). |
 
 The TTL input of the Numato module is read about every millisecond, so a TTL pulse should be at least a few milliseconds long. If your scanner's pulses are shorter, use a pulse generator to stretch them (we stretch them to 10 ms).
 
