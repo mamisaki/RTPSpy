@@ -26,6 +26,7 @@ from collections import deque
 import json
 import gc
 import struct
+from types import SimpleNamespace
 import threading
 import sys
 import subprocess
@@ -63,6 +64,22 @@ except ImportError:
 # Linux (see mp_context.py; Python 3.14 changed the default to forkserver).
 Process, Lock, Queue = mp_ctx.Process, mp_ctx.Lock, mp_ctx.Queue
 Pipe = mp_ctx.Pipe
+
+# The recording processes (_run_recording and the reader of the device) run
+# bound methods of objects that hold the open mmap files of the ring
+# buffers, locks, and sockets. macOS's default 'spawn' cannot pickle them
+# ("cannot pickle 'BufferedRandom' instances"), so they are forked there
+# too; they use no GUI framework, which is what macOS cannot fork safely.
+# The plot process uses Qt, which aborts in a forked child on macOS
+# (CoreFoundation, "crashed on child side of fork pre-exec"), so it is
+# spawned: PlotTTLPhysio and SharedMemoryRingBuffer are picklable for it.
+# Locks, queues, and pipes come from mp_ctx, so they can be passed to the
+# spawned plot and inherited by the forked recorders.
+if sys.platform == "darwin":
+    import multiprocessing
+    RecProcess = multiprocessing.get_context("fork").Process
+else:
+    RecProcess = Process
 
 mpl.rcParams["font.size"] = 8
 
@@ -331,6 +348,17 @@ class SharedMemoryRingBuffer:
         except Exception as e:
             errstr = str(e) + "\n" + traceback.format_exc()
             self._logger.error("Failed to reset ring buffer:\n" + errstr)
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __getstate__(self):
+        """Pickle (for a spawned process) as the files to attach to."""
+        return {"length": self.length,
+                "data_file": str(self.data_mmap_file),
+                "cpos_file": str(self.cpos_mmap_file)}
+
+    def __setstate__(self, state):
+        self.__init__(state["length"], data_file=state["data_file"],
+                      cpos_file=state["cpos_file"])
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def get_property(self):
@@ -1962,6 +1990,17 @@ class PlotTTLPhysio:
         self._alarm = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def __getstate__(self):
+        """Pickle (for the spawned plot process on macOS) without the
+        controller, of which the plot uses only these values."""
+        state = self.__dict__.copy()
+        c = self.controller
+        state["controller"] = SimpleNamespace(
+            _recorder_type=getattr(c, "_recorder_type", None),
+            dump_dir=getattr(c, "dump_dir", None))
+        return state
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def _init_window(self):
         """Make the Qt application and the plot window."""
         from PyQt6 import QtWidgets, QtCore
@@ -3373,7 +3412,8 @@ class RtPhysio:
             self._init_ring_buffers()
 
         self._rec_proc_pipe, cmd_pipe = Pipe()
-        self._rec_proc = Process(target=self._run_recording, args=(cmd_pipe,))
+        self._rec_proc = RecProcess(target=self._run_recording,
+                                    args=(cmd_pipe,))
 
         self._rec_proc.start()
 
@@ -3547,7 +3587,7 @@ class RtPhysio:
 
         # Start the reading process. It sends the data via the queues.
         _recorder_pipe, cmd_pipe_recorder = Pipe()
-        _read_proc = Process(
+        _read_proc = RecProcess(
             target=recorder.read_signal_loop,
             kwargs={"cmd_pipe": cmd_pipe_recorder},
         )
