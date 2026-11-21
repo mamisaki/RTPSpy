@@ -247,6 +247,20 @@ def read_ge_timing(timing_file):
     return times
 
 
+def ge_fill_temporal_position(df):
+    """Fill in TemporalPositionIdentifier (in place) for the files of an fMRI
+    series from older GE software (e.g., MR750 in 2020), which writes none
+    (0 in the header table). Their files are numbered slice by slice, volume
+    after volume, so the volume is (InstanceNumber - 1) // nslices + 1, where
+    nslices is the largest InStackPositionNumber."""
+    miss = df.TemporalPositionIdentifier.fillna(0) <= 0
+    nsl = int(df.InStackPositionNumber.max() or 0)
+    if miss.any() and nsl > 0:
+        df.loc[miss, "TemporalPositionIdentifier"] = \
+            (df.loc[miss, "InstanceNumber"] - 1) // nsl + 1
+    return df
+
+
 def ge_plan(series_df, recon_delay=0.5, timing=None):
     """Plan the times to send the files of a GE series.
 
@@ -275,6 +289,7 @@ def ge_plan(series_df, recon_delay=0.5, timing=None):
             t_rec = None  # Not all the files are listed: use the model
 
     if nt > 1 and TR > 0:
+        ge_fill_temporal_position(df)
         ttl = (np.arange(1, nt + 1) - 1) * TR
         if t_rec is not None:
             df["PlanSec"] = t_rec - np.nanmin(t_rec) + TR + recon_delay

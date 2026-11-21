@@ -18,9 +18,10 @@ NX, NY, NSL, NT = 6, 5, 4, 3
 
 
 def ge_slice(path, series_uid, tpos, pos, nt=NT, nsl=NSL, echo=1,
-             series_nr=5, desc="fMRI"):
+             series_nr=5, desc="fMRI", no_tpos=False):
     """Write a synthetic GE slice file. The pixel value encodes the volume,
-    the slice, the row and the column: 1000*tpos + 100*pos + 10*row + col."""
+    the slice, the row and the column: 1000*tpos + 100*pos + 10*row + col.
+    no_tpos: no TemporalPositionIdentifier (older GE software)."""
     ds = Dataset()
     ds.file_meta = FileMetaDataset()
     ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
@@ -41,7 +42,8 @@ def ge_slice(path, series_uid, tpos, pos, nt=NT, nsl=NSL, echo=1,
     ds.NumberOfTemporalPositions = nt
     ds.ImagesInAcquisition = nt * nsl
     ds.add_new((0x0021, 0x104F), "SS", nsl)  # Locations in acquisition
-    ds.TemporalPositionIdentifier = tpos
+    if not no_tpos:
+        ds.TemporalPositionIdentifier = tpos
     ds.InStackPositionNumber = pos
     ds.EchoNumbers = echo
     ds.InstanceNumber = (tpos - 1) * nsl + pos
@@ -111,6 +113,22 @@ def test_ge_volumes_in_temporal_order(tmp_path):
         xyz = img.affine @ [0, NY - 1, 0, 1]
         assert xyz[:3] == pytest.approx([10.0, 12.0, 0.0])
     assert img.get_filename().endswith("_0003.nii.gz")
+
+
+def test_ge_volumes_without_temporal_position(tmp_path):
+    """Older GE software writes no TemporalPositionIdentifier: the volume is
+    taken from InstanceNumber."""
+    w = RtpWatch(watch_dir=str(tmp_path), work_dir=str(tmp_path))
+    w._ge_reset()
+    uid = generate_uid()
+    files = [ge_slice(tmp_path / f"i{t}_{p}.dcm", uid, t, p, no_tpos=True)
+             for t in range(1, NT + 1) for p in range(1, NSL + 1)]
+    assert "TemporalPositionIdentifier" not in pydicom.dcmread(files[-1])
+    out = _feed(w, files)
+    assert len(out) == NT
+    for t, img in enumerate(out, start=1):
+        data = np.asanyarray(img.dataobj)
+        assert data.min() // 1000 == t and data.max() // 1000 == t
 
 
 def test_ge_series_selection(tmp_path):

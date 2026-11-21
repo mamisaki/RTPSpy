@@ -625,8 +625,8 @@ class RtpWatch(RTP):
         The first fMRI series after 'Ready' is processed; files of other
         series (e.g., late files of an earlier series) are ignored. Only the
         first echo is used. The slices are grouped by
-        TemporalPositionIdentifier, and a volume is made when all its slices
-        have arrived. Volumes are passed on in their temporal order: a volume
+        TemporalPositionIdentifier (from InstanceNumber if the tag is
+        missing), and a volume is made when all its slices have arrived. Volumes are passed on in their temporal order: a volume
         completed before an earlier one (multiband reconstruction) waits for
         it. A volume still missing after max(30 s, 10 TR) while later volumes
         are complete is skipped with a warning.
@@ -673,8 +673,18 @@ class RtpWatch(RTP):
         if int(dcm.get("EchoNumbers", 1) or 1) != 1:
             return []  # Only the first echo is used
 
-        tpos = int(dcm.get("TemporalPositionIdentifier", 1) or 1)
+        tpos = int(dcm.get("TemporalPositionIdentifier", 0) or 0)
         pos = int(dcm.get("InStackPositionNumber", 0) or 0)
+        inst = int(dcm.get("InstanceNumber", 0) or 0)
+        if inst > 0:
+            # Older GE software (e.g., MR750 in 2020) writes no
+            # TemporalPositionIdentifier. Its files are numbered slice by
+            # slice, volume after volume.
+            if tpos == 0:
+                tpos = (inst - 1) // self._ge_nslices + 1
+            if pos == 0:
+                pos = (inst - 1) % self._ge_nslices + 1
+        tpos = max(tpos, 1)
         if tpos < self._ge_next or tpos in self._ge_ready:
             self._logger.debug(f"{file_path.name}: volume {tpos} is done.")
             return []

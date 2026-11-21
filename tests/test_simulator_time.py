@@ -94,3 +94,24 @@ def test_series_timing_without_acquisition_time():
     file_t, ttl_t = sim.series_timing(df, transfer_delay=0.0)
     assert (file_t - ttl_t) == pytest.approx(np.full(len(df), 1.5),
                                              abs=0.05)
+
+
+def test_ge_plan_without_temporal_position():
+    """Older GE software writes no TemporalPositionIdentifier (0 in the
+    header table): the volumes are taken from InstanceNumber, so that the
+    files of volume k are sent after k x TR, volume by volume."""
+    nt, nsl, TR = 3, 4, 2000.0
+    inst = np.arange(1, nt * nsl + 1)
+    df = pd.DataFrame({
+        "FilePath": [f"/x/p1/e2/s3/i{i}.MRDC.{i}" for i in inst],
+        "SeriesNumber": 3, "InstanceNumber": inst,
+        "NumberOfTemporalPositions": nt, "TemporalPositionIdentifier": 0,
+        "InStackPositionNumber": (inst - 1) % nsl + 1,
+        "RepetitionTime": TR, "IsGE": True})
+    plan, ttl = sim.ge_plan(df, recon_delay=0.5)
+    assert ttl == pytest.approx([0.0, 2.0, 4.0])
+    assert list(plan.InstanceNumber) == list(inst)
+    vol = (inst - 1) // nsl + 1
+    assert list(plan.TemporalPositionIdentifier) == list(vol)
+    assert (plan.PlanSec.values > vol * TR / 1000).all()
+    assert (plan.PlanSec.values < vol * TR / 1000 + 1.0).all()
