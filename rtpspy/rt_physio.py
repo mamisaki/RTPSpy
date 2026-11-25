@@ -4713,11 +4713,17 @@ class RtPhysio:
     def end(self):
         """Stop the recording, the plot and the RPC server, and delete the
         ring buffer files."""
+        # end() is called both from mainloop and __del__.
+        if getattr(self, "_ended", False):
+            return
+        self._ended = True
+
         self.stop_recording()
         # The plot window runs in its own process. Stop it via the pipe;
         # its window is not in this process.
         self.stop_plot()
-        self.socket_srv.shutdown()
+        if getattr(self, "socket_srv", None) is not None:
+            self.socket_srv.shutdown()
         if hasattr(self, "_rbuf") and self._rbuf is not None:
             for lab, rbuf in self._rbuf.items():
                 rbuf.clear_buffer_files()

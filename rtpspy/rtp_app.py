@@ -2020,9 +2020,14 @@ class RtpApp(RTP):
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
         except ConnectionRefusedError:
             errmsg = f"Failed to connect to {self.extApp_addr}"
-            self._logger.error(errmsg)
-            if not no_err_pop:
+            if no_err_pop:
+                # Probing an address (e.g., one restored from the saved
+                # parameters). Not having a connection is not an error.
+                self._logger.debug(errmsg)
+            else:
+                self._logger.error(errmsg)
                 self.err_popup(errmsg)
+            self.close_extApp_sock()
             return -1
 
         return 0
@@ -2051,13 +2056,17 @@ class RtpApp(RTP):
 
             self.extApp_sock.send("IsAlive?;".encode())
             recv = self.extApp_sock.recv(1024)
+            if len(recv) == 0:
+                # The peer has closed the connection.
+                self.close_extApp_sock()
+                return False
             self.extApp_sock.settimeout(self.extApp_sock_timeout)
             return "Yes." in recv.decode()
 
         except Exception as e:
             self._logger.error(str(e) + "\n" + traceback.format_exc())
-            if isinstance(e, BrokenPipeError):
-                self.extApp_sock = None
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                self.close_extApp_sock()
             return False
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -2144,13 +2153,23 @@ class RtpApp(RTP):
                     self._record_feedback(vol_idx)
             return True
 
-        except BrokenPipeError:
-            self.extApp_sock = None
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_extApp_sock()
             errmsg = "No connection to the external application."
             self._logger.debug(errmsg)
             if not no_err_pop:
                 self.err_popup(errmsg)
             return False
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    def close_extApp_sock(self):
+        """Close and discard the socket to the external application."""
+        if self.extApp_sock is not None:
+            try:
+                self.extApp_sock.close()
+            except Exception:
+                pass
+            self.extApp_sock = None
 
     # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     def recv_extApp(self, bufsize=1024, timeout=None):
@@ -2168,7 +2187,9 @@ class RtpApp(RTP):
         Returns
         -------
         bytes or None
-            Message from the server. None if nothing is received.
+            Message from the server. None if nothing is received. Empty
+            bytes if the server has closed the connection (the socket is
+            closed and extApp_sock is set to None).
         """
         if self.extApp_sock is None:
             return None
@@ -2177,12 +2198,19 @@ class RtpApp(RTP):
 
         try:
             received = self.extApp_sock.recv(bufsize)
+            if len(received) == 0:
+                # An empty read means the peer has closed the connection.
+                self._logger.error(
+                    "The connection to the external application was closed."
+                )
+                self.close_extApp_sock()
+
         except socket.timeout:
             received = None
 
-        except BrokenPipeError:
-            self.extApp_sock = None
+        except (BrokenPipeError, ConnectionResetError):
             self._logger.error("No connection to the external application.")
+            self.close_extApp_sock()
             received = None
 
         except Exception:
