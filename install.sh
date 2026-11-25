@@ -24,7 +24,9 @@
 #                      for the neurofeedback presentation of the example
 #                      applications (example/ROI-NF, example/LA-NF).
 #   --torch-backend B  PyTorch build: auto (default; detected from the
-#                      NVIDIA driver), cpu, cu126, cu128, cu130, ...
+#                      NVIDIA driver, or cu126 for GPUs older than compute
+#                      capability 7.5, e.g., Volta/Pascal), cpu, cu126,
+#                      cu128, cu130, ...
 #   --python V         Python version (default 3.13; the newest one with
 #                      wheels for all the dependencies).
 #   --container-dir D  Where to save the .sif images (default: containers/
@@ -91,6 +93,15 @@ die()  { printf '\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
 NOTES=()
 
+# Lowest compute capability of the NVIDIA GPUs as an integer (7.0 -> 70), or
+# empty if it cannot be read. PyTorch builds for CUDA >= 12.8 have no kernels
+# for compute capability < 7.5, so those GPUs need the CUDA 12.6 builds.
+MIN_CC=""
+if [ "$OS" = Linux ] && command -v nvidia-smi >/dev/null 2>&1; then
+    MIN_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+        | awk -F. '/^[0-9]+\.[0-9]+/ {v = $1 * 10 + $2; if (m == "" || v < m) m = v} END {print m}' || true)"
+fi
+
 # --- 1. uv -------------------------------------------------------------------
 msg "uv"
 if ! command -v uv >/dev/null 2>&1; then
@@ -124,6 +135,15 @@ fi
 
 if [ "$OS" = "Darwin" ] && [ "$TORCH_BACKEND" = "auto" ]; then
     TORCH_BACKEND=cpu   # PyPI torch for macOS (with MPS)
+fi
+if [ "$TORCH_BACKEND" = "auto" ] && [ -n "$MIN_CC" ]; then
+    if [ "$MIN_CC" -lt 50 ]; then
+        warn "GPU compute capability ${MIN_CC:0:1}.${MIN_CC:1} is not supported by PyTorch; using the CPU build."
+        TORCH_BACKEND=cpu
+    elif [ "$MIN_CC" -lt 75 ]; then
+        echo "GPU compute capability ${MIN_CC:0:1}.${MIN_CC:1} < 7.5: using the CUDA 12.6 build of PyTorch"
+        TORCH_BACKEND=cu126
+    fi
 fi
 echo "PyTorch backend: $TORCH_BACKEND"
 # --upgrade: the newest versions of all the packages
@@ -271,7 +291,7 @@ if [ "$WITH_FASTSURFER" = 1 ] && [ "$RUNTIME" != none ]; then
     if [ "$OS" = Linux ] && command -v nvidia-smi >/dev/null 2>&1; then
         DRV="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || true)"
         if [ -n "$DRV" ]; then
-            if [ "$DRV" -ge 595 ]; then FS_VARIANT=cu132
+            if [ "$DRV" -ge 595 ] && [ "${MIN_CC:-75}" -ge 75 ]; then FS_VARIANT=cu132
             elif [ "$DRV" -ge 525 ]; then FS_VARIANT=cu126
             fi
             echo "NVIDIA driver $DRV"
